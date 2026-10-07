@@ -1441,7 +1441,14 @@
         else if (p.kind === 'town') pickTown(p.id, p.ti);
         else if (p.kind === 'county') pickCounty(p.id);
       },
-      onEngine: function (e) { N.engine = e.label; setEngine(e.ok, e.label); renderCountry(); },
+      onEngine: function (e) {
+        N.engine = e.label; setEngine(e.ok, e.label);
+        /* 只在【国家级】才重绘。
+           ⚠️ 底图引擎就绪回调是异步的，用户可能已经下钻到省/市/县/乡；
+           此时若无条件 renderCountry() 会把视图猛地打回全国（实测点县后 2 秒被弹回）。
+           这在加 defer（引擎就绪更快）后暴露得更频繁。*/
+        if (N.level === 'country') renderCountry();
+      },
       onHome: function () { renderCountry(); },
       onTilesFail: function (reason) {
         // 卫星瓦片未鉴权：明确提示配置 key（矢量底图功能不受影响）
