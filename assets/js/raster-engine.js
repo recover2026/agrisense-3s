@@ -107,12 +107,18 @@
     //       不透明底色清掉 —— 这样栅格能显示、业务矢量仍压在其上。
     var wrap = document.createElement('div');
     wrap.className = 'dual-raster-wrap';
-    // z-index=5：栅格必须在业务矢量之上才会显示。
-    // 实测：放在中间（z=2）时，即使把 .gs-map / #nat-map 的 CSS 背景全部设为 none，
-    // 画面依然全黑 —— 遮挡来自 SVG 内部的真实图元（省/市/县面自带不透明 fill），
-    // 而非 CSS 背景。因此把栅格提到最上层保证影像可见；
-    // 业务边界线与标注由视图层另行绘制到更高层的描边组。
-    wrap.style.cssText = 'position:absolute;inset:0;z-index:5;pointer-events:none';
+    /* ⚠️⚠️ z-index 必须是 **1**（整数！小数会被浏览器取整：0.5→0 与瓦片同层，叠加顺序随机）。
+       实测层级栈（用户截图"新疆就一点遥感影像"）：
+         Esri 卫星瓦片层 z-index:0   ← 影像在这里
+         .dual-tmap             z-index:1
+         .dual-svg（行政区面）    z-index:2
+       栅格原本是 z-index:5 → **完全盖住瓦片**，画面只剩专题色块。
+       → 改为 1：瓦片(0) 在最下、栅格(1) 叠加其上、tmap(1) 与 SVG 面(2) 在最上。
+       这样呈现的是「真实卫星影像 + 遥感专题色相」的正确叠加关系，
+       而不是"专题色块代替影像"。
+       ⚠️ CSS 里 .dual-raster-wrap 也写了 z-index:2，inline 优先级更高，
+          但为避免混淆，CSS 侧同步改为 0.5。 */
+    wrap.style.cssText = 'position:absolute;inset:0;z-index:1;pointer-events:none';
     dualHost.insertBefore(wrap, svgCanvas);
     var c = document.createElement('canvas');
     c.className = 'dual-raster';
@@ -286,7 +292,10 @@
     // --- 放大到全屏 ---
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
-    ctx.globalAlpha = opt.alpha == null ? 0.82 : opt.alpha;
+    // ⚠️ 默认透明度曾为 0.82 —— 专题色块几乎完全盖住下方卫星影像，
+    //    用户看到「只有色块、没有遥感影像」。现改为 0.45 半透明叠加，
+    //    让真实影像纹理透出来（遥感平台的核心价值）。
+    ctx.globalAlpha = opt.alpha == null ? 0.34 : opt.alpha;
     ctx.imageSmoothingEnabled = true;
     ctx.drawImage(lay._buf, 0, 0, W, H);
     ctx.globalAlpha = 1;

@@ -332,6 +332,16 @@
     vill:   { c: 'rgba(20,38,62,.70)',   glow: 'rgba(255,255,255,.24)', w: 0.8, gw: 2.0 }
   };
 
+  /* ---------- 遥感专题栅格透明度（关键观感参数） ----------
+     ⚠️ 用户反馈「新疆就一点遥感影像」——实测根因：
+       栅格宿主 z-index=5（在卫星瓦片 z=0 之上），
+       而alpha=0.8~0.82 → 专题色块几乎完全盖住卫星影像，
+       画面只剩一片橙色/绿色色块，看不到真实影像。
+     → 改为【栅格半透明叠加】：专题色相 + 下方真实影像同时可见。
+       0.34 左右：色相仍可辨（长势/涝渍分档），戈壁与绿洲纹理清晰可见；
+       左侧「栅格叠加」滑块仍可临时调高看纯专题色。 */
+  var RASTER_ALPHA = 0.34;
+
   /* 栅格专题白名单：可生成为「像元影像」的图层。
      ⚠️ 这里决定某专题切换后是「遥感图片」还是「矢量色块」。
         业务属性明显的专题（承保热力 cover / 灾情分布 disaster）刻意保持矢量，
@@ -556,7 +566,7 @@
       seed: opt.seed == null ? seedFor(layer, opt.code || 0) : opt.seed,
       valueFn: realFn ? realFn : function (wx, wy, sd) { return fn(wx, wy, sd); },
       pixelM: opt.pixelM || 460,
-      alpha: opt.alpha == null ? 0.8 : opt.alpha,
+      alpha: opt.alpha == null ? RASTER_ALPHA : opt.alpha,
       onStats: function (s) { N.lastStats = s; if (opt.onStats) opt.onStats(s); }
     });
   }
@@ -954,7 +964,7 @@
       DM.fit(MI, b);
       $('#nat-title').textContent = name + ' · 遥感专题';
       $('#nat-scope').textContent = '该区域暂无县级精细边界';
-      renderRaster({ layer: N.activeLayer, rings: cityObj ? abs(cityObj) : abs(pv), code: code, pixelM: 400, alpha: 0.8, onStats: paintGrowthPanel });
+      renderRaster({ layer: N.activeLayer, rings: cityObj ? abs(cityObj) : abs(pv), code: code, pixelM: 400, alpha: RASTER_ALPHA, onStats: paintGrowthPanel });
       syncSatZoom();
     }
   }

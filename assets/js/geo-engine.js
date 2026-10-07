@@ -478,8 +478,41 @@
     });
   };
 
+  /* 标签避让：同层内已注册的标签若与新标签重叠，则把新标签上移让位。
+     ⚠️ 用户截图（大兴安岭/新疆）：县级名密集且贴近时互相压字、
+        边缘地名溢出到地图外。→ 加简单的垂直避让 + 边界内收。 */
+  GeoCanvas.prototype._avoidLabels = function (layerName, x, y, w, h) {
+    var L = this.layers[layerName];
+    if (!L || !L.pxItems) return y;
+    var R = this.host.getBoundingClientRect();
+    var hostX = this.host.getBoundingClientRect().left;
+    var hostY = this.host.getBoundingClientRect().top;
+    var tryY = y, guard = 0;
+    var hitOne = false;
+    while (guard++ < 8) {
+      hitOne = false;
+      for (var i = 0; i < L.pxItems.length; i++) {
+        var it = L.pxItems[i];
+        if (!it._lx) continue;
+        var b = it.getBoundingClientRect();
+        if (b.width === 0) continue;
+        var cx = hostX + x, cy = hostY + tryY;
+        if (cx > b.left - 3 && cx < b.right + 3 && cy > b.top - 3 && cy < b.bottom + 3) {
+          tryY = b.bottom + 7; hitOne = true; break;
+        }
+      }
+      if (!hitOne) break;
+    }
+    // 边界内收：贴边时把标签往里推，避免溢出地图外
+    var finalY = tryY;
+    if (hostY + finalY < R.top + 12) finalY = R.top - hostY + 12;
+    if (hostY + finalY > R.bottom - 10) finalY = R.bottom - hostY - 10;
+    return finalY;
+  };
+
   GeoCanvas.prototype.pxLabel = function (layerName, x, y, text, style, meta) {
     var L = this.layers[layerName]; if (!L) return null;
+    y = this._avoidLabels(layerName, x, y, 0, 0);
     var t = el('text', {
       x: x, y: y, class: 'gs-label', fill: style.fill || '#e8f0fb',
       'font-size': style.size || 12, 'text-anchor': style.anchor || 'middle',
@@ -488,6 +521,7 @@
     });
     if (style.opacity != null) t.setAttribute('opacity', style.opacity);
     t.textContent = text;
+    t._lx = 1;              // 标记：供 _avoidLabels 识别为标签
     if (meta) {
       t.setAttribute('data-pick', '1');
       if (meta.id) t.setAttribute('data-id', meta.id);
@@ -584,6 +618,7 @@
     if (style.opacity != null) attrs.opacity = style.opacity;
     var t = el('text', attrs);
     t.textContent = text;
+    t._lx = 1;              // 标记：供 _avoidLabels 识别为标签
     if (meta) { t.setAttribute('data-pick', '1'); if (meta.id) t.setAttribute('data-id', meta.id); if (meta.kind) t.setAttribute('data-kind', meta.kind); }
     L.g.appendChild(t);
     return t;

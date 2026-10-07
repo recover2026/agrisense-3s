@@ -573,7 +573,8 @@ body{
   background-image:none !important}
 
 /* 栅格宿主容器 */
-.dual-raster-wrap{position:absolute;inset:0;z-index:2;pointer-events:none}
+/* 栅格须叠在 Esri 瓦片(0) 之上、SVG 面(2) 之下 → z-index 1（整数，小数会被取整为 0） */
+.dual-raster-wrap{position:absolute;inset:0;z-index:1;pointer-events:none}
 .dual-raster{position:absolute;inset:0;width:100%;height:100%;image-rendering:auto}
 
 /* 业务描边层：盖在遥感栅格之上，保证县界/市界线与标注始终清晰可读
