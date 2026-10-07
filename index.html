@@ -3,9 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>AgriSense 3S · 阳光财险农险遥感地图平台（演示版）</title>
-<meta name="description" content="农险 3S 遥感地图平台演示版：承保风险地图、理赔定损地图、灾害预警调度、灾情损失评估">
+<title>向日葵农险 3S 遥感地图平台（测试版）</title>
+<meta name="description" content="向日葵农险 3S 遥感地图平台测试版：承保风险地图、理赔定损地图、灾害预警调度、灾情损失评估">
 <link rel="stylesheet" href="assets/css/app.css">
+<!-- 访问门禁：测试版密码。必须最先加载，才能在其他资源加载前挡住页面 -->
+<script src="assets/js/gate.js"></script>
 </head>
 <body>
 <div class="app">
@@ -13,11 +15,12 @@
   <!-- ========== 顶栏 ========== -->
   <header class="topbar">
     <div class="brand">
-      <div class="brand-mark"></div>
+      <img class="brand-mark" src="assets/img/sunflower-logo.svg" alt="向日葵农险平台">
       <div class="brand-txt">
-        <div class="brand-name">农险 <em>3S 遥感地图平台</em></div>
+        <div class="brand-name">向日葵农险<em>3S 遥感地图平台</em></div>
         <div class="brand-sub">AgriSense · 承保 · 理赔 · 预警 · 评估</div>
       </div>
+      <span class="brand-badge">测试版</span>
     </div>
 
     <nav class="tabs">

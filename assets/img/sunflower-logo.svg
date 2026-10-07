@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 阳光财险「向日葵农险平台」标识 · 纯矢量 SVG（体积小、任意尺寸清晰） -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64"
+     role="img" aria-label="向日葵农险平台">
+  <title>向日葵农险平台</title>
+  <defs>
+    <radialGradient id="sfPetal" cx="50%" cy="30%" r="75%">
+      <stop offset="0%" stop-color="#ffd85e"/>
+      <stop offset="55%" stop-color="#ffb300"/>
+      <stop offset="100%" stop-color="#f59300"/>
+    </radialGradient>
+    <radialGradient id="sfCore" cx="42%" cy="38%" r="68%">
+      <stop offset="0%" stop-color="#8a5a12"/>
+      <stop offset="60%" stop-color="#5d3a08"/>
+      <stop offset="100%" stop-color="#3d2505"/>
+    </radialGradient>
+    <linearGradient id="sfStem" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#4a9c35"/>
+      <stop offset="100%" stop-color="#2f6b21"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 茎 -->
+  <path d="M32 36 L32 60" stroke="url(#sfStem)" stroke-width="4.5"
+        stroke-linecap="round" fill="none"/>
+  <!-- 叶 -->
+  <path d="M32 47 C24 43 17 45 15 51 C21 54 28 52 32 47 Z" fill="#3f8f2e"/>
+  <path d="M32 52 C40 48 47 50 49 56 C43 59 36 57 32 52 Z" fill="#35812a"/>
+
+  <!-- 花瓣：16片两层交错 -->
+  <g fill="url(#sfPetal)">
+    <g>
+      <ellipse cx="32" cy="11.5" rx="4.1" ry="10"/>
+      <ellipse cx="32" cy="11.5" rx="4.1" ry="10" transform="rotate(22.5 32 32)"/>
+      <ellipse cx="32" cy="11.5" rx="4.1" ry="10" transform="rotate(45 32 32)"/>
+      <ellipse cx="32" cy="11.5" rx="4.1" ry="10" transform="rotate(67.5 32 32)"/>
+      <ellipse cx="32" cy="11.5" rx="4.1" ry="10" transform="rotate(90 32 32)"/>
+      <ellipse cx="32" cy="11.5" rx="4.1" ry="10" transform="rotate(112.5 32 32)"/>
+      <ellipse cx="32" cy="11.5" rx="4.1" ry="10" transform="rotate(135 32 32)"/>
+      <ellipse cx="32" cy="11.5" rx="4.1" ry="10" transform="rotate(157.5 32 32)"/>
+      <ellipse cx="32" cy="11.5" rx="4.1" ry="10" transform="rotate(180 32 32)"/>
+      <ellipse cx="32" cy="11.5" rx="4.1" ry="10" transform="rotate(202.5 32 32)"/>
+      <ellipse cx="32" cy="11.5" rx="4.1" ry="10" transform="rotate(225 32 32)"/>
+      <ellipse cx="32" cy="11.5" rx="4.1" ry="10" transform="rotate(247.5 32 32)"/>
+      <ellipse cx="32" cy="11.5" rx="4.1" ry="10" transform="rotate(270 32 32)"/>
+      <ellipse cx="32" cy="11.5" rx="4.1" ry="10" transform="rotate(292.5 32 32)"/>
+      <ellipse cx="32" cy="11.5" rx="4.1" ry="10" transform="rotate(315 32 32)"/>
+      <ellipse cx="32" cy="11.5" rx="4.1" ry="10" transform="rotate(337.5 32 32)"/>
+    </g>
+    <!-- 内层稍暗小花瓣 -->
+    <g opacity="0.82" fill="#f5a000">
+      <ellipse cx="32" cy="14" rx="3.1" ry="7.4" transform="rotate(11.25 32 32)"/>
+      <ellipse cx="32" cy="14" rx="3.1" ry="7.4" transform="rotate(33.75 32 32)"/>
+      <ellipse cx="32" cy="14" rx="3.1" ry="7.4" transform="rotate(56.25 32 32)"/>
+      <ellipse cx="32" cy="14" rx="3.1" ry="7.4" transform="rotate(78.75 32 32)"/>
+      <ellipse cx="32" cy="14" rx="3.1" ry="7.4" transform="rotate(101.25 32 32)"/>
+      <ellipse cx="32" cy="14" rx="3.1" ry="7.4" transform="rotate(123.75 32 32)"/>
+      <ellipse cx="32" cy="14" rx="3.1" ry="7.4" transform="rotate(146.25 32 32)"/>
+      <ellipse cx="32" cy="14" rx="3.1" ry="7.4" transform="rotate(168.75 32 32)"/>
+      <ellipse cx="32" cy="14" rx="3.1" ry="7.4" transform="rotate(191.25 32 32)"/>
+      <ellipse cx="32" cy="14" rx="3.1" ry="7.4" transform="rotate(213.75 32 32)"/>
+      <ellipse cx="32" cy="14" rx="3.1" ry="7.4" transform="rotate(236.25 32 32)"/>
+      <ellipse cx="32" cy="14" rx="3.1" ry="7.4" transform="rotate(258.75 32 32)"/>
+      <ellipse cx="32" cy="14" rx="3.1" ry="7.4" transform="rotate(281.25 32 32)"/>
+      <ellipse cx="32" cy="14" rx="3.1" ry="7.4" transform="rotate(303.75 32 32)"/>
+      <ellipse cx="32" cy="14" rx="3.1" ry="7.4" transform="rotate(326.25 32 32)"/>
+      <ellipse cx="32" cy="14" rx="3.1" ry="7.4" transform="rotate(348.75 32 32)"/>
+    </g>
+  </g>
+
+  <!-- 花盘（葵花籽螺旋质感） -->
+  <circle cx="32" cy="32" r="10.6" fill="url(#sfCore)"/>
+  <g fill="#a06a18" opacity="0.55">
+    <circle cx="32" cy="28.4" r="1.15"/><circle cx="35.4" cy="29.6" r="1.15"/>
+    <circle cx="28.6" cy="29.6" r="1.15"/><circle cx="36.6" cy="32.6" r="1.15"/>
+    <circle cx="27.4" cy="32.6" r="1.15"/><circle cx="34.4" cy="35.2" r="1.15"/>
+    <circle cx="29.6" cy="35.2" r="1.15"/><circle cx="32" cy="38" r="1.15"/>
+  </g>
+  <circle cx="32" cy="32" r="10.6" fill="none" stroke="#f0a500"
+          stroke-width="1.5" opacity="0.85"/>
+</svg>

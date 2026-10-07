@@ -46,14 +46,20 @@ body{
   border-bottom:1px solid var(--line);backdrop-filter:blur(14px);z-index:60;position:relative;
 }
 .brand{display:flex;align-items:center;gap:11px;min-width:0}
+/* 向日葵 logo：改为真实 SVG 图片，脱离原纯色方块样式 */
 .brand-mark{
-  width:34px;height:34px;border-radius:10px;flex:0 0 34px;position:relative;
-  background:linear-gradient(145deg,var(--brand),var(--brand-2));
-  box-shadow:0 6px 18px rgba(255,180,60,.32);display:grid;place-items:center;
+  width:38px;height:38px;flex:0 0 38px;position:relative;display:block;
+  background:none;border-radius:0;box-shadow:none;
+  filter:drop-shadow(0 3px 7px rgba(255,150,20,.42));
 }
-.brand-mark::after{
-  content:"";width:17px;height:17px;border-radius:50%;
-  border:2px solid rgba(10,20,35,.86);border-right-color:transparent;transform:rotate(-38deg);
+/* 旧的 ::after 装饰圆已不需要（原来画在渐变方块上） */
+.brand-mark::after{display:none}
+/* 「测试版」徽标 */
+.brand-badge{
+  align-self:flex-start;margin-left:2px;padding:2px 7px;border-radius:999px;
+  font-size:10.5px;font-weight:700;letter-spacing:.4px;white-space:nowrap;
+  color:#ffd98a;background:rgba(255,164,26,.16);
+  border:1px solid rgba(255,180,60,.42);
 }
 .brand-txt{min-width:0}
 .brand-name{font-size:15.5px;font-weight:800;letter-spacing:.3px;white-space:nowrap}
