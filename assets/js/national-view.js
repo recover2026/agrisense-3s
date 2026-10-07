@@ -437,6 +437,76 @@
     return ndviVal < 0 ? 0 : ndviVal;
   }
 
+  /* 把某县的 8×8 真实反演网格画成空间分布图（SVG）。
+     用真实实测值着色，不用模拟数据 —— 这正是本次改造的意义所在。
+     每格标注实测值，便于核对；缺值画成斜纹"无观测"。 */
+  function s2GridSvg(rec, layer) {
+    var g = rec.g;
+    if (!g || !g.length) return '';
+    var stops = vstopsFor(layer || 'ndvi');
+    var n = g.length;
+    var cell = 26, pad = 1;
+    var W = n * cell, H = n * cell;
+    var parts = [];
+    for (var i = 0; i < n; i++) {
+      for (var j = 0; j < n; j++) {
+        var v = g[i] && g[i][j];
+        var x = j * cell, y = i * cell;
+        if (typeof v !== 'number') {
+          parts.push('<rect x="' + x + '" y="' + y + '" width="' + cell + '" height="' + cell +
+            '" fill="#f6f7f9" stroke="#dcdfe4" stroke-width="0.4"/>' +
+            '<path d="M' + (x + 4) + ' ' + (y + cell - 4) + 'L' + (x + cell - 4) + ' ' + (y + 4) +
+            '" stroke="#c9cdd4" stroke-width="0.8" fill="none"/>');
+          continue;
+        }
+        var col = ramp(stops, Math.max(0, Math.min(1, v)));
+        var txt = v.toFixed(2);
+        var dark = (v < 0.42);   // 深色底用白字
+        parts.push('<rect x="' + x + '" y="' + y + '" width="' + cell + '" height="' + cell +
+          '" fill="' + col + '" stroke="rgba(255,255,255,.35)" stroke-width="' + pad + '"/>' +
+          '<text x="' + (x + cell / 2) + '" y="' + (y + cell / 2 + 3.2) + '" text-anchor="middle" ' +
+          'font-size="8.5" fill="' + (dark ? '#fff' : '#1a1a1a') + '">' + txt + '</text>');
+      }
+    }
+    // 色带图例（用与主色带一致的连续渐变，避免分档色带在高位难分辨）
+    var lw = 150, lh = 8, lx = 0, ly = H + 12;
+    var gid = 's2lg' + (rec.date || '').replace(/[^0-9]/g, '') + (rec.nm || '').length;
+    var gradStops = [];
+    for (var k = 0; k <= 10; k++) {
+      var t = k / 10;
+      gradStops.push('<stop offset="' + (t * 100) + '%" stop-color="' + ramp(stops, t) + '"/>');
+    }
+    var grad = '<defs><linearGradient id="' + gid + '" x1="0%" y1="0%" x2="100%" y2="0%">' +
+      gradStops.join('') + '</linearGradient></defs>';
+    var legend = grad +
+      '<text x="' + lx + '" y="' + (ly - 3) + '" font-size="8.5" fill="#7a7a7a">NDVI</text>' +
+      '<rect x="' + lx + '" y="' + ly + '" width="' + lw + '" height="' + lh + '" fill="url(#' + gid + ')"/>' +
+      '<rect x="' + lx + '" y="' + ly + '" width="' + lw + '" height="' + lh +
+      '" fill="none" stroke="rgba(0,0,0,.12)" stroke-width="0.6"/>';
+    // 刻度域用 DOM（NDVI 实用上限 0.8；色带本身到 0.72封顶，
+    // 超出部分沿用最深色）——用常量表达，避免散落魔数
+    var DOM = 0.8;
+    var ticks = [0, 0.2, 0.4, 0.6, 0.8];
+    var tl = ticks.map(function (t) {
+      var xx = lx + (t / DOM) * lw;
+      var anc = (t === 0) ? 'start' : (t === 0.8 ? 'end' : 'middle');
+      return '<text x="' + xx + '" y="' + (ly + lh + 10) + '" text-anchor="' + anc +
+        '" font-size="8.5" fill="#7a7a7a">' + t.toFixed(1) + '</text>';
+    }).join('');
+    // 分级边界（虚线，让用户看清"差/较差/中/良好/优"的分界）
+    var NDVI_LEVELS = [0.2, 0.35, 0.5, 0.65];
+    var bnd = NDVI_LEVELS.map(function (t) {
+      var xx = lx + (t / DOM) * lw;
+      return '<line x1="' + xx + '" y1="' + ly + '" x2="' + xx + '" y2="' + (ly + lh) +
+        '" stroke="rgba(0,0,0,.3)" stroke-width="0.6" stroke-dasharray="1.5,1.5"/>' +
+        '<text x="' + (xx + 2) + '" y="' + (ly - 3) + '" font-size="7.5" fill="#a0a4ab">' +
+        ({ '0.2': '差', '0.35': '较差', '0.5': '中', '0.65': '良好' })[String(t)] + '</text>';
+    }).join('');
+    return '<svg viewBox="0 0 ' + W + ' ' + (H + 34) + '" width="' + W + '" height="' + (H + 34) +
+      '" style="max-width:100%;border:1px solid #e3e6ea;border-radius:3px;background:#fff">' +
+      parts.join('') + legend + tl + bnd + '</svg>';
+  }
+
   /* ---------- 栅格渲染 ---------- */
   function renderRaster(opt) {
     if (!RS || !MI || !MI.svg) return;
@@ -1448,6 +1518,11 @@
       (isReal
         ? '<div class="kv"><span>NDVI 均值</span><b>' + rec.ndvi.toFixed(3) + '</b></div>' +
           '<div class="bar"><i style="width:' + Math.min(100, rec.ndvi * 100).toFixed(0) + '%;background:' + ramp(vstopsFor('ndvi'), rec.ndvi) + '"></i></div>' +
+          '<div class="dt-sub" style="margin-top:12px">NDVI 空间分布（8×8 实测格网，格内为实测均值）</div>' +
+          '<div style="margin:6px 0 10px">' + s2GridSvg(rec, 'ndvi') + '</div>' +
+          '<div class="note" style="margin:0 0 8px">格网由 Sentinel-2 ' +
+          (rec.date || '') + ' 影像在县域中心 ±0.05° 范围内 160×160 像元降采样聚合而成；' +
+          '斜纹格表示该格无有效观测（云遮或边缘）。</div>' +
           (rec.ndwi != null ? '<div class="kv"><span>NDWI 水体指数</span><b>' + rec.ndwi.toFixed(3) + '</b></div>' : '') +
           (rec.ndmi != null ? '<div class="kv"><span>NDMI 土壤湿度</span><b>' + rec.ndmi.toFixed(3) + '</b></div>' : '') +
           (rec.ndre != null ? '<div class="kv"><span>NDRE 水分胁迫</span><b>' + rec.ndre.toFixed(3) + '</b></div>' : '') +
@@ -2432,6 +2507,14 @@ function drawDisasterCircles() {
     renderCity: renderCity, renderCounty: renderCounty,
     pickProvince: pickProvince, pickCity: pickCity, pickCounty: pickCounty,
     showProvinceInfo: showProvinceInfo,
+    /* 补齐各级详情与真实S2 相关函数导出。
+       此前只导出省级详情，导致县级/乡镇级详情无法被自动化核验
+       （本轮想核验"县级真实反演详情"时才发现）。 */
+    showCountyInfo: showCountyInfo,
+    showTownInfo: showTownInfo,
+    showVillageInfo: showVillageInfo,
+    s2Of: s2Of,
+    s2Caliber: s2Caliber,
     redraw: redrawCurrent
   };
 })();
