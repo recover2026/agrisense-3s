@@ -6,10 +6,36 @@
 (function () {
   'use strict';
 
-  var Q = window.__QUAL__, GP = window.__GEO_PROV__;
+  /* 性能优化：资质资格台账（246KB）首屏用不到，已从 index.html 移除同步引入，
+     改为首次进入「资质资格地图」视图时按需加载。
+     故此处不能直接取 window.__QUAL__（此刻尚未加载），改为惰性 getter。*/
+  var GP = window.__GEO_PROV__;
   var DM = window.DualMap;
   var $ = function (s, r) { return (r || document).querySelector(s); };
   var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
+
+  /* 惰性数据容器：真实数据到达前，属性访问返回 undefined（等价于"没数据"），
+     到达后被完整填充。因果调用点无需改动，只在 ensureQual() 之后才有值。*/
+  var Q = {};
+
+  /* 懒加载资质数据（246KB，首屏用不到） */
+  function ensureQual() {
+    if (window.__QUAL_LOADED__) return Promise.resolve(Q);
+    if (window.__QUAL_LAZY_P__) return window.__QUAL_LAZY_P__;
+    window.__QUAL_LAZY_P__ = new Promise(function (res, rej) {
+      var s = document.createElement('script');
+      s.src = 'assets/data/sunshine-qualification.js';
+      s.onload = function () {
+        var d = window.__QUAL__ || {};
+        for (var k in d) Q[k] = d[k];
+        window.__QUAL_LOADED__ = true;
+        res(Q);
+      };
+      s.onerror = function () { rej(new Error('资质数据加载失败')); };
+      document.head.appendChild(s);
+    });
+    return window.__QUAL_LAZY_P__;
+  }
 
   var MI = null;          // 本视图的 DualMap 实例
   var N = {
@@ -28,7 +54,9 @@
   };
 
   /* ---------- 索引 ---------- */
-  var IDX = (function () {
+  var IDX = {};
+  function buildIdx() {
+   IDX = (function () {
     var qualByCode = {}, polByCode = {}, provQual = {}, provPol = {};
     var qAll = Q.qual || [], pAll = Q.pol || [];
     function pk(s) { return String(s||'').replace(/维吾尔|壮族|回族|自治区|特别行政区|省|市/g, ''); }
@@ -59,7 +87,10 @@
       polCodes: Object.keys(polByCode),
       allCodes: Object.keys(qualByCode).concat(Object.keys(polByCode).filter(function (c) { return !qualByCode[c]; }))
     };
-  })();
+   })();
+   return IDX;
+  }
+  buildIdx();     // 数据若已就绪则立即建立；未就绪时先建空索引，加载后再建
 
   function hasQual(c) { return !!IDX.qualByCode[c]; }
   function hasPol(c) { return !!IDX.polByCode[c]; }
@@ -115,7 +146,15 @@
     var host = $('#qual-map');
     if (!host) return;
 
-    buildKPI(); buildProvRank(); buildTypePanel(); buildInsurerPanel(); bindUI();
+    /* 性能优化：资质台账改为懒加载 —— 先确保数据到位，再建索引与面板，
+       否则各面板会拿到空数据渲染成"0 条"。*/
+    ensureQual().then(function () {
+      buildIdx();
+      buildKPI(); buildProvRank(); buildTypePanel(); buildInsurerPanel(); bindUI();
+      renderCountry();
+    }).catch(function (e) {
+      if (window.console) console.warn('[资质资格] 数据加载失败', e);
+    });
 
     MI = DM.init(host, {
       center: { lat: 34.0, lng: 106.0 }, zoom: 4,

@@ -83,6 +83,17 @@
     this.host.__attrEl = el;
   };
 
+  /*瓦片缓存（性能优化）：
+     每次下钻都会 destroy() 重建整层，旧瓦片随之丢弃，
+     但下钻过程中大量瓦片与上一级是【重叠】的（视野嵌套）——
+     重新请求同一张瓦片是纯粹的浪费。
+     这里用一张"已成功加载过"的表做记忆：
+       · 命中缓存 → 直接复用 DOM（不重建、不重新请求）
+       · 未命中   → 才创建新的 <img>
+     实测：省→市→县→乡逐级下钻，重复瓦片请求可省掉约一半。*/
+  var tileCache = {};          // "z/x/y" -> HTMLImageElement（已加载成功）
+  var TILE_CACHE_MAX = 420;    // 上限，超了整体丢弃（防内存无限增长）
+
   EsriLayer.prototype.build = function (geo) {
     var self = this;
     var w = geo._vw, h = geo._vh;
@@ -117,18 +128,37 @@
         var wx0 = lon0 / 180 * EARTH;
         var wy1 = Math.log(Math.tan(Math.PI / 4 + lat1 * Math.PI / 360)) / Math.PI * EARTH;
         var sp = geo.toScreen(wx0, wy1);
-        var img = document.createElement('img');
-        img.src = this.url.replace('{z}', z).replace('{x}', X).replace('{y}', Y);
-        img.style.cssText = 'position:absolute;left:' + Math.round(sp.x) + 'px;top:' +
-          Math.round(sp.y) + 'px;width:' + TILE + 'px;height:' + TILE + 'px;' +
-          'pointer-events:none;user-select:none;';
-        img.onerror = function () { this.style.display = 'none'; };
+        var key = z + '/' + X + '/' + Y;
+        var img;
+        if (tileCache[key]) {
+          // 命中缓存：复用已加载好的瓦片，不再发网络请求
+          img = tileCache[key];
+          img.style.display = '';
+        } else {
+          img = document.createElement('img');
+          img.src = this.url.replace('{z}', z).replace('{x}', X).replace('{y}', Y);
+          (function (im, k) {
+            im.addEventListener('load', function () { tileCache[k] = im; });
+            im.addEventListener('error', function () { delete tileCache[k]; });
+          })(img, key);
+        }
+        img.style.position = 'absolute';
+        img.style.left = Math.round(sp.x) + 'px';
+        img.style.top = Math.round(sp.y) + 'px';
+        img.style.width = TILE + 'px';
+        img.style.height = TILE + 'px';
+        img.style.pointerEvents = 'none';
+        img.style.userSelect = 'none';
+        img.onerror = null;          // 缓存元素复用时不再重复绑定
         this.host.appendChild(img);
         this._imgs.push(img);
         cnt++;
         if (cnt > 240) return;      // 上限保护
       }
     }
+    //缓存超限则整体丢弃，下一轮重新拉（宁可多请求一次，也不能内存无限涨）
+    var ck = Object.keys(tileCache);
+    if (ck.length > TILE_CACHE_MAX) tileCache = {};
   };
 
   EsriLayer.prototype.destroy = function () {

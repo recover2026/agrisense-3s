@@ -391,24 +391,24 @@ window.__checkMapKey = function () {
   return { configured: !!k, provider: (window.SatMap && window.SatMap.state.provider) || 'none' };
 };
 </script>
-<script src="assets/data/geo.js"></script>
-<script src="assets/data/geo-province.js"></script>
-<script src="assets/data/geo-city-index.js"></script>
-<script src="assets/data/sunshine-qualification.js"></script>
-<script src="assets/data/geo-county-index.js"></script>
-<script src="assets/data/geo-town-index.js"></script>
+<script src="assets/data/geo.js" defer></script>
+<script src="assets/data/geo-province.js" defer></script>
+<script src="assets/data/geo-city-index.js" defer></script>
+<!-- 资质资格数据（246KB）仅「资质资格地图」视图需要，改由 qual-view 懒加载 -->
+<script src="assets/data/geo-county-index.js" defer></script>
+<script src="assets/data/geo-town-index.js" defer></script>
 <!-- 村界可用性索引：省码 -> 已有村界的县数（用于进乡镇时判断能否下钻到村） -->
-<script src="assets/data/geo-vill-prov.js"></script>
-<script src="assets/js/geo-engine.js"></script>
-<script src="assets/js/business-data.js"></script>
-<script src="assets/js/national-data.js"></script>
-<script src="assets/js/sat-map.js"></script>
+<script src="assets/data/geo-vill-prov.js" defer></script>
+<script src="assets/js/geo-engine.js" defer></script>
+<script src="assets/js/business-data.js" defer></script>
+<script src="assets/js/national-data.js" defer></script>
+<script src="assets/js/sat-map.js" defer></script>
 <!-- 免费真实卫星影像底图（Esri World Imagery，免 KEY） -->
-<script src="assets/js/esri-imagery.js"></script>
-<script src="assets/js/dual-map.js"></script>
-<script src="assets/js/raster-engine.js"></script>
-<script src="assets/js/national-view.js"></script>
-<script src="assets/js/qual-view.js"></script>
-<script src="assets/js/app.js"></script>
+<script src="assets/js/esri-imagery.js" defer></script>
+<script src="assets/js/dual-map.js" defer></script>
+<script src="assets/js/raster-engine.js" defer></script>
+<script src="assets/js/national-view.js" defer></script>
+<script src="assets/js/qual-view.js" defer></script>
+<script src="assets/js/app.js" defer></script>
 </body>
 </html>

@@ -46,11 +46,24 @@
     state.hasKey = !!ownKey;
 
     // 默认场景：注入 WorkBuddy 本地代理，key 由后端持有，前端零 key 暴露
+    var hasProxy = false;
     if (!ownKey) {
       try {
         var cfg = global.__WB_TMAP_PROXY__;
-        if (cfg && cfg.serviceHost) global._TMapSecurityConfig = { serviceHost: cfg.serviceHost };
+        if (cfg && cfg.serviceHost) { global._TMapSecurityConfig = { serviceHost: cfg.serviceHost }; hasProxy = true; }
       } catch (e) { }
+    }
+
+    /* 性能优化（省掉约 40 次无效请求 + 2 条鉴权报错）：
+       既没有自有 key、也没有可用代理时，加载腾讯 SDK 必然鉴权失败。
+       此时 Esri World Imagery 已提供真实卫星影像底图，
+       再去拉一遍注定失败的 SDK 纯属浪费 —— 直接放弃腾讯路径。*/
+    if (!ownKey && !hasProxy && !(global.TMap)) {
+      state.loading = false;
+      state.failed = true;
+      state.provider = 'esri';     // 由 Esri 影像层接管
+      flush(false);
+      return;
     }
 
     var s = document.createElement('script');
