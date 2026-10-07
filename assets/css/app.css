@@ -47,10 +47,15 @@ body{
 }
 .brand{display:flex;align-items:center;gap:11px;min-width:0}
 /* 向日葵 logo：改为真实 SVG 图片，脱离原纯色方块样式 */
+/* 向日葵农险标准 Logo（盾形·1024×1024 透明底 PNG）
+   —— 唯一权威源：~/.workbuddy/plugins/marketplaces/my-experts/plugins/
+      agri-insurance-partner/assets/brand/sunshine-agri-sunflower-logo.png
+   ⚠️ 禁止再用自绘 SVG 替代（2026-10-07 用户明确要求用真实 Logo）。*/
 .brand-mark{
-  width:38px;height:38px;flex:0 0 38px;position:relative;display:block;
+  width:40px;height:40px;flex:0 0 40px;position:relative;display:block;
   background:none;border-radius:0;box-shadow:none;
-  filter:drop-shadow(0 3px 7px rgba(255,150,20,.42));
+  filter:drop-shadow(0 2px 5px rgba(180,30,40,.28));
+  object-fit:contain;
 }
 /* 旧的 ::after 装饰圆已不需要（原来画在渐变方块上） */
 .brand-mark::after{display:none}
