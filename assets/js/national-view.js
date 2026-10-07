@@ -1544,9 +1544,12 @@
 
     var bbox = null;
     GP.provinces.forEach(function (p) {
-      var info = NAT.provInfo(p.c) || { risk: 3, prem: 0 };
+      var info = NAT.provInfo(p.c) || { risk: 3, prem: null };
       var c;
-      if (N.activeLayer === 'cover') c = premColor(info.prem || 0, premMax);
+      if (N.activeLayer === 'cover') {
+        // 未核实省份不着色（用中性色），避免"未核实"被误读成"规模低"
+        c = (typeof info.prem === 'number' && premMax > 0) ? premColor(info.prem, premMax) : 'rgb(38,52,70)';
+      }
       else if (N.activeLayer === 'disaster') c = NAT.disasterField(p.c) ? 'rgb(248,113,113)' : 'rgb(56,89,120)';
       else c = riskColor(info.risk);
       var rgb = rgbOf(c);
@@ -1974,18 +1977,30 @@ function drawDisasterCircles() {
   function showProvinceInfo(p) {
     var info = NAT.provInfo(p.c) || {};
     var d = NAT.disasterField(p.c);
+    // 保费规模：已核实省份填真实值+来源；未核实省份显示「未核实」而非 0.0（避免误读为"零保费"）
+    var premTxt = (info.prem === null || info.prem === undefined)
+      ? '未核实（省级公开口径未获取）'
+      : info.prem.toFixed(1) + ' 亿元';
     var rows = [
       ['行政区域', p.n], ['行政区划代码', p.c],
-      ['耕地面积（模拟测算）', fmt(info.farm || 0, 0) + ' 千亩'],
-      ['保费规模（模拟测算）', (info.prem || 0).toFixed(1) + ' 亿元'],
+      ['耕地面积（参考值）', fmt(info.farm || 0, 0) + ' 千亩'],
+      ['保费规模（2024公开数据）', premTxt],
       ['综合成本率（模拟测算）', (info.cor || 0) + '%'],
       ['主导作物', info.crop || '—'],
-      ['综合风险指数', (info.risk || 3).toFixed(1)],
+      ['综合风险指数（模拟测算）', (info.risk || 3).toFixed(1)],
       ['主要灾种', info.haz || '—']
     ];
     if (d) rows.push(['当前灾情', d.name + ' · ' + d.level + '预警']);
-    window.__APP__.detail(p.n, '省级遥感概况 · 模拟测算',
+    // 数据来源逐省标注（用户要求"规模信息必须准确有依据"）
+    var srcHtml = info.src
+      ? '<div class="note" style="margin-top:10px;padding:8px 10px;border-left:2px solid var(--brand);background:rgba(255,255,255,.03)">' +
+        '<b>保费数据来源</b><br>' + info.src + '</div>'
+      : '<div class="note" style="margin-top:10px;padding:8px 10px;border-left:2px solid #64748b;background:rgba(255,255,255,.03)">' +
+        '<b>保费数据来源</b><br>该省 2024 年农险保费收入<b>尚未取得省级公开口径</b>，此处不显示数值，' +
+        '以免以估算值误导判断。待补充官方数据后自动显示。</div>';
+    window.__APP__.detail(p.n, '省级遥感概况 · 保费为公开数据／其余为模拟测算',
       rows.map(function (r) { return '<div class="kv"><span>' + r[0] + '</span><b>' + r[1] + '</b></div>'; }).join('') +
+      srcHtml +
       '<div class="note" style="margin-top:10px"><b>下钻说明</b>：' + p.n +
       ((N._cfList && N._cfList.length)
         ? '本省已由<b>乡镇边界聚合出 ' + N._cfList.length + ' 个县区</b>，可直接点县区进入乡镇级遥感影像。'
@@ -2112,12 +2127,21 @@ function drawDisasterCircles() {
   function buildLegend() {
     var k = N.activeLayer;
     if (k === 'cover') {
-      var ps = Object.keys(NAT.PROV).map(function (c) { return NAT.PROV[c].prem || 0; });
+      // 只统计有真实值的省，避免把"未核实"当成 0 拉低/拉高色阶
+      var ps = Object.keys(NAT.PROV)
+        .map(function (c) { return NAT.PROV[c].prem; })
+        .filter(function (v) { return typeof v === 'number' && v > 0; });
+      if (!ps.length) {
+        $('#nat-legend').innerHTML = '<div class="note">暂无可溯源的保费规模数据</div>';
+        return;
+      }
+      var lo = Math.min.apply(null, ps), hi = Math.max.apply(null, ps);
       $('#nat-legend').innerHTML =
         '<div class="lg-row" style="cursor:default"><span class="lg-sw" style="background:linear-gradient(90deg,#1e3a5f,#f87171)"></span><span>保费规模</span></div>' +
-        '<div class="row-m" style="padding:4px 7px"><span>低 <b>' + Math.min.apply(null, ps).toFixed(1) + '亿</b></span>' +
-        '<span style="margin-left:auto">高 <b>' + Math.max.apply(null, ps).toFixed(1) + '亿</b></span></div>' +
-        '<div class="note" style="margin-top:8px;font-size:10.5px">按各省保费规模（模拟测算）分级渲染，用于识别农险业务集中区。</div>';
+        '<div class="row-m" style="padding:4px 7px"><span>低 <b>' + lo.toFixed(1) + '亿</b></span>' +
+        '<span style="margin-left:auto">高 <b>' + hi.toFixed(1) + '亿</b></span></div>' +
+        '<div class="note" style="margin-top:8px;font-size:10.5px">按<b>已核实公开数据</b>分级渲染（2024年省级农险保费收入，共 ' +
+        ps.length + ' 省），仅用于识别业务集中区；未核实省份不着色。</div>';
       return;
     }
     if (k === 'disaster') {
@@ -2137,9 +2161,16 @@ function drawDisasterCircles() {
   }
 
   function buildProvinceRank() {
+    // 仅列出有真实保费数据的省；未核实的不参与排名（宁缺毋滥）
     var arr = GP.provinces.map(function (p) {
-      return { n: p.n, c: p.c, info: NAT.provInfo(p.c) || { prem: 0, risk: 3, cor: 0 } };
-    }).filter(function (x) { return x.info.prem > 0; });
+      return { n: p.n, c: p.c, info: NAT.provInfo(p.c) || { prem: null, risk: 3, cor: 0 } };
+    }).filter(function (x) { return typeof x.info.prem === 'number' && x.info.prem > 0; });
+
+    if (!arr.length) {
+      $('#nat-rank').innerHTML = '<div class="note">暂无可溯源的保费规模数据</div>';
+      $('#nat-rank-tabs').innerHTML = '';
+      return;
+    }
 
     var tabs = [['prem', '保费规模'], ['cor', '综合成本率'], ['risk', '风险指数']];
     $('#nat-rank-tabs').innerHTML = tabs.map(function (t, i) {
@@ -2153,12 +2184,23 @@ function drawDisasterCircles() {
         var w = (x.info[k] / mx * 100).toFixed(0);
         var col = k === 'cor' ? (x.info.cor >= 85 ? '#f87171' : x.info.cor >= 80 ? '#fb923c' : '#34d399')
           : k === 'risk' ? riskColor(x.info.risk) : 'linear-gradient(90deg,#3b82f6,#22d3ee)';
-        var v = k === 'cor' ? x.info.cor + '%' : k === 'risk' ? x.info.risk.toFixed(1) : x.info.prem.toFixed(0) + '亿';
-        return '<div class="hbar" data-code="' + x.c + '" style="cursor:pointer">' +
+        var v = k === 'cor' ? x.info.cor + '%' : k === 'risk' ? x.info.risk.toFixed(1) : x.info.prem.toFixed(1) + '亿';
+        // 每个数值可悬停查看该省数据来源（用户要求"必须有依据"）
+        var tip = k === 'prem' && x.info.src
+          ? 'title="' + x.info.src.replace(/"/g, '&quot;') + '"'
+          : (k === 'prem' ? 'title="省级公开口径未获取，暂不参与排名"' : '');
+        var mark = k === 'prem' ? '' : '<span style="font-size:9px;opacity:.6;margin-left:4px">模拟测算</span>';
+        return '<div class="hbar" data-code="' + x.c + '" style="cursor:pointer" ' + tip + '>' +
           '<div class="hbar-n">' + x.n + '</div>' +
           '<div class="hbar-t"><i style="width:' + w + '%;background:' + col + '"></i></div>' +
-          '<div class="hbar-v">' + v + '</div></div>';
+          '<div class="hbar-v">' + v + mark + '</div></div>';
       }).join('');
+      // 保费 tab 下提示数据来源与口径
+      if (k === 'prem') {
+        $('#nat-rank').innerHTML += '<div class="note" style="font-size:10px;margin-top:8px;line-height:1.6">' +
+          '数据口径：<b>2024年省级农业保险保费收入</b>，取自各省财政厅/农业农村厅/统计公报/金融监管局公开披露；' +
+          '悬停条目可查看该省具体来源。仅列已核实省份，' + arr.length + ' 个省。</div>';
+      }
       $$('#nat-rank .hbar').forEach(function (el) {
         el.addEventListener('click', function () { pickProvince(el.dataset.code); });
       });
@@ -2207,6 +2249,7 @@ function drawDisasterCircles() {
     renderCountry: renderCountry, renderProvince: renderProvince,
     renderCity: renderCity, renderCounty: renderCounty,
     pickProvince: pickProvince, pickCity: pickCity, pickCounty: pickCounty,
+    showProvinceInfo: showProvinceInfo,
     redraw: redrawCurrent
   };
 })();

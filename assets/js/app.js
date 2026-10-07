@@ -208,11 +208,15 @@
     map.area('base', hb, { fill: 'rgba(59,130,246,.05)', stroke: 'rgba(96,165,250,.4)', strokeWidth: 1.2 });
 
     renderUWParcels('421127');
+    // 县列表：整行可点，点击即在该县重绘地块并联动右栏
+    // （原文案"点击下钻"是静态字样、无指引性，改为明确动作提示）
     $('#uw-counties').innerHTML = GEO.counties.map(function (c) {
-      return '<div class="row" data-cd="' + c.c + '"><div class="row-h">' +
+      return '<div class="row" data-cd="' + c.c + '" title="点击查看' + c.n + '地块风险统计">' +
+        '<div class="row-h">' +
         '<div class="row-t">' + c.n + '</div>' +
         '<span class="tag tag-blue">重点县</span></div>' +
-        '<div class="row-m"><span>adcode <b>' + c.c + '</b></span><span>点击下钻</span></div></div>';
+        '<div class="row-m"><span>adcode <b>' + c.c + '</b></span>' +
+        '<span style="color:var(--brand);font-weight:600">▸ 点击查看地块 ›</span></div></div>';
     }).join('');
     $$('#uw-counties .row').forEach(function (el) {
       el.addEventListener('click', function () { renderUWParcels(el.dataset.cd); syncUW(el.dataset.cd); });
