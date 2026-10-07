@@ -909,6 +909,19 @@
     return f ? f.n : null;
   }
 
+  /* 取某县的**绝对世界坐标**环（用于按 shoelace 算真实多边形面积）。
+     与 countyBox 一样要兼容两种来源：
+       1) KB（省级县界文件）→ 相对坐标，必须经 absKB 加回 b[0]/b[1]
+       2) CF（乡镇数据聚合的县）→ rings 已是绝对坐标
+     ⚠️ 别把相对坐标当绝对坐标去算面积 —— 结果会差出bbox 的量级。 */
+  function countyRings(code) {
+    var k = KB[String(code)];
+    if (k && k.r) return absKB(k);
+    var f = CF[String(code)];
+    if (f && f.rings) return f.rings;
+    return null;
+  }
+
   /* ---------- 乡镇级下钻 ----------
      进入某县后把真实乡镇界叠加到县界之下：
      · 填色按当前遥感专题的确定性模拟值（与栅格同一色带）
@@ -1394,7 +1407,27 @@
     var lat1 = G.yToLat(kb[3]), lon1 = G.xToLng(kb[2]);
     var wkm = Math.abs(lon1 - lon0) * 111.32 * Math.cos(lat0 * Math.PI / 180);
     var hkm = Math.abs(lat1 - lat0) * 110.57;
-    var area = wkm * hkm * 10000;              // 亩≈ km²×1500，此处用 km² 陈述
+    // ⚠️ 原式 `wkm * hkm * 10000` 是错的：wkm/hkm 本身已是 km，
+    //    相乘即 km²，再乘 10000 把东西湖区算成 858 万 km²（实际约 836 km²）。
+    //    且这是**外接矩形**面积（bbox 宽×高），非多边形面积，须如实标注。
+    var area = wkm * hkm;
+    // 用 shoelace 算真实多边形面积（比 bbox 矩形更接近实际），
+    // 无边界数据时退回 bbox 矩形值。
+    var areaPoly = null;
+    try {
+      var rings2 = countyRings(code);
+      if (rings2 && rings2.length) {
+        var acc = 0;
+        for (var ri = 0; ri < rings2.length; ri++) {
+          var rr = rings2[ri];
+          for (var k2 = 0, j2 = rr.length - 1; k2 < rr.length; j2 = k2++) {
+            acc += rr[j2][0] * rr[k2][1] - rr[k2][0] * rr[j2][1];
+          }
+        }
+        areaPoly = Math.abs(acc / 2) / 1e6;      // m² → km²
+      }
+    } catch (e) { }
+    var areaShown = areaPoly || area;
     var v = NAT.topicValue(N.activeLayer, k.c);
     var st = N.activeStats;
     var code = k.c != null ? k.c : N.curCounty;
@@ -1409,7 +1442,8 @@
       '<div class="kv"><span>行政区划代码</span><b>' + code + '</b></div>' +
       '<div class="kv"><span>经纬度范围</span><b>' + lon0.toFixed(2) + '~' + lon1.toFixed(2) + '°E, ' + lat0.toFixed(2) + '~' + lat1.toFixed(2) + '°N</b></div>' +
       '<div class="kv"><span>幅员跨度</span><b>' + wkm.toFixed(0) + ' × ' + hkm.toFixed(0) + ' km</b></div>' +
-      '<div class="kv"><span>区域概面积</span><b>' + area.toFixed(0) + ' km²</b></div>' +
+      '<div class="kv"><span>' + (areaPoly ? '县域面积（实测多边形）' : '区域概面积（外接矩形）') +
+        '</span><b>' + areaShown.toFixed(0) + ' km²</b></div>' +
       '<div class="dt-sub">' + (isReal ? '真实卫星反演 · NDVI 长势' : '当前遥感专题（模拟值场）') + '</div>' +
       (isReal
         ? '<div class="kv"><span>NDVI 均值</span><b>' + rec.ndvi.toFixed(3) + '</b></div>' +
