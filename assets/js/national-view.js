@@ -316,6 +316,22 @@
     cover: [{ v: .08, c: [38, 62, 96] }, { v: .45, c: [52, 116, 178] }, { v: 1, c: [126, 196, 238] }],
     disaster: [{ v: .10, c: [70, 76, 96] }, { v: .45, c: [208, 148, 62] }, { v: 1, c: [236, 92, 78] }]
   };
+  /* ---------- 行政边界描边配色（可读性改造） ----------
+     ⚠️ 改造原因（用户反馈"各地区边界太不明显"）：
+     原来 16 处边界描边**全部是白色半透明**（rgba(255,255,255,.9) 左右），
+     在绿色/褐色的遥感影像上几乎不可见 —— 截图里县级市界只能靠文字辨认。
+     → 改为【深色主描边 + 浅色外发光】双层：
+        深色（近黑蓝）在任何影像上都形成对比，
+        外发光保证在深色底图上也不糊。
+     分级：国/省最粗最实，市次之，县/乡镇稍细。 */
+  var EDGE = {
+    prov:   { c: 'rgba(12,22,38,.92)',   glow: 'rgba(255,255,255,.55)', w: 2.0, gw: 4.6 },
+    city:   { c: 'rgba(14,26,44,.88)',   glow: 'rgba(255,255,255,.42)', w: 1.6, gw: 3.8 },
+    county: { c: 'rgba(16,30,50,.84)',   glow: 'rgba(255,255,255,.36)', w: 1.25, gw: 3.0 },
+    town:   { c: 'rgba(18,34,56,.78)',   glow: 'rgba(255,255,255,.30)', w: 1.0, gw: 2.4 },
+    vill:   { c: 'rgba(20,38,62,.70)',   glow: 'rgba(255,255,255,.24)', w: 0.8, gw: 2.0 }
+  };
+
   /* 栅格专题白名单：可生成为「像元影像」的图层。
      ⚠️ 这里决定某专题切换后是「遥感图片」还是「矢量色块」。
         业务属性明显的专题（承保热力 cover / 灾情分布 disaster）刻意保持矢量，
@@ -683,7 +699,7 @@
     var rings = opt.rings || null;
     if (rings && rings.length) {
       RS.overlayRings(MI.host, MI.svg, rings, {
-        stroke: 'rgba(255,255,255,.92)',
+        stroke: EDGE.prov.c,
         width: N.level === 'village' ? 2.2 : (N.level === 'town' ? 2.4 : (N.level === 'county' ? 2.6 : 1.5)),
         dash: (opt.dash || ''), glow: false
       });
@@ -696,7 +712,7 @@
     if (townFaces.length) {
       RS.overlayAreas(MI.host, MI.svg, townFaces, {
         fill: 'rgba(255,255,255,.045)', fillOpacity: 1,
-        stroke: 'rgba(255,255,255,.82)', width: N.level === 'town' ? 1.6 : 1.2
+        stroke: (N.level === 'town' ? EDGE.town : EDGE.city).c, width: (N.level === 'town' ? 1.6 : 1.4)
       });
     }
     // 村面：栅格在业务层之上，村面着色会被影像盖住，
@@ -705,7 +721,7 @@
     if (villFaces.length) {
       RS.overlayAreas(MI.host, MI.svg, villFaces, {
         fill: 'rgba(255,255,255,.03)', fillOpacity: 1,
-        stroke: 'rgba(255,255,255,.66)', width: 0.9
+        stroke: EDGE.vill.c, width: 1.0
       });
     }
     // 面标注（县名/市名）
@@ -892,7 +908,7 @@
     if (kr && kb2) {
       // 真实县界（或由乡镇数据聚合的县面）
       DM.area(MI, { n: k.n, c: code, kind: 'county', r: kr }, {
-        fill: 'rgba(255,255,255,.04)', stroke: 'rgba(255,255,255,.95)', strokeWidth: 1.8
+        fill: 'rgba(255,255,255,.04)', stroke: EDGE.county.c, strokeWidth: 1.7
       });
       DM.fit(MI, kb2);
       $('#nat-title').textContent = name + ' · ' + ((NAT.LAYERS[N.activeLayer] || {}).name || '遥感专题');
@@ -933,7 +949,7 @@
       // 无县界数据（该省未抓取）→ 退化为市级面 + 栅格
       var b = cityObj ? abox(cityObj) : abox(pv);
       DM.area(MI, { n: name, c: code, r: cityObj ? abs(cityObj) : abs(pv) }, {
-        fill: 'rgba(255,255,255,.04)', stroke: 'rgba(255,255,255,.9)', strokeWidth: 1.6
+        fill: 'rgba(255,255,255,.04)', stroke: EDGE.city.c, strokeWidth: 1.5
       });
       DM.fit(MI, b);
       $('#nat-title').textContent = name + ' · 遥感专题';
@@ -1011,7 +1027,7 @@
       var rgb = rgbOf(ramp(stops, v));
       DM.area(MI, { n: o.n, c: cc, kind: 'town', r: rings, _ti: i }, {
         fill: 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',' + (kw ? .46 : .32) + ')',
-        stroke: 'rgba(255,255,255,.9)', strokeWidth: kw ? 1.5 : 1
+        stroke: EDGE.town.c, strokeWidth: kw ? 1.4 : 1.05
       });
     });
     // 标注（描边层 z=6，避免被栅格盖住）
@@ -1067,7 +1083,7 @@
     // 否则每次进乡镇都飞回全县视野，等于没下钻。
     var bx = ringBBox(rings) || tbox(tf);
     DM.area(MI, { n: o.n, c: cc, kind: 'town', r: rings },
-      { fill: 'rgba(255,255,255,.05)', stroke: 'rgba(255,255,255,.95)', strokeWidth: 1.6 });
+      { fill: 'rgba(255,255,255,.05)', stroke: EDGE.county.c, strokeWidth: 1.5 });
     DM.fit(MI, bx);
     $('#nat-title').textContent = o.n + ' · ' + ((NAT.LAYERS[N.activeLayer] || {}).name || '遥感专题');
     $('#nat-scope').textContent = (pv ? pv.n + ' / ' : '') + (cityObj ? cityObj.n + ' / ' : '') + k.n + ' / ' + o.n;
@@ -1105,7 +1121,7 @@
         var vo = list[vi];
         DM.area(MI, { n: vo.n, c: code0, kind: 'vill', r: rings,
           _vi: vi, _vk: key, _ti: tiIdx },
-          { fill: 'rgba(255,255,255,.10)', stroke: 'rgba(255,255,255,.72)', strokeWidth: 0.9 });
+          { fill: 'rgba(255,255,255,.10)', stroke: EDGE.town.c, strokeWidth: 1.05 });
         n++;
       }
       return n;
@@ -1169,7 +1185,7 @@
     var bx = ringBBox(rings);
     if (!bx) return;
     DM.area(MI, { n: vo.n, c: cc, kind: 'vill', r: rings },
-      { fill: 'rgba(255,255,255,.05)', stroke: 'rgba(255,255,255,.95)', strokeWidth: 1.5 });
+      { fill: 'rgba(255,255,255,.05)', stroke: EDGE.county.c, strokeWidth: 1.4 });
     DM.fit(MI, bx);
     $('#nat-title').textContent = vo.n + ' · ' + ((NAT.LAYERS[N.activeLayer] || {}).name || '遥感专题');
     $('#nat-scope').textContent = (pv ? pv.n + ' / ' : '') + (cityObj ? cityObj.n + ' / ' : '')
@@ -1217,6 +1233,9 @@
 
   /* ---------- 市级下钻 ---------- */
   function renderCity(pv, cityObj) {
+    // 返回上级时收起下级列表（避免面板跨层级残留）
+    var _pk = document.getElementById('nat-picker'); if (_pk) _pk.style.display = 'none';
+
     // 清掉上一级遗留的灾点圈（risk 层）
     DM.clearLayer(MI, 'risk');
     N.level = 'city'; N.curCity = cityObj.c; N.curCounty = null; N.curTown = null;
@@ -1325,7 +1344,7 @@
       var rgb = rgbOf(ramp(stops, v));
       DM.area(MI, { n: f.n, c: f.c || c, kind: 'county', r: f.rings }, {
         fill: 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',.62)',
-        stroke: 'rgba(255,255,255,.85)', strokeWidth: 1.1
+        stroke: EDGE.vill.c, strokeWidth: 1.05
       });
       var ct = G.polyCentroid(f.rings);
       if (st && st._vw > 620) {
@@ -1370,7 +1389,7 @@
     var rgb = rgbOf(ramp(stops, v));
     DM.area(MI, { n: cityObj.n, c: cityObj.c, kind: 'city', r: abs(cityObj) }, {
       fill: 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',.62)',
-      stroke: 'rgba(255,255,255,.9)', strokeWidth: 1.5
+      stroke: EDGE.county.c, strokeWidth: 1.4
     });
     var ct = G.polyCentroid(abs(cityObj));
     var px = st.toPx(ct[0], ct[1]);
@@ -1408,7 +1427,7 @@
       var rgb = rgbOf(col);
       DM.area(MI, { n: k.n, c: c, kind: 'county', r: absKB(k) }, {
         fill: 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',.66)',
-        stroke: 'rgba(255,255,255,.88)', strokeWidth: 1.2
+        stroke: EDGE.town.c, strokeWidth: 1.2
       });
       if (st && st._vw > 620) {
         var ct = G.polyCentroid(absKB(k));
@@ -1468,6 +1487,84 @@
     clearTimeout(el._t1); clearTimeout(el._t2);
     el._t1 = setTimeout(function () { el.style.opacity = '0'; }, 5200);
     el._t2 = setTimeout(function () { el.style.display = 'none'; }, 5700);
+    renderPicker(k);
+  }
+
+  /* ---------- 下级行政区列表面板（可点击） ----------
+     解决什么问题（用户反馈"还是点不到乡镇级"）：
+       大兴安岭这类地区，下辖县**地理上彼此分散、中间有大片空白**
+       （漠河/呼玛/塔河三县互不相邻），用户在地图上很难瞄准目标，
+       于是"看到文字标注却点不到"。
+     → 提供一个**文字列表入口**，不必在地图上盲点。
+       点列表项 = 触发与点击地图面完全相同的下钻逻辑。 */
+  function renderPicker(k) {
+    var host = $('#nat-picker');
+    if (!host) {
+      host = document.createElement('div');
+      host.id = 'nat-picker';
+      host.style.cssText = 'position:absolute;left:10px;bottom:34px;z-index:12;' +
+        'max-width:250px;max-height:44%;overflow:auto;display:none;' +
+        'background:rgba(12,20,32,.86);border:1px solid rgba(120,170,220,.28);' +
+        'border-radius:8px;padding:8px 10px;backdrop-filter:blur(3px);' +
+        'box-shadow:0 6px 18px rgba(0,0,0,.4)';
+      var mw = $('#nat-map'); if (mw) mw.appendChild(host);
+    }
+    var code = k.c != null ? k.c : N.curCounty;
+    var items = [], title = '', sub = '';
+    // 乡镇级
+    var tf = T[String(code)];
+    if (tf && tf.t && tf.t.length) {
+      title = k.n + ' · 下辖 ' + tf.t.length + ' 个乡镇/街道';
+      for (var i = 0; i < tf.t.length; i++) {
+        items.push({ label: tf.t[i].n, act: 'town', ti: i, cc: code });
+      }
+      sub = '点击列表项直接下钻，或在地图上点乡镇面';
+    } else {
+      // 没有乡镇数据 → 列出同市其他县
+      var city = N.curCity || (k.c ? k.c.slice(0, 4) + '00' : null);
+      var cf = city ? CF[String(city)] : null;
+      var ks = cf && cf.rings ? Object.keys(cf) : [];
+      if (!ks.length && KB[String(code)]) { ks = []; }
+      if (ks.length) {
+        title = k.n + ' · 本市共 ' + ks.length + ' 个县区';
+        for (var j = 0; j < ks.length; j++) {
+          if (ks[j] === String(code)) continue;
+          items.push({ label: countyName(ks[j]) || ks[j], act: 'county', cc: ks[j] });
+        }
+        sub = '本县暂无乡镇数据，可从下方县区继续下钻';
+      }
+    }
+    if (!items.length) { host.style.display = 'none'; return; }
+    var html = '<div style="color:#ffd98a;font-size:11.5px;font-weight:700;margin-bottom:5px">' +
+      title + '</div><div style="display:flex;flex-wrap:wrap;gap:4px">' +
+      items.map(function (it, ix) {
+        return '<button data-i="' + ix + '" style="font:inherit;font-size:11.5px;' +
+          'padding:3px 8px;border-radius:11px;cursor:pointer;' +
+          'border:1px solid rgba(120,170,220,.3);background:rgba(255,255,255,.07);' +
+          'color:#dce8f4">' + it.label + '</button>';
+      }).join('') + '</div>' +
+      '<div style="color:#8aa0b8;font-size:10px;margin-top:5px">' + sub + '</div>';
+    host.innerHTML = html;
+    host.style.display = 'block';
+    // 事件委托
+    if (!host._bound) {
+      host._bound = true;
+      host.addEventListener('click', function (e) {
+        var b = e.target.closest('button[data-i]');
+        if (!b || !host._items) return;
+        var it = host._items[+b.getAttribute('data-i')];
+        if (!it) return;
+        if (it.act === 'town') {
+          var tfi = T[String(it.cc)];
+          if (tfi && tfi.t && tfi.t[it.ti]) {
+            pickTown(it.cc, it.ti);
+          }
+        } else {
+          pickCounty(it.cc);
+        }
+      });
+    }
+    host._items = items;
   }
 
   function showCountyInfo(k, cityObj, pv) {
@@ -1670,20 +1767,26 @@
       },
       onHome: function () { renderCountry(); },
       onTilesFail: function (reason) {
-        // 卫星瓦片未鉴权：明确提示配置 key（矢量底图功能不受影响）
+        /* 瓦片取不到：据实说明，不再指向已停用的腾讯 KEY。
+           ⚠️ 上一版这里写「卫星影像待配置 KEY」，是**过时文案**——
+           底图早已换成 Esri World Imagery（免 KEY），腾讯 SDK 只在无有效
+           key 时才加载且必然鉴权失败。实测瓦片 48/48 全部正常，
+           但文案让用户以为"新疆/黑龙江没影像"，属误导。*/
         N.tilesOk = false;
-        setEngine(false, '矢量底图 · 卫星影像待配置 KEY');
+        setEngine(false, '矢量底图 · 卫星影像瓦片加载失败');
         showKeyHint(reason);
       },
       onTilesOk: function () {
         N.tilesOk = true;
-        setEngine(true, '卫星影像底图 · 腾讯位置服务');
+        // 数据源据实标注：Esri World Imagery（免 KEY），不冒称腾讯
+        setEngine(true, '卫星影像底图 · Esri World Imagery');
         var el = $('#nat-keyhint'); if (el) el.style.display = 'none';
       },
       onBaseChange: function (on) {
         N.satOn = on;
-        if (on && N.tilesOk === false) { setEngine(false, '矢量底图 · 卫星影像待配置 KEY'); showKeyHint(); }
-        else setEngine(true, on ? '卫星影像底图 · 腾讯位置服务' : '矢量底图 · 腾讯位置服务');
+        if (on && N.tilesOk === false) { setEngine(false, '矢量底图 · 卫星影像瓦片加载失败'); showKeyHint(); }
+        else if (on) setEngine(true, '卫星影像底图 · Esri World Imagery');
+        else setEngine(true, '矢量底图 · Esri World Imagery');
       }
     });
     MI.svg.onViewChange = null;
@@ -1715,7 +1818,13 @@
     var back = $('#nat-back');
     if (back) back.addEventListener('click', function () { renderCountry(); });
 
-    SAT.loadSDK(function (ok) { if (!ok) setEngine(false, '矢量底图（卫星 SDK 未加载）'); });
+    /* 腾讯 SDK 仅作为「有有效 key 时」的备用底图：
+       无 key 时 sat-map.js 会直接跳过加载（省 40 次无效请求）。
+       底图主力是免 KEY 的 Esri World Imagery，
+       因此这里**不因腾讯 SDK 未加载而报故障** —— 否则用户会误以为没有卫星图。*/
+    SAT.loadSDK(function (ok) {
+      if (!ok && !RS) setEngine(false, '矢量底图（卫星影像不可用）');
+    });
     // 等容器就绪后再首屏渲染（避免 fit 因尺寸为 0 而空白）
     window.__NAT_VIEW__.renderCountry = renderCountry;
     renderWhenReady(window.__NAT_VIEW__, function () { if (!N.ready || !document.querySelectorAll('#nat-map path.gs-area').length) renderCountry(); },
@@ -1734,8 +1843,12 @@
     }
     var hasKey = (window.__APP_CONFIG__ && window.__APP_CONFIG__.TMAP_KEY) || '';
     el.innerHTML = hasKey
-      ? '<b>卫星影像未出图</b><span>当前 KEY 未通过鉴权或额度受限，请到腾讯位置服务控制台核查。下方为矢量底图，全部功能正常可用。</span>'
-      : '<b>卫星底图需配置 KEY</b><span>卫星影像为腾讯位置服务在线底图，需申请 KEY 后填入 <code>index.html</code> 的 <code>__APP_CONFIG__.TMAP_KEY</code>（申请：lbs.qq.com/dev/console/key/manager）。当前显示矢量底图，全部功能不受影响。</span>';
+      ? '<b>卫星影像瓦片加载失败</b><span>本次视野内的 Esri 瓦片未取到（网络波动或该区域无影像）。当前显示矢量底图，矢量边界与全部业务功能正常。可点击「底图」切换重试。</span>'
+      /* ⚠️ 原文案是「卫星底图需配置 KEY」，已过时 ——
+         底图主力是**免 KEY 的 Esri World Imagery**，腾讯位置服务仅在
+         填了 TMAP_KEY 时才作为备用加载。写「待配置 KEY」会让用户误以为
+         新疆/黑龙江等地没有卫星影像（实测这些地区瓦片 48/48 正常）。 */
+      : '<b>卫星底图说明</b><span>卫星影像使用 <b>Esri World Imagery</b>（免 KEY，全球覆盖）。若需接入境内持证影像源（天地图／高德／腾讯位置服务），可在 <code>index.html</code> 的 <code>__APP_CONFIG__.TMAP_KEY</code> 填写密钥作为备用底图。</span>';
     el.style.display = 'flex';
     el.style.opacity = '1';
     setTimeout(function () { el.style.opacity = '0'; }, 11000);
@@ -1744,6 +1857,9 @@
 
   /* ---------- 全国 ---------- */
   function renderCountry() {
+    // 返回上级时收起下级列表（避免面板跨层级残留）
+    var _pk = document.getElementById('nat-picker'); if (_pk) _pk.style.display = 'none';
+
     // 切换层级时清掉上一级遗留的灾点圈（risk 层）
     if (MI) DM.clearLayer(MI, 'risk');
     N.level = 'country'; N.curProvince = null; N.curCounty = null; N.curTown = null;
@@ -1774,7 +1890,7 @@
       var rgb = rgbOf(c);
       DM.area(MI, { n: p.n, c: p.c, kind: 'prov', r: abs(p) }, {
         fill: 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',.55)',
-        stroke: 'rgba(255,255,255,.9)', strokeWidth: 1.4
+        stroke: EDGE.city.c, strokeWidth: 1.3
       });
       var b = abox(p);
       bbox = bbox ? [Math.min(bbox[0], b[0]), Math.min(bbox[1], b[1]), Math.max(bbox[2], b[2]), Math.max(bbox[3], b[3])] : b.slice();
@@ -1858,6 +1974,9 @@ function drawDisasterCircles() {
 
   /* ---------- 省级下钻 ---------- */
   function renderProvince(pcode) {
+    // 返回上级时收起下级列表（避免面板跨层级残留）
+    var _pk = document.getElementById('nat-picker'); if (_pk) _pk.style.display = 'none';
+
     var pv = GP.provinces.filter(function (p) { return p.c == pcode; })[0];
     if (!pv) return;
     var meta = CITY_IDX.filter(function (x) { return x.p == pcode; })[0];
@@ -1983,7 +2102,7 @@ function drawDisasterCircles() {
       var rgb = rgbOf(ramp(stops, v));
       DM.area(MI, { n: f.n, c: f.c || code, kind: 'county', r: f.rings }, {
         fill: 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',.60)',
-        stroke: 'rgba(255,255,255,.82)', strokeWidth: 1
+        stroke: EDGE.city.c, strokeWidth: 1.1
       });
       if (st && st._vw > 620) {
         var ct = G.polyCentroid(f.rings);
@@ -2044,7 +2163,7 @@ function drawDisasterCircles() {
     var rgb = rgbOf(riskColor(info.risk));
     DM.area(MI, { n: pv.n, c: pv.c, r: abs(pv) }, {
       fill: 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',.58)',
-      stroke: 'rgba(255,255,255,.92)', strokeWidth: 1.8
+      stroke: EDGE.prov.c, strokeWidth: 1.8
     });
     var ct = G.polyCentroid(abs(pv));
     if (st && st._vw > 620) {
@@ -2083,7 +2202,7 @@ function drawDisasterCircles() {
       var rgb = rgbOf(col);
       DM.area(MI, { n: c.n, c: c.c, kind: 'city', r: abs(c) }, {
         fill: 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',.62)',
-        stroke: 'rgba(255,255,255,.85)', strokeWidth: 1.1
+        stroke: EDGE.vill.c, strokeWidth: 1.05
       });
       if (st && st._vw > 620) {
         var ct = G.polyCentroid(abs(c));
