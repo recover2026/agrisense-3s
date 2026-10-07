@@ -1985,6 +1985,9 @@ function drawDisasterCircles() {
       ['行政区域', p.n], ['行政区划代码', p.c],
       ['耕地面积（参考值）', fmt(info.farm || 0, 0) + ' 千亩'],
       ['保费规模（2024公开数据）', premTxt],
+      ['保费同比增速（2024）', (typeof info.growth === 'number')
+        ? (info.growth > 0 ? '+' : '') + info.growth + '%'
+        : '未获取'],
       ['综合成本率（模拟测算）', (info.cor || 0) + '%'],
       ['主导作物', info.crop || '—'],
       ['综合风险指数（模拟测算）', (info.risk || 3).toFixed(1)],
@@ -2172,34 +2175,69 @@ function drawDisasterCircles() {
       return;
     }
 
-    var tabs = [['prem', '保费规模'], ['cor', '综合成本率'], ['risk', '风险指数']];
+    var tabs = [['prem', '保费规模'], ['growth', '保费增速'], ['cor', '综合成本率'], ['risk', '风险指数']];
     $('#nat-rank-tabs').innerHTML = tabs.map(function (t, i) {
       return '<span class="rk-tab' + (i === 0 ? ' on' : '') + '" data-k="' + t[0] + '">' + t[1] + '</span>';
     }).join('');
 
     function paint(k) {
-      var s = arr.slice().sort(function (a, b) { return b.info[k] - a.info[k]; }).slice(0, 12);
-      var mx = s[0] ? s[0].info[k] : 1;
+      // 增速可能为负：排序与条长均按绝对值处理（增长与萎缩都值得关注）
+      var isG = (k === 'growth');
+      var pool = isG ? GP.provinces.map(function (p) {
+        var inf = NAT.provInfo(p.c);
+        return (inf && typeof inf.growth === 'number')
+          ? { n: p.n, c: p.c, info: inf } : null;
+      }).filter(Boolean) : arr;
+      if (!pool.length) {
+        $('#nat-rank').innerHTML = '<div class="note">暂无该指标数据</div>';
+        return;
+      }
+      var s = pool.slice().sort(function (a, b) {
+        return Math.abs(b.info[k]) - Math.abs(a.info[k]);
+      }).slice(0, 12);
+      var mxa = s.reduce(function (m, x) { return Math.max(m, Math.abs(x.info[k])); }, 1);
       $('#nat-rank').innerHTML = s.map(function (x) {
-        var w = (x.info[k] / mx * 100).toFixed(0);
-        var col = k === 'cor' ? (x.info.cor >= 85 ? '#f87171' : x.info.cor >= 80 ? '#fb923c' : '#34d399')
-          : k === 'risk' ? riskColor(x.info.risk) : 'linear-gradient(90deg,#3b82f6,#22d3ee)';
-        var v = k === 'cor' ? x.info.cor + '%' : k === 'risk' ? x.info.risk.toFixed(1) : x.info.prem.toFixed(1) + '亿';
-        // 每个数值可悬停查看该省数据来源（用户要求"必须有依据"）
-        var tip = k === 'prem' && x.info.src
-          ? 'title="' + x.info.src.replace(/"/g, '&quot;') + '"'
-          : (k === 'prem' ? 'title="省级公开口径未获取，暂不参与排名"' : '');
-        var mark = k === 'prem' ? '' : '<span style="font-size:9px;opacity:.6;margin-left:4px">模拟测算</span>';
-        return '<div class="hbar" data-code="' + x.c + '" style="cursor:pointer" ' + tip + '>' +
+        var w = (Math.abs(x.info[k]) / mxa * 100).toFixed(0);
+        var col, v;
+        if (k === 'growth') {
+          col = x.info.growth >= 0
+            ? 'linear-gradient(90deg,#34d399,#22c55e)'
+            : 'linear-gradient(90deg,#f87171,#ef4444)';
+          v = (x.info.growth > 0 ? '+' : '') + x.info.growth + '%';
+        } else if (k === 'cor') {
+          col = x.info.cor >= 85 ? '#f87171' : x.info.cor >= 80 ? '#fb923c' : '#34d399';
+          v = x.info.cor + '%';
+        } else if (k === 'risk') {
+          col = riskColor(x.info.risk);
+          v = x.info.risk.toFixed(1);
+        } else {
+          col = 'linear-gradient(90deg,#3b82f6,#22d3ee)';
+          v = x.info.prem.toFixed(1) + '亿';
+        }
+        // 数据溯源：保费/增速为公开数据（悬停看来源）；COR/风险指数为模拟测算
+        var tip = '';
+        if (k === 'prem') {
+          tip = ' title="' + (x.info.src || '省级公开口径未获取，暂不参与排名').replace(/"/g, '&quot;') + '"';
+        } else if (k === 'growth') {
+          tip = ' title="' + (NAT.GROWTH_SRC || '2024年各地区农业保险保费同比增速').replace(/"/g, '&quot;') + '"';
+        }
+        var mark = (k === 'cor' || k === 'risk')
+          ? '<span style="font-size:9px;opacity:.6;margin-left:4px">模拟测算</span>' : '';
+        return '<div class="hbar" data-code="' + x.c + '" style="cursor:pointer"' + tip + '>' +
           '<div class="hbar-n">' + x.n + '</div>' +
           '<div class="hbar-t"><i style="width:' + w + '%;background:' + col + '"></i></div>' +
           '<div class="hbar-v">' + v + mark + '</div></div>';
       }).join('');
-      // 保费 tab 下提示数据来源与口径
+      // 各 tab 的口径说明（区分公开数据与模拟测算）
       if (k === 'prem') {
         $('#nat-rank').innerHTML += '<div class="note" style="font-size:10px;margin-top:8px;line-height:1.6">' +
           '数据口径：<b>2024年省级农业保险保费收入</b>，取自各省财政厅/农业农村厅/统计公报/金融监管局公开披露；' +
           '悬停条目可查看该省具体来源。仅列已核实省份，' + arr.length + ' 个省。</div>';
+      } else if (k === 'growth') {
+        $('#nat-rank').innerHTML += '<div class="note" style="font-size:10px;margin-top:8px;line-height:1.6">' +
+          '数据口径：<b>2024年各地区农业保险保费同比增速</b>（行业研报整理，覆盖31 地区）。' +
+          '<b>绿色为增长、红色为负增长</b>——负增长省份市场收缩，需重点关注。' +
+          '注：增速为相对值，与下方「保费规模」（绝对值）口径不同，不可直接相加比较。</div>';
       }
       $$('#nat-rank .hbar').forEach(function (el) {
         el.addEventListener('click', function () { pickProvince(el.dataset.code); });
