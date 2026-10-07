@@ -99,23 +99,55 @@
     var w = geo._vw, h = geo._vh;
     if (!w || !h) return;
     var view = geo.view();
-    if (!view || !isFinite(view.lng) || !isFinite(view.lat) || !isFinite(view.zoom)) return;
+    if (!view || !isFinite(view.lng) || !isFinite(view.lat)) return;
     this.ensureAttribution();
-    var z = Math.max(2, Math.min(18, Math.round(view.zoom)));
+    /* 瓦片层级必须由「比例尺」反推，不能用 view().zoom（近似值，
+       大范围视图下会偏大十几级，导致瓦片挤在屏幕中央一小块）。
+
+       Web Mercator 在层级 z、纬度 lat 处的地面分辨率：
+         res(z) = 156543.03392 * cos(lat) / 2^z   (米/像素)
+       该层级一块瓦片在屏幕上应占：
+         px = 256 * res(z) * scale
+       要 px=256  ⇒  156543.03392*cos(lat)*scale / 2^z = 1
+       z = log2( 156543.03392 * cos(lat) * scale )
+       ⚠️ 这两处都曾写错：① 少乘 256（z 偏小 8 级）；
+          ② 把「瓦片地面边长」直接当成 res（又差 256 倍）。 */
+    var sc = geo.scale;
+    if (!(sc > 0)) return;
+    var zf = Math.log(156543.03392 * Math.cos(view.lat * Math.PI / 180) * sc) / Math.LN2;
+    var z = Math.max(2, Math.min(18, Math.round(zf)));
+    // 该层级一块瓦片在屏幕上实际应占的像素边长
+    var res = 156543.03392 * Math.cos(view.lat * Math.PI / 180) / Math.pow(2, z);
+    var px = Math.max(1, TILE * res * sc);
+    /* 瓦片是 256px 的图片，放得比 256 大只是模糊放大，不会有新细节。
+       层级已按 px≈256 选过一遍，这里再兜一层：若仍超过 256（例如
+       纬度较高时 cos 项让 px 变大），就升一级把图缩回 256 以内，
+       否则屏幕上会出现瓦片间黑缝（实测 414px 瓦片拼不满）。 */
+    var guard = 0;
+    while (px > TILE && z < 18 && guard++ < 6) {
+      z++;
+      res = 156543.03392 * Math.cos(view.lat * Math.PI / 180) / Math.pow(2, z);
+      px = TILE * res * sc;
+    }
     var sig = [this.kind, view.lng.toFixed(4), view.lat.toFixed(4),
-               z, w, h].join('|');
+               z, Math.round(px), w, h].join('|');
     if (sig === this._sig) return;
     this._sig = sig;
     this.zoom = z;
+    this.px = px;
 
     this.destroy();
 
     var n = Math.pow(2, z);
-    var tx0 = lngToTileX(view.lng, z);
-    var ty0 = latToTileY(view.lat, z);
-    // 需要的瓦片网格范围（256px/瓦片）
-    var nx = Math.ceil(w / TILE) + 2;
-    var ny = Math.ceil(h / TILE) + 2;
+    /* 中心瓦片号要保留小数：视口中心通常落在某块瓦片中间，
+       若先 floor 再按整数网格摆放，整幅底图会整体偏移半个瓦片。 */
+    var tx0 = Math.floor((view.lng + 180) / 360 * n);
+    var ty0 = Math.floor(
+      (0.5 - Math.log((1 + Math.sin(view.lat * Math.PI / 180)) /
+        (1 - Math.sin(view.lat * Math.PI / 180))) / (4 * Math.PI)) * n);
+    // 需要的瓦片网格范围（按屏幕上实际边长 px 换算，不是固定 256）
+    var nx = Math.ceil(w / px) + 2;
+    var ny = Math.ceil(h / px) + 2;
     var cnt = 0;
     for (var dy = -Math.floor(ny / 2); dy <= Math.ceil(ny / 2); dy++) {
       for (var dx = -Math.floor(nx / 2); dx <= Math.ceil(nx / 2); dx++) {
@@ -127,7 +159,18 @@
         var lat1 = Math.atan(Math.sinh(Math.PI * (1 - 2 * Y / n))) * 180 / Math.PI;
         var wx0 = lon0 / 180 * EARTH;
         var wy1 = Math.log(Math.tan(Math.PI / 4 + lat1 * Math.PI / 360)) / Math.PI * EARTH;
+        // 右/下边界的世界坐标：用来按「这块瓦片自己的投影宽度」定尺寸。
+        // 墨卡托比例随纬度变化，用一个全局常量 px 去拼所有行会在
+        // 高纬度处留下横向黑缝（实测每行之间都有间隙）。
+        var lon1 = (X + 1) / n * 360 - 180;
+        var lat2 = Math.atan(Math.sinh(Math.PI * (1 - 2 * (Y + 1) / n))) * 180 / Math.PI;
+        var wx1 = lon1 / 180 * EARTH;
+        var wy2 = Math.log(Math.tan(Math.PI / 4 + lat2 * Math.PI / 360)) / Math.PI * EARTH;
         var sp = geo.toScreen(wx0, wy1);
+        var spR = geo.toScreen(wx1, wy1);
+        var spB = geo.toScreen(wx0, wy2);
+        var tw = Math.max(1, Math.abs(spR.x - sp.x));
+        var th = Math.max(1, Math.abs(spB.y - sp.y));
         var key = z + '/' + X + '/' + Y;
         var img;
         if (tileCache[key]) {
@@ -145,8 +188,10 @@
         img.style.position = 'absolute';
         img.style.left = Math.round(sp.x) + 'px';
         img.style.top = Math.round(sp.y) + 'px';
-        img.style.width = TILE + 'px';
-        img.style.height = TILE + 'px';
+        /* 每块瓦片按自身投影宽度铺开，并向外扩 1px 压掉
+           取整与浮点误差造成的接缝（相邻块各让 1px，重叠不会有缝）。 */
+        img.style.width = (tw + 1) + 'px';
+        img.style.height = (th + 1) + 'px';
         img.style.pointerEvents = 'none';
         img.style.userSelect = 'none';
         img.onerror = null;          // 缓存元素复用时不再重复绑定

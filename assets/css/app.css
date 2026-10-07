@@ -598,3 +598,134 @@ body{
 #qual-map{background:
   radial-gradient(900px 600px at 40% 30%,rgba(20,40,66,.5),transparent 65%),
   linear-gradient(180deg,#060d18,#04080f)}
+
+/* ============================================================
+   承保信息上传视图
+   ============================================================ */
+
+/* 步骤条 */
+.uw-steps{display:flex;align-items:center;gap:6px;padding:12px 16px;border-bottom:1px solid var(--line)}
+.uw-step{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--txt-3);opacity:.5;transition:.2s}
+.uw-step b{
+  width:19px;height:19px;border-radius:50%;display:grid;place-items:center;
+  font-size:11px;font-weight:800;background:rgba(120,160,220,.16);color:var(--txt-2);
+}
+.uw-step.on{opacity:1;color:var(--txt-2)}
+.uw-step.on b{background:rgba(52,211,153,.2);color:var(--green)}
+.uw-step.cur{color:#fff}
+.uw-step.cur b{background:var(--brand);color:#0b1424;box-shadow:0 0 0 3px rgba(255,211,90,.18)}
+.uw-step+.uw-step::before{content:"";width:14px;height:1px;background:var(--line-2);margin-right:2px}
+
+/* 拖拽上传区 */
+.uw-drop{
+  border:1.5px dashed var(--line-2);border-radius:12px;padding:26px 14px;text-align:center;
+  cursor:pointer;transition:.18s;background:rgba(120,160,220,.035);
+}
+.uw-drop:hover{border-color:var(--brand);background:rgba(255,211,90,.06)}
+.uw-drop.over{border-color:var(--brand);background:rgba(255,211,90,.11);transform:scale(1.01)}
+.uw-drop-i{font-size:30px;color:var(--brand);line-height:1;margin-bottom:9px}
+.uw-drop-t{font-size:13px;font-weight:700;color:var(--txt)}
+.uw-drop-s{font-size:11px;color:var(--txt-3);margin-top:5px}
+
+.uw-status{margin-top:9px;font-size:11.5px;line-height:1.55;color:var(--txt-3);min-height:16px}
+.uw-status.loading{color:var(--cyan)}
+.uw-status.ok{color:var(--green)}
+.uw-status.err{color:var(--red)}
+
+.uw-privacy{
+  margin-top:11px;padding:10px 11px;border-radius:10px;font-size:11px;line-height:1.65;
+  color:var(--txt-3);background:rgba(52,211,153,.055);border:1px solid rgba(52,211,153,.2);
+}
+.uw-privacy b{color:var(--green)}
+.uw-privacy b:not(:first-child){color:var(--txt)}
+
+.uw-fileinfo{font-size:11.5px;color:var(--txt-2);margin-bottom:9px;word-break:break-all}
+.uw-fileinfo b{color:var(--txt)}
+
+.uw-btns{display:flex;flex-wrap:wrap;gap:7px}
+.uw-btn{
+  padding:7px 12px;border-radius:8px;font-size:11.5px;font-weight:700;cursor:pointer;
+  border:1px solid var(--line-2);background:rgba(120,160,220,.09);color:var(--txt-2);
+  font-family:inherit;transition:.16s;
+}
+.uw-btn:hover{background:rgba(120,160,220,.17);color:var(--txt)}
+.uw-btn.primary{background:var(--brand);border-color:var(--brand);color:#0b1424}
+.uw-btn.primary:hover{background:#ffdf85}
+.uw-btn.danger{border-color:rgba(248,113,113,.35);color:var(--red);background:rgba(248,113,113,.08)}
+.uw-btn.danger:hover{background:rgba(248,113,113,.16)}
+
+.uw-sheet{
+  margin-top:9px;width:100%;padding:6px 8px;border-radius:8px;font-size:11.5px;
+  background:rgba(8,16,30,.9);color:var(--txt-2);border:1px solid var(--line-2);font-family:inherit;
+}
+
+/* 字段映射 */
+.uw-mrow{display:grid;grid-template-columns:96px 1fr;gap:8px;align-items:center;margin-bottom:6px}
+.uw-mn{font-size:11.5px;color:var(--txt-2)}
+.uw-mn i{color:var(--red);font-style:normal;margin-left:2px}
+.uw-mrow.req .uw-mn{color:var(--txt);font-weight:700}
+.uw-ms{
+  padding:5px 7px;border-radius:7px;font-size:11px;background:rgba(8,16,30,.9);
+  color:var(--txt-2);border:1px solid var(--line);font-family:inherit;width:100%;
+}
+
+/* 数据预览表 */
+.uw-pvwrap{margin-top:8px;overflow:auto;max-height:260px;border:1px solid var(--line);border-radius:9px}
+.uw-pv{border-collapse:collapse;font-size:10.5px;width:100%;white-space:nowrap}
+.uw-pv th{
+  position:sticky;top:0;background:var(--panel-solid);color:var(--txt-2);font-weight:700;
+  padding:5px 7px;text-align:left;border-bottom:1px solid var(--line-2);
+}
+.uw-pv th.mapped{color:var(--brand);background:rgba(255,211,90,.1)}
+.uw-pv td{padding:4px 7px;color:var(--txt-3);border-bottom:1px solid rgba(120,160,220,.07)}
+.uw-pv tbody tr:hover td{background:rgba(120,160,220,.05)}
+
+.uw-empty-tip{font-size:11.5px;color:var(--txt-3);padding:8px 0}
+
+.uw-bad{
+  margin-top:11px;padding:9px 10px;border-radius:9px;font-size:11px;line-height:1.6;
+  background:rgba(248,113,113,.07);border:1px solid rgba(248,113,113,.24);
+}
+.uw-badtip{color:var(--red);margin-bottom:6px}
+.uw-badlist{display:flex;flex-wrap:wrap;gap:5px}
+
+/* 明细表 */
+.uw-tblwrap{max-height:420px;overflow:auto;border:1px solid var(--line);border-radius:9px}
+.uw-tblwrap .table{margin:0;font-size:11px}
+.uw-tblwrap .table th{position:sticky;top:0;background:var(--panel-solid);z-index:2}
+.uw-tblwrap .table td{white-space:nowrap}
+
+/* 图例 */
+.uw-legend{
+  position:absolute;left:14px;bottom:14px;z-index:7;padding:10px 12px;border-radius:11px;
+  background:rgba(8,16,30,.86);border:1px solid var(--line);backdrop-filter:blur(9px);
+  font-size:11px;color:var(--txt-2);display:flex;flex-direction:column;gap:5px;
+}
+.ql-row{display:flex;align-items:center;gap:7px;white-space:nowrap}
+.ql-sw{width:13px;height:13px;border-radius:3px;flex:0 0 auto;display:inline-block}
+
+/* ============================================================
+   承保信息地图的卫星底图叠放
+   ------------------------------------------------------------
+   Esri 瓦片是 <img>，直接 append 到 #uw-map 里，而 GeoCanvas 的
+   <svg> 默认 position:static —— 结果 svg 排在 img 之前，
+   且 svg 内 .gs-bg 是不透明填充，整片盖住底图（实测只露出
+   加载成功的那一两块瓦片）。
+   修法：给宿主加 .has-basemap，同时
+     ① svg 提升为 absolute + z-index 1（压在瓦片之上）
+     ② 清掉 .gs-bg 的不透明填充，让瓦片透出来
+   ⚠️ z-index 只能取整数，小数会被浏览器取整为 0 而失效。
+   ============================================================ */
+#uw-map.has-basemap{background:none !important}
+#uw-map.has-basemap .gs-map{
+  background:transparent !important;background-image:none !important;
+}
+#uw-map.has-basemap .gs-svg{
+  position:absolute;inset:0;z-index:1;
+}
+#uw-map.has-basemap .gs-bg{fill:transparent !important}
+/* 底图瓦片在最底层 */
+#uw-map .esri-imagery{position:absolute;inset:0;z-index:0;pointer-events:none;overflow:hidden}
+#uw-map .esri-imagery img{position:absolute;pointer-events:none;user-select:none}
+/* 控件与比例尺要在底图之上 */
+#uw-map .gs-ctl,#uw-map .gs-scale,#uw-map .gs-coord{z-index:3}

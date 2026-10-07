@@ -28,6 +28,7 @@
       <div class="tab" data-tab="qual"><i>◈</i><span class="tb">资质资格地图</span><b>真实</b></div>
       <div class="tab on" data-tab="overview"><i>◎</i><span class="tb">总览驾驶舱</span><b>演示版</b></div>
       <div class="tab" data-tab="underwrite"><i>▦</i><span class="tb">承保风险地图</span></div>
+      <div class="tab" data-tab="uw"><i>⇪</i><span class="tb">承保信息上传</span><b>本机</b></div>
       <div class="tab" data-tab="claims"><i>◈</i><span class="tb">理赔定损地图</span></div>
       <div class="tab" data-tab="warn"><i>⚠</i><span class="tb">预警与调度</span><b>5</b></div>
       <div class="tab" data-tab="assess"><i>◐</i><span class="tb">灾情损失评估</span></div>
@@ -201,6 +202,100 @@
       <div class="mapwrap">
         <div id="map-uw"></div>
         <div class="gs-coord" id="uw-coord">—</div>
+      </div>
+    </section>
+
+    <!-- ========== 承保信息上传 ========== -->
+    <section class="view" id="v-uw">
+      <div class="side scroll">
+        <div class="uw-steps">
+          <div class="uw-step" data-step="1"><b>1</b><span>上传文件</span></div>
+          <div class="uw-step" data-step="2"><b>2</b><span>字段映射</span></div>
+          <div class="uw-step" data-step="3"><b>3</b><span>空间化</span></div>
+        </div>
+
+        <div class="sec">
+          <div class="sec-h"><div class="sec-t">承保数据上传</div><div class="sec-x">数据不出本机</div></div>
+          <div id="uw-empty">
+            <div class="uw-drop" id="uw-drop">
+              <div class="uw-drop-i">⇪</div>
+              <div class="uw-drop-t">拖入承保台账，或点击选择文件</div>
+              <div class="uw-drop-s">支持 .xlsx / .csv / .txt　·　全部在本机解析</div>
+            </div>
+            <input type="file" id="uw-file" accept=".xlsx,.csv,.txt" style="display:none">
+            <div class="uw-status" id="uw-status"></div>
+            <div class="uw-privacy">
+              <b>数据安全说明</b><br>
+              承保明细含被保险人身份与保单信息。本平台为纯静态站点，
+              <b>文件全程只在您的浏览器内存中解析，不上传任何服务器</b>；
+              关闭页面数据即消失。若点击「留存到本机」，数据仅写入本机浏览器
+              localStorage，可随时一键清除。
+            </div>
+          </div>
+
+          <div id="uw-main" style="display:none">
+            <div class="uw-fileinfo" id="uw-fileinfo"></div>
+            <div class="uw-btns">
+              <button class="uw-btn primary" id="uw-go">生成承保空间分布</button>
+              <button class="uw-btn" id="uw-export">导出标准化 CSV</button>
+              <button class="uw-btn" id="uw-save">留存到本机</button>
+              <button class="uw-btn danger" id="uw-clear">清除本机数据</button>
+            </div>
+            <select id="uw-sheet" class="uw-sheet"></select>
+          </div>
+        </div>
+
+        <div class="sec" id="uw-mapsec">
+          <div class="sec-h"><div class="sec-t">字段映射</div><div class="sec-x">带 * 为必需</div></div>
+          <div id="uw-map-rows"></div>
+          <div class="sec-t" style="margin-top:12px">数据预览</div>
+          <div class="uw-pvwrap" id="uw-preview"></div>
+        </div>
+
+        <div class="sec" id="uw-sumsec" style="display:none">
+          <div class="sec-h"><div class="sec-t">承保总览</div><div class="sec-x" id="uw-meta"></div></div>
+          <div class="kpis" id="uw-kpi"></div>
+          <div id="uw-bad" style="display:none" class="uw-bad"></div>
+        </div>
+
+        <div class="sec" id="uw-ranksec" style="display:none">
+          <div class="sec-h"><div class="sec-t">县域保费排名</div><div class="sec-x">Top 30</div></div>
+          <div id="uw-rank"></div>
+        </div>
+
+        <div class="sec" id="uw-cropsec" style="display:none">
+          <div class="sec-h"><div class="sec-t">作物构成</div><div class="sec-x">笔数</div></div>
+          <div id="uw-crop"></div>
+        </div>
+
+        <div class="sec" id="uw-imps2" style="display:none">
+          <div class="sec-h"><div class="sec-t">在监灾点影响分析</div><div class="sec-x">灾点省份 × 我司承保</div></div>
+          <div class="list" id="uw-impact"></div>
+          <div class="note" style="margin-top:9px">按在监灾点所影响的省份，与已上传承保数据求交，得出受影响保单数、农户数与保费规模。灾点及其影响省份为平台在监模拟数据，粒度到省，不作县级落区判定。</div>
+        </div>
+
+        <div class="sec" id="uw-tblsec" style="display:none">
+          <div class="sec-h"><div class="sec-t">承保明细</div><div class="sec-x">前 300 条 · 姓名已脱敏</div></div>
+          <div class="uw-tblwrap">
+            <table class="table" id="uw-table"><thead></thead><tbody></tbody></table>
+          </div>
+        </div>
+      </div>
+
+      <div class="mapwrap">
+        <div id="uw-map"></div>
+        <div class="gs-coord" id="uw-coord">—</div>
+        <div class="nat-hud">
+          <div class="nat-title">我司承保空间分布</div>
+          <div class="nat-meta"><span class="nat-scope" id="uw-mapinfo">尚未上传数据</span></div>
+        </div>
+        <div class="uw-legend">
+          <div class="ql-row"><span class="ql-sw" style="background:#38bdf8"></span>保费低</div>
+          <div class="ql-row"><span class="ql-sw" style="background:#2dd4bf"></span>中</div>
+          <div class="ql-row"><span class="ql-sw" style="background:#facc15"></span>较高</div>
+          <div class="ql-row"><span class="ql-sw" style="background:#fb7185"></span>最高</div>
+          <div class="ql-row"><span class="ql-sw" style="background:#fde68a;border-radius:50%"></span>有精确坐标的保单</div>
+        </div>
       </div>
     </section>
 
@@ -411,6 +506,11 @@ window.__checkMapKey = function () {
 <script src="assets/js/raster-engine.js" defer></script>
 <script src="assets/js/national-view.js" defer></script>
 <script src="assets/js/qual-view.js" defer></script>
+<!-- 承保信息：本地解析引擎 + 上传视图（数据不出本机）
+     全国县级参照索引 geo-county-ref.js（约 240KB）不进首屏，
+     由 uw-view 在首次进入「承保信息」标签时按需加载。 -->
+<script src="assets/js/uw-parser.js" defer></script>
+<script src="assets/js/uw-view.js" defer></script>
 <script src="assets/js/app.js" defer></script>
 </body>
 </html>

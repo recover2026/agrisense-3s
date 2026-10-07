@@ -668,13 +668,19 @@
       built[key] = true;
       var FNS = { overview: buildOverview, underwrite: buildUnderwrite, claims: buildClaims,
                   warn: buildWarn, assess: buildAssess, national: function () { window.__NAT_VIEW__.init(); },
-                  qual: function () { window.__QUAL_VIEW__.init(); } };
+                  qual: function () { window.__QUAL_VIEW__.init(); },
+                  uw: function () { window.__UW_VIEW__.init(); } };
       (FNS[key] || function () { })();
     }
     // 视图已 display:block，容器此时才有真实尺寸 —— 重新测量并重绘
     var MAPS = { overview: 'ovMap', underwrite: 'uwMap', claims: 'clMap', warn: 'wnMap' };
     if (key === 'national' && window.__NAT_VIEW__) { window.__NAT_VIEW__.render(); return; }
     if (key === 'qual' && window.__QUAL_VIEW__) { window.__QUAL_VIEW__.render(); return; }
+    if (key === 'uw' && window.__UW_VIEW__) {
+      // 承保视图已构建过也要重绘：容器从 display:none 恢复后尺寸才真实
+      setTimeout(function () { window.__UW_VIEW__.init(); }, 40);
+      return;
+    }
     var slot = MAPS[key];
     setTimeout(function () {
       var m = slot && st[slot];
@@ -702,7 +708,7 @@
   ].join('　|　') + '</div>';
 
   var initial = (location.hash || '').replace('#', '');
-  var KEYS = ['national', 'qual', 'overview', 'underwrite', 'claims', 'warn', 'assess'];
+  var KEYS = ['national', 'qual', 'overview', 'underwrite', 'uw', 'claims', 'warn', 'assess'];
   switchTab(KEYS.indexOf(initial) >= 0 ? initial : 'national');
 
   // 暴露给测试
