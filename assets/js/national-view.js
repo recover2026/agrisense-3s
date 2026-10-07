@@ -376,9 +376,28 @@
      取值方式：把该县 8×8 网格按当前视野的世界坐标范围做**双线性插值**，
      因此缩放/平移时连续过渡，不会出现格块跳变；超出网格范围则夹到边缘。
      未覆盖的县/省市视图 → 回退原有确定性模拟值场（并在详情中注明）。 */
-  var S2 = window.__S2__ || null;
+  /* S2 索引懒加载：数据已扩到 391 县（约 234KB），放首屏会拖慢打开。
+     只有进入县级视图才需要它，所以那时再拉。
+     ⚠️ 不能像以前那样在模块加载时 `var S2 = window.__S2__` ——
+        那时数据还没到，会把 null 永久固化下来。改为每次动态读。 */
+  var s2Loading = null;
+  function loadS2(cb) {
+    if (window.__S2__) { if (cb) cb(); return; }
+    if (!s2Loading) {
+      s2Loading = new Promise(function (res) {
+        var s = document.createElement('script');
+        s.src = 'assets/data/s2-index.js';
+        s.onload = function () { res(!!window.__S2__); };
+        s.onerror = function () { console.warn('[nat] S2 索引加载失败，回退模拟值场'); res(false); };
+        document.head.appendChild(s);
+      });
+    }
+    if (cb) s2Loading.then(cb); else return s2Loading;
+  }
+  function s2Data() { return window.__S2__ || null; }
 
   function s2Of(code) {
+    var S2 = s2Data();
     if (!S2 || !S2.c) return null;
     var r = S2.c[String(code)];
     return (r && r.g && r.g.length) ? r : null;
@@ -390,7 +409,8 @@
        其余层级（省市/乡镇/村）→ 明确写"模拟值场"，并说明不代表卫星观测
      绝不出现"遥感专题影像"却不说来源的情况。 */
   function s2Caliber(level, code, townOrVillName) {
-    var M = (S2 && S2.meta) ? S2.meta : null;
+    var SD = s2Data();
+    var M = (SD && SD.meta) ? SD.meta : null;
     if (level === 'county') {
       var r = s2Of(code);
       if (r) {
@@ -903,6 +923,19 @@
 
   /* ---------- 县级下钻：进入某个县，显示大比例尺遥感影像 + 长势 ---------- */
   function renderCounty(pv, cityObj, code) {
+    /* S2 索引懒加载：只有县级视图用得到真实反演网格。
+       首次进入时拉取（约 234KB），拉到后重绘一次把模拟值场换成实测值场；
+       拉取失败或该县无记录则维持模拟值场（界面会如实标注）。 */
+    if (!window.__S2__ && !s2Loading) {
+      loadS2(function () {
+        // 用 redrawCurrent 重绘当前层级：它是既有入口，会按 N.level
+        // 走正确的渲染分支。不要自己拼 renderRaster(opt)，opt 的组装
+        // 分散在各级 render 函数里，重拼容易漏字段。
+        if (N.level === 'county' && N.curCounty === code) {
+          try { redrawCurrent(); } catch (e) { console.warn('[nat] S2 载入后重绘失败', e); }
+        }
+      });
+    }
     // 该县的边界有两条来源：①真实县界数据(KB)；②由乡镇数据聚合(CF)。
     // 新疆等 15 个省没有县界数据，但乡镇数据里有县级归属 → 走 CF。
     var k = KB[String(code)] || (CF[String(code)] ? { n: CF[String(code)].n, c: CF[String(code)].c || code } : null);
