@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>AgriSense 3S · 阳光财险农险遥感地图平台（演示版）</title>
+<meta name="description" content="农险 3S 遥感地图平台演示版：承保风险地图、理赔定损地图、灾害预警调度、灾情损失评估">
+<link rel="stylesheet" href="assets/css/app.css">
+</head>
+<body>
+<div class="app">
+
+  <!-- ========== 顶栏 ========== -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark"></div>
+      <div class="brand-txt">
+        <div class="brand-name">农险 <em>3S 遥感地图平台</em></div>
+        <div class="brand-sub">AgriSense · 承保 · 理赔 · 预警 · 评估</div>
+      </div>
+    </div>
+
+    <nav class="tabs">
+      <div class="tab" data-tab="national"><i>◉</i><span class="tb">全国遥感地图</span><b>卫星</b></div>
+      <div class="tab" data-tab="qual"><i>◈</i><span class="tb">资质资格地图</span><b>真实</b></div>
+      <div class="tab on" data-tab="overview"><i>◎</i><span class="tb">总览驾驶舱</span><b>演示版</b></div>
+      <div class="tab" data-tab="underwrite"><i>▦</i><span class="tb">承保风险地图</span></div>
+      <div class="tab" data-tab="claims"><i>◈</i><span class="tb">理赔定损地图</span></div>
+      <div class="tab" data-tab="warn"><i>⚠</i><span class="tb">预警与调度</span><b>5</b></div>
+      <div class="tab" data-tab="assess"><i>◐</i><span class="tb">灾情损失评估</span></div>
+    </nav>
+
+    <div class="top-right">
+      <div class="pill">演示版</div>
+      <div class="clock"><span id="clock-date">—</span><b id="clock-time">—</b></div>
+    </div>
+  </header>
+
+  <div class="main">
+
+    <!-- ========== 阳光资质资格地图 ========== -->
+    <section class="view" id="v-qual">
+      <div class="side scroll">
+        <div class="sec">
+          <div class="sec-h"><div class="sec-t">经营资质总览</div><div class="sec-x">基准 2026-08</div></div>
+          <div class="kpis" id="qual-kpi"></div>
+        </div>
+        <div class="sec">
+          <div class="sec-h"><div class="sec-t">区县搜索</div><div class="sec-x">输入名称</div></div>
+          <input type="text" id="qual-search" class="search-in" placeholder="如：黄梅 / 黄石 / 洪湖…" autocomplete="off">
+          <div class="list" id="qual-search-res" style="display:none;margin-top:8px"></div>
+        </div>
+        <div class="sec">
+          <div class="sec-h"><div class="sec-t">省域排名</div><div class="sec-x">点击下钻</div></div>
+          <div class="rk-tabs" id="qual-rank-tabs"></div>
+          <div id="qual-rank"></div>
+        </div>
+        <div class="sec">
+          <div class="sec-h"><div class="sec-t">政策性资格类型</div><div class="sec-x">I / J 口径</div></div>
+          <div id="qual-types"></div>
+        </div>
+        <div class="sec">
+          <div class="sec-h"><div class="sec-t">具体落地险种</div><div class="sec-x">Top 10</div></div>
+          <div id="qual-insurers"></div>
+        </div>
+        <div class="sec">
+          <div class="sec-h"><div class="sec-t">业务口径</div></div>
+          <div class="note">
+            <b>农险经营资质</b>：监管红头文件允许经营农业保险的资质，可开展商业性农险。<br>
+            <b>政策性业务资格</b>：参与对应地区政策性农险遴选与展业的硬约束，未入清单地区不得以政策性资格应标。<br><br>
+            政策性资格县区<b>全部同时具备</b>农险经营资质（资格逻辑自洽）。<br><br>
+            <b>数据来源</b>：专家包 08库 11类《01-阳光农险资质与政策性农险资格地区台账》，2026-08-14 内部脱敏数据。
+          </div>
+        </div>
+      </div>
+
+      <div class="mapwrap">
+        <div id="qual-map"></div>
+        <div class="nat-hud">
+          <button class="nat-back" id="qual-back" title="返回全国">‹ 返回全国</button>
+          <div class="nat-title" id="qual-title">全国农险经营资质与政策性资格分布</div>
+          <div class="nat-meta"><span class="nat-scope" id="qual-scope">全国</span> · <span class="engine-ok" id="qual-engine">加载中…</span></div>
+        </div>
+        <div class="qual-legend">
+          <div class="ql-row"><span class="ql-sw" style="background:#ffd35a"></span>政策性为主（占比≥60%）</div>
+          <div class="ql-row"><span class="ql-sw" style="background:#fb923c"></span>政策兼有（30–60%）</div>
+          <div class="ql-row"><span class="ql-sw" style="background:#facc15"></span>政策少量（&lt;30%）</div>
+          <div class="ql-row"><span class="ql-sw" style="background:#3b82f6"></span>仅农险资质</div>
+          <div class="ql-row"><span class="ql-sw" style="background:#384a60"></span>暂无资质</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== 全国遥感地图 ========== -->
+    <section class="view" id="v-national">
+      <div class="side scroll">
+        <div class="sec">
+          <div class="sec-h"><div class="sec-t">遥感专题图层</div><div class="sec-x">点击切换</div></div>
+          <div class="list" id="nat-layers"></div>
+        </div>
+        <div class="sec">
+          <div class="sec-h"><div class="sec-t">图层图例</div><div class="sec-x">分级标准</div></div>
+          <div class="legend" id="nat-legend"></div>
+        </div>
+        <div class="sec">
+          <div class="sec-h"><div class="sec-t" id="nat-growth-t">遥感专题统计</div><div class="sec-x" id="nat-growth-lv">NDVI</div></div>
+          <div id="nat-growth"></div>
+        </div>
+        <div class="sec">
+          <div class="sec-h"><div class="sec-t">全国农险总览</div><div class="sec-x">模拟测算</div></div>
+          <div class="kpis" id="nat-kpi"></div>
+        </div>
+        <div class="sec">
+          <div class="sec-h"><div class="sec-t">省域排名</div><div class="sec-x">点击下钻</div></div>
+          <div class="rk-tabs" id="nat-rank-tabs"></div>
+          <div id="nat-rank"></div>
+        </div>
+        <div class="sec">
+          <div class="sec-h"><div class="sec-t">全国在监灾情</div><div class="sec-x">6 条</div></div>
+          <div class="list" id="nat-disasters"></div>
+        </div>
+      </div>
+
+      <div class="mapwrap">
+        <div id="nat-map"></div>
+        <div class="gs-ctl" id="nat-ctl"></div>
+        <div class="gs-scale"><span class="gs-scale-bar" id="nat-scale-bar" style="display:none"></span><span class="gs-scale-txt" id="nat-scale-txt"></span></div>
+        <div class="gs-coord" id="nat-coord">—</div>
+        <div class="nat-hud">
+          <button class="nat-back" id="nat-back" title="返回上一级">‹ 返回上级</button>
+          <div class="nat-title" id="nat-title">全国农业遥感总览</div>
+          <div class="nat-meta"><span class="nat-scope" id="nat-scope">全国</span> · <span class="engine-ok" id="nat-engine">加载中…</span></div>
+          <div class="nat-crumb" id="nat-crumb"></div>
+        </div>
+        <button class="nat-raster-toggle" id="nat-raster-toggle" title="切换遥感影像 / 纯矢量"><i>◐</i><span>影像</span></button>
+      </div>
+    </section>
+
+    <!-- ========== 总览驾驶舱 ========== -->
+    <section class="view on" id="v-overview">
+      <div class="hero">
+        <div class="hero-inner">
+          <div class="side scroll">
+            <div class="sec">
+              <div class="sec-h"><div class="sec-t">湖北农险经营总览</div><div class="sec-x">模拟测算</div></div>
+              <div class="kpis" id="ov-kpi"></div>
+            </div>
+            <div class="sec">
+              <div class="sec-h"><div class="sec-t">市州保费规模</div><div class="sec-x">亿元</div></div>
+              <div id="ov-rank"></div>
+            </div>
+            <div class="sec">
+              <div class="sec-h"><div class="sec-t">灾种风险构成</div><div class="sec-x">权重</div></div>
+              <div id="ov-hazard"></div>
+            </div>
+            <div class="sec">
+              <div class="sec-h"><div class="sec-t">平台说明</div></div>
+              <div class="note">
+                <b>双核能力架构</b><br>
+                · <b>阳光天眼风险地图</b>：位置智能 + 灾害大数据，承担<b>承保前风险区划与灾前预警</b><br>
+                · <b>向日葵农险平台</b>：3S（遥感·定位·GIS）+ AI + OCR，承担<b>承保验标与 AI 定损</b><br><br>
+                两平台为阳光财险不同产品线，本演示按各自公开能力口径归位，未做能力嫁接。<br><br>
+                <b>数据说明</b>：全部业务指标为模拟测算演示数据。
+              </div>
+            </div>
+          </div>
+
+          <div class="mapwrap">
+            <div id="map-overview"></div>
+            <div class="gs-coord" id="ov-coord">—</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== 承保风险地图 ========== -->
+    <section class="view" id="v-underwrite">
+      <div class="side scroll">
+        <div class="sec">
+          <div class="sec-h"><div class="sec-t">重点县下钻</div><div class="sec-x">点击切换</div></div>
+          <div class="list" id="uw-counties"></div>
+        </div>
+        <div class="sec">
+          <div class="sec-h"><div class="sec-t">地块风险统计</div><div class="sec-x" id="uw-title">—</div></div>
+          <div id="uw-stats"></div>
+        </div>
+        <div class="sec">
+          <div class="sec-h"><div class="sec-t">风险图例</div></div>
+          <div class="legend" id="uw-legend"></div>
+        </div>
+        <div class="sec">
+          <div class="sec-h"><div class="sec-t">承保验标作业流</div></div>
+          <div class="flow" id="uw-flow" style="flex-direction:column"></div>
+          <div class="note" style="margin-top:9px">依据《农业保险遥感技术应用规范》（中国保险行业协会 2025-07-30 发布）设计作业环节。</div>
+        </div>
+      </div>
+
+      <div class="mapwrap">
+        <div id="map-uw"></div>
+        <div class="gs-coord" id="uw-coord">—</div>
+      </div>
+    </section>
+
+    <!-- ========== 理赔定损地图 ========== -->
+    <section class="view" id="v-claims">
+      <div class="side scroll">
+        <div class="sec">
+          <div class="sec-h"><div class="sec-t">定损案件</div><div class="sec-x">模拟测算</div></div>
+          <div class="list" id="cl-counties"></div>
+        </div>
+        <div class="sec">
+          <div class="sec-h"><div class="sec-t">案件概况</div><div class="sec-x" id="cl-title">—</div></div>
+          <div id="cl-stats"></div>
+        </div>
+        <div class="sec">
+          <div class="sec-h"><div class="sec-t">乡镇定损进度</div><div class="sec-x">点击定位</div></div>
+          <div class="list" id="cl-towns"></div>
+        </div>
+        <div class="sec">
+          <div class="sec-h"><div class="sec-t">影像数据源</div></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px" id="cl-img"></div>
+          <div class="note" style="margin-top:9px">高分光学 + 合成孔径雷达多源融合，支撑洪涝全天时监测与灾后快速定损。</div>
+        </div>
+      </div>
+
+      <div class="mapwrap">
+        <div id="map-cl"></div>
+        <div class="gs-coord" id="cl-coord">—</div>
+      </div>
+    </section>
+
+    <!-- ========== 预警调度 ========== -->
+    <section class="view" id="v-warn">
+      <div class="side scroll">
+        <div class="sec">
+          <div class="sec-h"><div class="sec-t">预警任务</div><div class="sec-x">点击查看</div></div>
+          <div class="list" id="wn-list"></div>
+        </div>
+        <div class="sec">
+          <div class="sec-h"><div class="sec-t">对接预警类型</div><div class="sec-x">气象部门口径</div></div>
+          <div class="list" id="wn-types"></div>
+        </div>
+        <div class="sec">
+          <div class="sec-h"><div class="sec-t">预警处置流程</div></div>
+          <div class="flow" id="wn-flow" style="flex-direction:column"></div>
+          <div class="note" style="margin-top:9px">预警落区与承保地块空间叠加，秒级匹配受影响保单；按灾害等级分级推送，并跟踪减损行动形成闭环证据。</div>
+        </div>
+      </div>
+
+      <div class="mapwrap">
+        <div id="map-wn"></div>
+        <div class="gs-coord" id="wn-coord">—</div>
+      </div>
+    </section>
+
+    <!-- ========== 灾情损失评估 ========== -->
+    <section class="view" id="v-assess">
+      <div class="side scroll">
+        <div class="sec">
+          <div class="sec-h"><div class="sec-t">风险评估五维输入</div><div class="sec-x">权重</div></div>
+          <div id="as-dims"></div>
+        </div>
+        <div class="sec">
+          <div class="sec-h"><div class="sec-t">行业公开精度参考</div><div class="sec-x">非本司承诺</div></div>
+          <div class="list" id="as-precision"></div>
+        </div>
+        <div class="sec">
+          <div class="sec-h"><div class="sec-t">适用标准</div></div>
+          <div id="as-std"></div>
+        </div>
+        <div class="sec">
+          <div class="sec-h"><div class="sec-t">合规红线</div></div>
+          <div id="as-comp"></div>
+        </div>
+      </div>
+
+      <div class="hero">
+        <div class="hero-inner">
+          <div class="hero-main">
+            <div class="sec" style="border:none;padding:0 0 4px">
+              <div class="sec-h"><div class="sec-t">重点县灾损评估总览</div><div class="sec-x">模拟测算</div></div>
+              <table class="table" id="as-table">
+                <thead><tr><th>县区</th><th>作物</th><th>灾害</th><th>承保(亩)</th><th>出险(亩)</th><th>损失率</th><th>损失初估</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+
+            <div class="sec" style="border:none;padding:0 0 4px">
+              <div class="sec-h"><div class="sec-t">遥感应用带来的效率改善</div><div class="sec-x">行业实践口径</div></div>
+              <div id="as-cmp"></div>
+              <div class="note" style="margin-top:9px">对比基准为传统人工查勘模式。上述改善幅度引用自同业公开实践数据（湖北水稻遥感项目、平安产险各地实践等），仅说明能力可行性，不代表本司实际达成值。</div>
+            </div>
+
+            <div class="sec" style="border:none;padding:0 0 4px">
+              <div class="sec-h"><div class="sec-t">风险减量业务实证</div></div>
+              <div id="as-case"></div>
+            </div>
+
+            <div class="sec" style="border:none;padding:0">
+              <div class="sec-h"><div class="sec-t">灾情损失评估闭环</div></div>
+              <div class="flow">
+                <div class="fl"><div class="fl-n">01</div><div class="fl-t">灾前预警</div><div class="fl-d">气象预警落区 × 承保地块匹配，锁定受影响保单</div></div>
+                <div class="fl"><div class="fl-n">02</div><div class="fl-t">灾中监测</div><div class="fl-d">卫星与雷达持续跟踪，动态更新受灾范围</div></div>
+                <div class="fl"><div class="fl-n">03</div><div class="fl-t">灾后定损</div><div class="fl-d">AI 解译图斑 + 人工抽核，形成可追溯证据链</div></div>
+                <div class="fl"><div class="fl-n">04</div><div class="fl-t">赔付直达</div><div class="fl-d">定损结果直连理赔流程，压缩赔付时限</div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+
+  <!-- ========== 底部 ========== -->
+  <div class="ticker">
+    <span class="ticker-t">平台动态</span>
+    <div class="ticker-c" id="ticker-c"></div>
+  </div>
+  <div class="disc">
+    <b>⚠ 数据与合规声明</b>
+    <span>本平台为<b style="color:#fed7aa">演示版本</b>，全部承保、赔付、保费、精度指标均为<b style="color:#fed7aa">模拟测算</b>或<b style="color:#fed7aa">行业公开口径引用</b>，不代表阳光财产保险股份有限公司真实经营数据，不构成任何业务承诺。真实产品能力与数据以公司最新报备及内控文件为准。行政边界数据来源：阿里云 DataV.GeoAtlas 公开边界服务。影像底图：默认接入 <b style="color:#fed7aa">Esri World Imagery（境外节点）</b>，<b style="color:#fed7aa">仅限内部演示与方案验证，不得用于出单、定损、定价等对外业务出图</b>；境内业务出图须改用天地图／腾讯位置服务／高德等境内持证服务。主体区分：向日葵农险平台 / 阳光天眼风险地图平台均属阳光财险；与阳光农业相互保险公司为不同法人主体。</span>
+  </div>
+</div>
+
+<!-- 全局详情浮层（唯一实例，跨视图共用） -->
+<div class="detail" id="detail">
+  <div class="dt-h">
+    <div><div class="dt-t" id="dt-title">详情</div><div class="dt-s" id="dt-sub"></div></div>
+    <button class="dt-x" id="dt-close" aria-label="关闭">×</button>
+  </div>
+  <div class="dt-b" id="dt-body"></div>
+</div>
+
+<!-- ========== 地图配置 ==========
+     腾讯位置服务 key 申请入口: https://lbs.qq.com/dev/console/key/manager
+     填入自己的 key 后即可获得稳定的卫星影像底图（建议配域名白名单）
+     留空则使用默认代理模式；若代理不可用会自动降级为内置矢量底图
+-->
+<script>
+(function () {
+  // 腾讯地图 SDK 在 key 鉴权失败时会弹 alert 遮挡地图；
+  // 加载前临时拦截，仅把鉴权告警转为控制台提示，其他弹窗照常
+  var orig = window.alert;
+  window.alert = function (msg) {
+    var s = String(msg || '');
+    if (/鉴权|授权|未授权|KEY|key/i.test(s)) {
+      if (window.console) console.warn('[地图鉴权提示] ' + s);
+      return;
+    }
+    return orig && orig.apply(window, arguments);
+  };
+})();
+</script>
+<!-- 地图合规代理配置
+     在 WorkBuddy 环境中打开时，下列占位符会被运行时替换为本地代理地址，
+     由后端持有 key，前端零 key 暴露，可正常加载腾讯卫星影像。
+     本地双击打开时占位符不生效，将自动使用你在 __APP_CONFIG__ 中填写的自有 key；
+     若未填写则降级为矢量底图，功能不受影响。
+     申请自有 key：https://lbs.qq.com/dev/console/key/manager -->
+<script>
+/* 占位符是否已被运行时替换。直接对未替换的字符串发起 XHR 会抛
+   "Failed to execute 'open' on 'XMLHttpRequest': Invalid URL"，
+   本地双击打开时必然触发 —— 故先校验再决定是否启用代理。*/
+(function () {
+  var raw = 'http://127.0.0.1:__WB_HTTP_PORT__/_TMapService/_wbt/__WB_TMAP_SECRET__';
+  var valid = !/__WB_HTTP_PORT__|__WB_TMAP_SECRET__/.test(raw) && /^https?:\/\//.test(raw);
+  if (valid) {
+    window._TMapSecurityConfig = { serviceHost: raw };
+    window.__WB_TMAP_PROXY__ = { serviceHost: raw };
+  } else {
+    // 未替换：留空，SDK 不走代理，避免非法 URL 异常
+    window._TMapSecurityConfig = {};
+    window.__WB_TMAP_PROXY__ = null;
+  }
+})();
+</script>
+<script>
+window.__APP_CONFIG__ = {
+  TMAP_KEY: ''   // ← 在此填入你在腾讯位置服务申请的 key（申请入口见上方注释）
+};
+// key 自检：打开浏览器控制台执行 __checkMapKey() 可查看鉴权状态
+window.__checkMapKey = function () {
+  var k = (window.__APP_CONFIG__ || {}).TMAP_KEY || '';
+  console.log('TMAP_KEY 已配置:', k ? k.slice(0, 6) + '****' : '（空，使用默认代理）');
+  console.log('申请入口: https://lbs.qq.com/dev/console/key/manager');
+  console.log('提示: 控制台若出现「鉴权失败」，说明 key 无效或未配置，卫星底图将自动降级');
+  return { configured: !!k, provider: (window.SatMap && window.SatMap.state.provider) || 'none' };
+};
+</script>
+<script src="assets/data/geo.js"></script>
+<script src="assets/data/geo-province.js"></script>
+<script src="assets/data/geo-city-index.js"></script>
+<script src="assets/data/sunshine-qualification.js"></script>
+<script src="assets/data/geo-county-index.js"></script>
+<script src="assets/data/geo-town-index.js"></script>
+<!-- 村界可用性索引：省码 -> 已有村界的县数（用于进乡镇时判断能否下钻到村） -->
+<script src="assets/data/geo-vill-prov.js"></script>
+<script src="assets/js/geo-engine.js"></script>
+<script src="assets/js/business-data.js"></script>
+<script src="assets/js/national-data.js"></script>
+<script src="assets/js/sat-map.js"></script>
+<!-- 免费真实卫星影像底图（Esri World Imagery，免 KEY） -->
+<script src="assets/js/esri-imagery.js"></script>
+<script src="assets/js/dual-map.js"></script>
+<script src="assets/js/raster-engine.js"></script>
+<script src="assets/js/national-view.js"></script>
+<script src="assets/js/qual-view.js"></script>
+<script src="assets/js/app.js"></script>
+</body>
+</html>
