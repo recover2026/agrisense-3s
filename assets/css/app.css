@@ -1,5 +1,5 @@
 /* ============================================================
-   AgriSense 3S 农险遥感地图平台 · 样式
+   阳光3S遥感平台 · 样式
    深色专业风格 · PC/手机自适应
    ============================================================ */
 :root{
@@ -47,7 +47,7 @@ body{
 }
 .brand{display:flex;align-items:center;gap:11px;min-width:0}
 /* 向日葵 logo：改为真实 SVG 图片，脱离原纯色方块样式 */
-/* 向日葵农险标准 Logo（盾形·1024×1024 透明底 PNG）
+/* 阳光农险标准 Logo（盾形向日葵·1024×1024 透明底 PNG）
    —— 唯一权威源：~/.workbuddy/plugins/marketplaces/my-experts/plugins/
       agri-insurance-partner/assets/brand/sunshine-agri-sunflower-logo.png
    ⚠️ 禁止再用自绘 SVG 替代（2026-10-07 用户明确要求用真实 Logo）。*/

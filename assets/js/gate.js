@@ -1,5 +1,5 @@
 /* ============================================================
-   向日葵农险 3S 遥感地图平台 · 访问门禁（测试版）
+   阳光3S遥感平台 · 访问门禁（测试版）
    ------------------------------------------------------------
    ⚠️ 安全边界（必须知悉，勿误以为这是真安全）：
    GitHub Pages 是【纯静态托管】，没有服务端，因此本页的"密码"
@@ -56,8 +56,8 @@
       '<div style="max-width:380px;width:calc(100% - 48px);text-align:center">',
       '  <img src="assets/img/sunflower-logo.png" alt="" width="60" height="60"',
       '       style="filter:drop-shadow(0 4px 12px rgba(193,39,45,.45))">',
-      '  <div style="color:#e8f0f8;font-size:19px;font-weight:800;margin:14px 0 4px">',
-      '    向日葵农险 3S 遥感地图平台</div>',
+      '  <div style="color:#e8f0f8;font-size:21px;font-weight:800;margin:14px 0 4px">',
+      '    阳光<span style="color:#ffd98a">3S遥感平台</span></div>',
       '  <div style="color:#ffd98a;font-size:12.5px;letter-spacing:2px;',
       '       border:1px solid rgba(193,39,45,.55);display:inline-block;',
       '       padding:2px 12px;border-radius:999px;margin-bottom:18px">测试版</div>',
