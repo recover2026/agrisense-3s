@@ -342,6 +342,101 @@
     return h % 100000;
   }
 
+  /* ---------- 真实 Sentinel-2 值场（优先于模拟噪声） ----------
+     数据：window.__S2__（由 tools/build_s2_index.py 从 Sentinel-2 L2A 实测反演生成）
+     何时用真实值：
+       · 当前处于县级视图、且该县在 __S2__.c 中有记录
+       · 该记录含 8×8 真实反演网格 g（每格 20×20 像元均值）
+     取值方式：把该县 8×8 网格按当前视野的世界坐标范围做**双线性插值**，
+     因此缩放/平移时连续过渡，不会出现格块跳变；超出网格范围则夹到边缘。
+     未覆盖的县/省市视图 → 回退原有确定性模拟值场（并在详情中注明）。 */
+  var S2 = window.__S2__ || null;
+
+  function s2Of(code) {
+    if (!S2 || !S2.c) return null;
+    var r = S2.c[String(code)];
+    return (r && r.g && r.g.length) ? r : null;
+  }
+
+  /* ---------- 数据口径说明（据实生成，禁止"模拟值场"含糊其辞） ----------
+     规则（对齐用户「每个省/县的规模信息必须准确有依据」的要求）：
+       县级视图且该县有 S2 实测网格 → 写明"真实 Sentinel-2 反演"+日期+云量+指数值
+       其余层级（省市/乡镇/村）→ 明确写"模拟值场"，并说明不代表卫星观测
+     绝不出现"遥感专题影像"却不说来源的情况。 */
+  function s2Caliber(level, code, townOrVillName) {
+    var M = (S2 && S2.meta) ? S2.meta : null;
+    if (level === 'county') {
+      var r = s2Of(code);
+      if (r) {
+        return '<div class="note" style="margin-top:8px"><b>数据口径</b>：本县专题影像为<b>真实卫星反演</b>——' +
+          (M ? M.source : 'Sentinel-2 L2A') + '；时相 ' + (r.date || '—') +
+          '（云量 ' + (r.cloud != null ? r.cloud + '%' : '—') + '）；' +
+          (M ? M.window : '') + '。' +
+          'NDVI=' + (r.ndvi != null ? r.ndvi.toFixed(3) : '—') +
+          'NDWI=' + (r.ndwi != null ? r.ndwi.toFixed(3) : '—') +
+          'NDMI=' + (r.ndmi != null ? r.ndmi.toFixed(3) : '—') +
+          'NDRE=' + (r.ndre != null ? r.ndre.toFixed(3) : '—') + '。</div>';
+      }
+    }
+    var lvlName = level === 'town' ? '乡镇' : (level === 'village' ? '行政村' : '该区域');
+    return '<div class="note warn" style="margin-top:8px"><b>数据口径</b>：' + lvlName + '边界来自公开行政区划边界数据集' +
+      (townOrVillName ? '（' + townOrVillName + '）' : '') + '；但<b>专题影像为模拟值场</b>' +
+      '（按名称确定性生成、同地稳定复现），<b>不代表实际卫星观测</b>。' +
+      '县域级已有真实 Sentinel-2 反演数据。</div>';
+  }
+
+  /* 把某县的 8×8 网格编译成"世界坐标 → 值"的取值器。
+     网格已按县域外接矩形等分，编译时记录该矩形在世界坐标下的范围。 */
+  function makeS2ValueFn(rec, st) {
+    var g = rec.g;
+    var ll = rec.ll || null;   // 县中心经纬度（构建时写入）
+    if (!ll) return null;
+    // 网格的地理跨度：构建时窗口为 ±0.05°，8 格等分 → 每格 0.0125°
+    var half = 0.05, span = half * 2 / g.length;
+    var lon0 = ll[0] - half, lat0 = ll[1] + half;   // 左上角（北纬在上）
+    var E = 20037508.34;
+    var wx0 = lon0 / 180 * E;
+    var wyTop = Math.log(Math.tan(Math.PI / 4 + lat0 * Math.PI / 360)) / Math.PI * E;
+    var cellW = (span / 180) * E;                    // 每格世界 X 宽（米）
+    var cellH = (span * Math.PI / 360) * (E / Math.cos(lat0 * Math.PI / 180)); // 每格世界 Y 高
+    var n = g.length;
+
+    return function (wx, wy) {
+      // → 网格浮点坐标（超出则夹边）
+      var fx = (wx - wx0) / cellW;
+      var fy = (wyTop - wy) / cellH;
+      if (fx < 0) fx = 0; else if (fx > n - 1) fx = n - 1;
+      if (fy < 0) fy = 0; else if (fy > n - 1) fy = n - 1;
+      var i = Math.floor(fx), j = Math.floor(fy);
+      var tx = fx - i, ty = fy - j;
+      if (i > n - 2) i = n - 2;
+      if (j > n - 2) j = n - 2;
+      // 双线性插值，缺值视为邻域可用值
+      var q = function (a, b) {
+        var v = g[a] && g[a][b];
+        return (typeof v === 'number') ? v : null;
+      };
+      var v00 = q(j, i), v01 = q(j, i + 1), v10 = q(j + 1, i), v11 = q(j + 1, i + 1);
+      var vs = [v00, v01, v10, v11].filter(function (v) { return v !== null; });
+      if (!vs.length) return -1;                       // -1 = 无数据（透明）
+      var v0 = (v00 === null || v01 === null) ? (v00 !== null ? v00 : v01) : v00 + (v01 - v00) * tx;
+      var v1 = (v10 === null || v11 === null) ? (v10 !== null ? v10 : v11) : v10 + (v11 - v10) * tx;
+      var v = (v0 === null || v1 === null) ? (v0 !== null ? v0 : v1) : v0 + (v1 - v0) * ty;
+      if (v === null || v === undefined) return -1;
+      // 专题差异：NDVI 直接用；涝渍/干旱等取自不同指数时由调用方传入映射
+      return S2_MAP(rec, v);
+    };
+  }
+
+  /* 把一个「NDVI 实测网格值」映射到当前专题所需的标量。
+     目前实测网格是 NDVI；其余专题在无对应实测指数时，
+     仍以 NDVI 的空间格局做相对表达（并在界面明确标注口径）。
+     若后续补齐 NDWI/NDMI 的分县网格，可在此按 record.ndwi 等做分档换算。 */
+  function S2_MAP(rec, ndviVal) {
+    // NDVI 约定域 [0,1]；实测可能出现负值（水体/裸土），负值统一压到 0
+    return ndviVal < 0 ? 0 : ndviVal;
+  }
+
   /* ---------- 栅格渲染 ---------- */
   function renderRaster(opt) {
     if (!RS || !MI || !MI.svg) return;
@@ -361,6 +456,10 @@
     if (!st._vw || !st._vh) return;
 
     var fn = RS.VALUE_FN[topic] || RS.ndvi;
+    // ★ 真实 Sentinel-2 优先：县级视图且该县有实测网格时，用实测值场
+    var rec = (N.level === 'county') ? s2Of(opt.code) : null;
+    var realFn = rec ? makeS2ValueFn(rec, st) : null;
+    N.s2Active = rec ? rec : null;
     // 遮罩到当前行政边界（setMask 内部投影为像素坐标，逐像元判定）
     RS.setMask(st, (opt.rings && opt.rings.length) ? opt.rings : null);
 
@@ -369,7 +468,7 @@
     RS.render({
       geo: st, topic: topic, stops: stopsFor(layer),
       seed: opt.seed == null ? seedFor(layer, opt.code || 0) : opt.seed,
-      valueFn: function (wx, wy, sd) { return fn(wx, wy, sd); },
+      valueFn: realFn ? realFn : function (wx, wy, sd) { return fn(wx, wy, sd); },
       pixelM: opt.pixelM || 460,
       alpha: opt.alpha == null ? 0.8 : opt.alpha,
       onStats: function (s) { N.lastStats = s; if (opt.onStats) opt.onStats(s); }
@@ -1299,24 +1398,37 @@
     var v = NAT.topicValue(N.activeLayer, k.c);
     var st = N.activeStats;
     var code = k.c != null ? k.c : N.curCounty;
+    var rec = s2Of(code);
+    var M2 = (window.__S2__ && window.__S2__.meta) ? window.__S2__.meta : null;
+    /* 有真实 S2 反演时，专题读数直接用实测值；否则标注为模拟。
+       （绝不再让"遥感专题"显示的其实是模拟值而用户不知情） */
+    var showVal = rec ? rec.ndvi : v;
+    var isReal = !!rec;
     var html =
       '<div class="kv"><span>县区</span><b>' + k.n + '</b></div>' +
       '<div class="kv"><span>行政区划代码</span><b>' + code + '</b></div>' +
       '<div class="kv"><span>经纬度范围</span><b>' + lon0.toFixed(2) + '~' + lon1.toFixed(2) + '°E, ' + lat0.toFixed(2) + '~' + lat1.toFixed(2) + '°N</b></div>' +
       '<div class="kv"><span>幅员跨度</span><b>' + wkm.toFixed(0) + ' × ' + hkm.toFixed(0) + ' km</b></div>' +
       '<div class="kv"><span>区域概面积</span><b>' + area.toFixed(0) + ' km²</b></div>' +
-      '<div class="dt-sub">当前遥感专题</div>' +
-      '<div class="kv"><span>' + ((NAT.LAYERS[N.activeLayer] || {}).name || '长势') + '</span><b>' + (v * 100).toFixed(0) + ' / 100</b></div>' +
-      '<div class="bar"><i style="width:' + (v * 100).toFixed(0) + '%;background:' + ramp(vstopsFor(N.activeLayer), v) + '"></i></div>' +
-      (N.lastStats ? '<div class="kv"><span>像元均值</span><b>' + (N.lastStats.mean * 100).toFixed(1) + '</b></div>' : '') +
+      '<div class="dt-sub">' + (isReal ? '真实卫星反演 · NDVI 长势' : '当前遥感专题（模拟值场）') + '</div>' +
+      (isReal
+        ? '<div class="kv"><span>NDVI 均值</span><b>' + rec.ndvi.toFixed(3) + '</b></div>' +
+          '<div class="bar"><i style="width:' + Math.min(100, rec.ndvi * 100).toFixed(0) + '%;background:' + ramp(vstopsFor('ndvi'), rec.ndvi) + '"></i></div>' +
+          (rec.ndwi != null ? '<div class="kv"><span>NDWI 水体指数</span><b>' + rec.ndwi.toFixed(3) + '</b></div>' : '') +
+          (rec.ndmi != null ? '<div class="kv"><span>NDMI 土壤湿度</span><b>' + rec.ndmi.toFixed(3) + '</b></div>' : '') +
+          (rec.ndre != null ? '<div class="kv"><span>NDRE 水分胁迫</span><b>' + rec.ndre.toFixed(3) + '</b></div>' : '') +
+          '<div class="kv"><span>影像日期 / 云量</span><b>' + (rec.date || '—') + ' · ' +
+            (rec.cloud != null ? rec.cloud + '%' : '—') + '</b></div>' +
+          '<div class="kv"><span>有效像元</span><b>' + (rec.np != null ? rec.np : '—') + '</b></div>'
+        : '<div class="kv"><span>' + ((NAT.LAYERS[N.activeLayer] || {}).name || '长势') + '</span><b>' + (v * 100).toFixed(0) + ' / 100</b></div>' +
+          '<div class="bar"><i style="width:' + (v * 100).toFixed(0) + '%;background:' + ramp(vstopsFor(N.activeLayer), v) + '"></i></div>') +
+      (N.lastStats && !isReal ? '<div class="kv"><span>像元均值</span><b>' + (N.lastStats.mean * 100).toFixed(1) + '</b></div>' : '') +
       (function () {
         var L = NAT.LAYERS[N.activeLayer];
         return L ? '<div class="note" style="margin-top:9px"><b>指标说明</b>：' + L.desc + '<br><b>数据来源</b>：' + L.source + '</div>' : '';
       })() +
-      '<div class="note warn" style="margin-top:8px"><b>数据口径</b>：县界为阿里云 DataV.GeoAtlas 公开行政边界；' +
-      '专题影像为按该县区码确定性生成的模拟值场（同一地区稳定复现），' +
-      '用于演示「' + ((NAT.LAYERS[N.activeLayer] || {}).name || '遥感专题') + '」的影像化渲染，' +
-      '不代表实际卫星观测结果。</div>';
+      '<div class="note" style="margin-top:8px"><b>县界数据</b>：阿里云 DataV.GeoAtlas 公开行政边界。</div>' +
+      s2Caliber('county', code);
     window.__APP__.detail(k.n + ' · 遥感专题详情',
       (pv ? pv.n + ' / ' : '') + (cityObj ? cityObj.n + ' / ' : '') + '行政区划 ' + code,
       html);
@@ -1352,9 +1464,8 @@
         return L ? '<div class="note" style="margin-top:9px"><b>指标说明</b>：' + L.desc + '<br><b>数据来源</b>：' + L.source + '</div>' : '';
       })() +
       '<div class="note warn" style="margin-top:8px"><b>数据口径</b>：乡镇边界来自公开行政区划边界数据集（已按县 adcode 挂接，' +
-      '历史更名县经几何校验）；专题影像为按乡镇名确定性生成的模拟值场' +
-      '（同一乡镇稳定复现），用于演示地块级「' + ((NAT.LAYERS[N.activeLayer] || {}).name || '遥感专题') + '」影像，' +
-      '不代表实际卫星观测结果。</div>';
+      '历史更名县经几何校验）。</div>' +
+      s2Caliber('town', cc, o.n);
     window.__APP__.detail(o.n + ' · 乡镇遥感专题详情',
       (pv ? pv.n + ' / ' : '') + (cityObj ? cityObj.n + ' / ' : '') + k.n,
       html);
@@ -1396,12 +1507,11 @@
         var L = NAT.LAYERS[N.activeLayer];
         return L ? '<div class="note" style="margin-top:9px"><b>指标说明</b>：' + L.desc + '<br><b>数据来源</b>：' + L.source + '</div>' : '';
       })() +
-      '<div class="note warn" style="margin-top:8px"><b>数据口径</b>：村界来自全国公开村界数据集' +
+      '<div class="note" style="margin-top:8px"><b>村界数据</b>：全国公开村界数据集' +
       '（约 87.5 万条行政/村级边界，WGS84，已按几何抽稀至60m 并按县分片），' +
       '村→乡镇的归属关系由【村面质心落在乡镇面内】的空间包含关系判定' +
-      '（源数据本身不含乡镇码）；专题影像为按 12 位村码确定性生成的模拟值场，' +
-      '用于演示地块级「' + ((NAT.LAYERS[N.activeLayer] || {}).name || '遥感专题') + '」影像，' +
-      '不代表实际卫星观测结果。</div>';
+      '（源数据本身不含乡镇码）。</div>' +
+      s2Caliber('village', ccode != null ? ccode : N.curCounty, vo.n);
     window.__APP__.detail(vo.n + ' · 村级遥感专题详情',
       (pv ? pv.n + ' / ' : '') + (cityObj ? cityObj.n + ' / ' : '')
       + (k ? k.n + ' / ' : '') + (townName || ''),
