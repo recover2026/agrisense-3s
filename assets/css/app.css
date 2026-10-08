@@ -79,6 +79,11 @@ body{
   white-space:nowrap;transition:.18s;flex:0 0 auto;
 }
 .tab:hover{background:rgba(120,160,220,.10);color:var(--txt)}
+/* 标签已改为 <button>，需清掉浏览器默认按钮样式；
+   并补键盘焦点环 —— 此前 <div> 方案键盘完全不可用。 */
+.tab{border:0;background:rgba(255,255,255,.03);font-family:inherit;cursor:pointer}
+.tab:focus{outline:none}
+.tab:focus-visible{outline:2px solid var(--brand);outline-offset:1px;border-radius:9px}
 .tab.on{
   background:linear-gradient(180deg,rgba(255,211,90,.17),rgba(255,211,90,.08));
   border-color:rgba(255,211,90,.42);color:var(--brand);

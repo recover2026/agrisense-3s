@@ -728,7 +728,13 @@
   };
 
   function switchTab(key) {
-    $$('.tab').forEach(function (t) { t.classList.toggle('on', t.dataset.tab === key); });
+    $$('.tab').forEach(function (t) {
+      var on = t.dataset.tab === key;
+      t.classList.toggle('on', on);
+      // ARIA 状态同步，供读屏软件正确播报"当前选中第几个标签"
+      t.setAttribute('aria-selected', on ? 'true' : 'false');
+      t.setAttribute('tabindex', on ? '0' : '-1');
+    });
     $$('.view').forEach(function (v) { v.classList.toggle('on', v.id === 'v-' + key); });
     busyOn(TAB_LABEL[key] || '加载中');
     var done = function () { setTimeout(busyOff, 120); };
@@ -760,7 +766,30 @@
     }, 40);
     try { location.hash = key; } catch (e) { }
   }
-  $$('.tab').forEach(function (t) { t.addEventListener('click', function () { switchTab(t.dataset.tab); }); });
+  /* 标签页键盘可达：标签已改为 <button role="tab">，此处补
+     ① 点击（含回车/空格，button 原生支持）
+     ② 左右方向键在标签间移动焦点并即时切换（WAI-ARIA Tabs 模式）
+     ③ Home/End 跳到首/末 —— 此前实测「回车激活切换 national→national ❌」，
+        因为标签原是 <div>，天然不可键盘激活。 */
+  var tabEls = $$('.tab');
+  function focusTab(i) {
+    var n = tabEls.length;
+    if (!n) return;
+    var k = (i + n) % n;
+    tabEls[k].focus();
+    switchTab(tabEls[k].dataset.tab);
+  }
+  tabEls.forEach(function (t, i) {
+    t.addEventListener('click', function () { switchTab(t.dataset.tab); });
+    t.addEventListener('keydown', function (e) {
+      var k = e.key;
+      if (k === 'ArrowRight') { e.preventDefault(); focusTab(i + 1); }
+      else if (k === 'ArrowLeft') { e.preventDefault(); focusTab(i - 1); }
+      else if (k === 'Home') { e.preventDefault(); focusTab(0); }
+      else if (k === 'End') { e.preventDefault(); focusTab(tabEls.length - 1); }
+      else if (k === 'Enter' || k === ' ') { e.preventDefault(); switchTab(t.dataset.tab); }
+    });
+  });
   $$('[data-goto]').forEach(function (b) { b.addEventListener('click', function () { switchTab(b.dataset.goto); }); });
 
   window.addEventListener('resize', function () {
