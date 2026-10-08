@@ -554,8 +554,19 @@
   GeoCanvas.prototype.area = function (layerName, obj, style) {
     var L = this.layers[layerName]; if (!L) return null;
     var d = [];
-    for (var i = 0; i < obj.r.length; i++) {
-      var r = obj.r[i];
+    /* ⚠️ 每个环必须【独立闭合】，不得跨环连线。
+       CF（乡镇数据聚合的县面）是由该县下各乡镇的外环拼成的，这些环
+       彼此并不首尾相接（有的相隔几公里）。若把它们首尾串成一条 path，
+       环与环之间就会拉出横穿整幅图的长直线 —— 视觉上就是"尖刺乱线"
+       （实测潍坊潍城 maxJump/span=0.68、坊子 0.55、奎文 0.45）。
+       正确做法：每个环 Z 结束即断，SVG 会分别填充，互不干扰。
+       之前尝试过"按空间邻接重排 + 最近邻串接"，相邻关系改善了，
+       但非相邻环之间仍会产生长跳变（奎文 0.59），且多岛县会被串成
+       一条畸形带状区，反而更像拉丝。故改为独立闭合。 */
+    var rings = obj.r || [];
+    for (var i = 0; i < rings.length; i++) {
+      var r = rings[i];
+      if (!r || r.length < 3) continue;
       for (var j = 0; j < r.length; j++) {
         d.push((j ? 'L' : 'M') + r[j][0].toFixed(1) + ',' + r[j][1].toFixed(1));
       }

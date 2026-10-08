@@ -2274,6 +2274,44 @@ function drawDisasterCircles() {
     });
   }
 
+  /* ---------- 剔除孤立跳点 ----------
+   源数据里偶有离群点：相邻点间距是中位数的 8~16 倍。
+   实测潍坊潍城区「于河街道」有 8215m 的跳段、「潍城经济开发区」8850m，
+   而正常相邻间距约 550m —— 渲染出来就是边界上的小尖刺/拉丝
+   （用户报「边界明显有问题」）。
+   判定：以环内间距中位数为基准，超过 8 倍且两侧方向一致（说明该点
+   插在一条直边上、不构成拐角）时删除。真正的大转折若两侧方向变化，
+   则保留，避免削掉真实的半岛/拐角。 */
+  function cleanSpikes(ring) {
+    var n = ring.length;
+    if (n < 8) return ring;
+    var ds = [];
+    for (var i = 1; i < n; i++) {
+      ds.push(Math.hypot(ring[i][0] - ring[i - 1][0], ring[i][1] - ring[i - 1][1]));
+    }
+    var sorted = ds.slice().sort(function (a, b) { return a - b; });
+    var med = sorted[Math.floor(sorted.length / 2)];
+    if (!(med > 0)) return ring;
+    var th = med * 8;
+
+    var out = [ring[0]];
+    for (var k = 1; k < n; k++) {
+      var d = ds[k - 1];
+      if (d > th) {
+        // 方向一致性检查：与前后两段的夹角是否接近直线
+        var p = out[out.length - 1], c = ring[k], q = ring[(k + 1) % n];
+        var v1x = c[0] - p[0], v1y = c[1] - p[1];
+        var v2x = q[0] - c[0], v2y = q[1] - c[1];
+        var cross = v1x * v2y - v1y * v2x;
+        var dot = v1x * v2x + v1y * v2y;
+        // 共线（同向）→ 尖刺，丢弃该点；明显转折 → 保留
+        if (Math.abs(cross) < Math.abs(dot) * 0.15) continue;
+      }
+      out.push(ring[k]);
+    }
+    return out.length >= 3 ? out : ring;
+  }
+
   /* ---------- 无市界省份：用乡镇边界聚合出县级面 ----------
      数据前提：geo-town-<省>.js 里每个 key 是一个县级单元，
      含 n(县名) / c(adcode) / b,w,h(县域 bbox) / t(乡镇列表)。
@@ -2324,7 +2362,7 @@ function drawDisasterCircles() {
               for (var pi = 0; pi < src.length; pi++) {
                 dst[pi] = [src[pi][0] + v.b[0], src[pi][1] + v.b[1]];
               }
-              rings.push(dst);
+              rings.push(cleanSpikes(dst));
             }
           }
           CF[k] = { n: v.n, c: v.c || (/^\d+$/.test(k) ? Number(k) : 0), rings: rings, t: v.t, b: v.b };
