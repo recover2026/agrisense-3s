@@ -126,7 +126,7 @@
     ].join(';');
     wrap.innerHTML = [
       '<div style="max-width:380px;width:calc(100% - 48px);text-align:center">',
-      '  <img src="assets/img/sunflower-logo.png" alt="" width="60" height="60"',
+      '  <img src="assets/img/logo-128.png" alt="" width="60" height="60"',
       '       style="filter:drop-shadow(0 4px 12px rgba(193,39,45,.45))">',
       '  <div style="color:#e8f0f8;font-size:21px;font-weight:800;margin:14px 0 4px">',
       '    阳光<span style="color:#ffd98a">3S遥感平台</span></div>',
