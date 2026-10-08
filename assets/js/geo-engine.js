@@ -515,22 +515,57 @@
     y = this._avoidLabels(layerName, x, y, 0, 0);
     var fs = style.size || 12;
     /* 描边宽度必须随字号等比，不能当固定值写死。
-       ⚠️ 实测踩坑：各视图把 haloW 写成 3.4~5.5 的常量，而字号才 10~16px，
+       ⚠️ 实测踩坑（两轮）：
+       1) 各视图把 haloW 写成 3.4~5.5 的常量，而字号才 10~16px，
           描边占字号 34%~40%。三个字宽约 31px，描边单侧就吃掉 1.8px，
-          字腔被填满 → 标签糊成「黑底白块」，用户报「文字有重影」。
-       这里改为：显式传入的 haloW 若超过字号的 18% 就按 18% 收敛，
-       未传入则取字号的 15%（小字号描边细一点更清晰）。 */
-    var hw = style.haloW || fs * 0.15;
-    var maxHw = fs * 0.18;
+          字腔被填满 → 标签糊成「黑底白块」。
+       2) 收到 0.18×字号 后仍不够 —— 省名标签（11px→1.65px）在深色地图上
+          依旧明显发黑糊边，用户再次报「各省地图名称都有明显的重影」。
+       逐档实测（11px 字号、paint-order=stroke、深色底）：
+          sw 0~1.1 清晰 / 1.3 尚可 / 1.5 起发糊 / 1.65 明显发黑 / 2.0+ 糊成块
+       故上限从 0.18 收紧到 0.12，默认 0.10：11px 字 → 描边 1.1~1.32px，
+       落在清晰区间内，同时仍保留必要的底图可读性。 */
+    var hw = style.haloW || fs * 0.10;
+    var maxHw = fs * 0.12;
     if (hw > maxHw) hw = maxHw;
+
+    /* 描边方案：不用 stroke，改「双层文字」实现光晕。
+       ⚠️ 为什么不用 stroke：实测 11px 字号下描边要到 sw≥2 才明显，
+          而 1.5 起字就开始发糊、1.65 明显发黑、2.0+ 糊成黑块
+          （用户连续两次报「文字有重影」）。
+          因为小字号汉字的笔画间隙只有 1~2px，任何 1px 以上的描边都会
+          侵入字腔、把白字糊掉。
+          改为在文字下方 8 个方位各放一个同形深色副本（不透明度递减），
+          叠加成「柔和暗晕」—— 视觉上有底衬、字腔不被破坏，
+          且不依赖 paint-order 兼容性。 */
     var t = el('text', {
       x: x, y: y, class: 'gs-label', fill: style.fill || '#e8f0fb',
       'font-size': fs, 'text-anchor': style.anchor || 'middle',
-      'paint-order': 'stroke', stroke: style.halo || 'rgba(3,8,18,.9)',
-      'stroke-width': hw.toFixed(2), 'stroke-linejoin': 'round',
       'font-weight': style.weight || 700, 'font-family': 'inherit'
     });
-    if (style.opacity != null) t.setAttribute('opacity', style.opacity);
+    var g = el('g', { class: 'gs-lbl' });
+    if (style.halo !== 'none') {
+      var hc = style.halo || 'rgba(3,8,18,.92)';
+      /* 光晕半径压到字号的 3.5%（且不超过 0.9px），并降不透明度。
+         初版取 0.06×字号（11px→0.66px）视觉上能看出"双边"，
+         压到 0.035×（→0.39px）后边缘均匀、字腔不受影响。 */
+      var hr = Math.min(fs * 0.035, 0.9);
+      var hal = 0.5;
+      var dirs = [[-1, -1], [0, -1], [1, -1], [-1, 0], [1, 0], [-1, 1], [0, 1], [1, 1]];
+      for (var hi = 0; hi < dirs.length; hi++) {
+        var h = el('text', {
+          x: (x + dirs[hi][0] * hr).toFixed(2), y: (y + dirs[hi][1] * hr).toFixed(2),
+          class: 'gs-label-halo', fill: hc, 'font-size': fs,
+          opacity: hal,
+          'text-anchor': style.anchor || 'middle',
+          'font-weight': style.weight || 700, 'font-family': 'inherit'
+        });
+        h.textContent = text;
+        h._lx = 1;
+        g.appendChild(h);
+      }
+    }
+    if (style.opacity != null) g.setAttribute('opacity', style.opacity);
     t.textContent = text;
     t._lx = 1;              // 标记：供 _avoidLabels 识别为标签
     if (meta) {
@@ -539,7 +574,8 @@
       if (meta.kind) t.setAttribute('data-kind', meta.kind);
       t.style.cursor = meta.kind ? 'pointer' : 'default';
     }
-    L.g.appendChild(t); L.pxItems = L.pxItems || []; L.pxItems.push(t);
+    g.appendChild(t);
+    L.g.appendChild(g); L.pxItems = L.pxItems || []; L.pxItems.push(t);
     return t;
   };
 
