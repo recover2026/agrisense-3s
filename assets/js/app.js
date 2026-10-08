@@ -726,6 +726,11 @@
     uw: '正在准备承保信息上传…', claims: '正在加载理赔定损数据…',
     warn: '正在加载预警调度…', assess: '正在加载灾情评估…'
   };
+  var TAB_TITLE = {
+    national: '全国遥感地图', qual: '资质资格地图', overview: '总览驾驶舱',
+    underwrite: '承保风险地图', uw: '承保信息上传', claims: '理赔定损地图',
+    warn: '预警与调度', assess: '灾情损失评估'
+  };
 
   function switchTab(key) {
     $$('.tab').forEach(function (t) {
@@ -736,6 +741,8 @@
       t.setAttribute('tabindex', on ? '0' : '-1');
     });
     $$('.view').forEach(function (v) { v.classList.toggle('on', v.id === 'v-' + key); });
+    /* 标签切换时更新浏览器标题；地图视图随后会再由 paintCrumb 细化为具体层级 */
+    try { document.title = (TAB_TITLE[key] || '') + ' · 阳光3S遥感平台（测试版）'; } catch (e) { }
     busyOn(TAB_LABEL[key] || '加载中');
     var done = function () { setTimeout(busyOff, 120); };
     if (!built[key]) {
