@@ -1986,17 +1986,40 @@
     if (N.cityCache[provCode]) return cb(N.cityCache[provCode]);
     var meta = CITY_IDX.filter(function (x) { return x.p == provCode; })[0];
     if (!meta) return cb(null);
+    /* 并发去重：下钻时 renderProvince 与预取可能同时请求同一省，
+       原实现会重复发请求（实测弱网下每次点击都新发一次 2MB 的市界文件）。
+       在途请求把回调入队，加载完统一兑现。 */
+    if (CITY_LOADING[provCode]) { CITY_LOADING[provCode].push(cb); return; }
+    CITY_LOADING[provCode] = [cb];
+
+    var settled = false;
+    function finish(list) {
+      if (settled) return;
+      settled = true; clearTimeout(timer);
+      var q = CITY_LOADING[provCode] || [];
+      CITY_LOADING[provCode] = null;
+      q.forEach(function (f) { f(list); });
+    }
+    /* 超时兜底：市界文件最大 2MB+，弱网/冷启动可能十几秒才到
+       （实测 GitHub Pages 首次取 0.3MB 就要 27.9s）。
+       无超时时用户会看到「点了没反应、地图空白」且无从判断。 */
+    var timer = setTimeout(function () {
+      console.warn('[nat] 市界数据加载超时（' + meta.f + '）');
+      finish(null);
+    }, 9000);
+
     var s = document.createElement('script');
     s.src = 'assets/data/' + meta.f;
     s.onload = function () {
       var d = window.__GEO_CITY__;
       try { delete window.__GEO_CITY__; } catch (e) { window.__GEO_CITY__ = null; }
       if (d) { d.list.forEach(abs); N.cityCache[provCode] = d.list; }
-      cb(d ? d.list : null);
+      finish(d ? d.list : null);
     };
-    s.onerror = function () { cb(null); };
+    s.onerror = function () { finish(null); };
     document.head.appendChild(s);
   }
+  var CITY_LOADING = {};
 
   /* ============ 初始化 ============ */
   function init() {
@@ -2255,6 +2278,10 @@ function drawDisasterCircles() {
       loadCountyOf(pcode, function () { });
       countyFacesFromTown(pcode, function () { });
     } catch (e) { /* 预取失败不影响主流程 */ }
+    /* 市界预取：有市界的省，进入省级视图时就把市界拉起来。
+       不预取的话，用户点省 → 立刻要等市界文件（最大 2MB+），
+       线上实测这一等就是十几秒，表现为「点了没反应、地图空白」。 */
+    if (meta) { try { loadCity(pcode, function () { }); } catch (e2) { } }
 
     if (!meta) {
       // 该省无市级边界数据（15 个省含新疆/青海/甘肃/云南…）
@@ -2270,7 +2297,13 @@ function drawDisasterCircles() {
       return;
     }
     $('#nat-title').textContent = pv.n + ' · 加载中…';
+    /* 下钻期间给进度条反馈：市界文件最大 2MB+，弱网下可能十几秒
+       （实测 GitHub Pages 首次取 0.3MB 需 27.9s）。
+       此前只有标题文字变化，地图区域空白，用户无从判断是否卡死。 */
+    var BUSY = window.__BUSY__;
+    if (BUSY) BUSY.on('正在加载' + pv.n + '市界数据…');
     loadCity(pcode, function (list) {
+      if (BUSY) BUSY.off();
       if (!list) {
         $('#nat-title').textContent = pv.n + ' · 省级概况';
         drawProvinceOnly(pv); showProvinceInfo(pv); return;
