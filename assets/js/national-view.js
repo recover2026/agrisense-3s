@@ -106,9 +106,24 @@
     if (kbHas[pc]) return cb(true);
     if (kbLoading[pc]) { kbLoading[pc].push(cb); return; }
     kbLoading[pc] = [cb];
+    var settled = false;
+    /* 兜底超时：动态 <script> 在网络异常时可能既不触发 onload 也不触发
+       onerror（DNS 污染 / 连接重置后请求挂起），此时回调队列永远不执行，
+       界面会永久停在「· 加载县级边界…」且一个可点元素都没有（新疆实测）。
+       超时后按失败处理，让 renderCity 走 CF（乡镇数据）兜底路径，
+       至少保证「点得进去、看得见县面」。 */
+    var timer = setTimeout(function () {
+      if (settled) return;
+      settled = true;
+      console.warn('[nat] 县界数据加载超时（' + meta.f + '），转入乡镇数据兜底');
+      var list = kbLoading[pc] || []; kbLoading[pc] = null;
+      list.forEach(function (f) { f(false); });
+    }, 4500);
     var s = document.createElement('script');
     s.src = 'assets/data/' + meta.f;
     s.onload = function () {
+      if (settled) return;
+      settled = true; clearTimeout(timer);
       var d = window.__KBP__;
       try { delete window.__KBP__; } catch (e) { window.__KBP__ = null; }
       if (d) { for (var k in d) KB[k] = d[k]; kbHas[pc] = true; }
@@ -116,6 +131,8 @@
       list.forEach(function (f) { f(!!d); });
     };
     s.onerror = function () {
+      if (settled) return;
+      settled = true; clearTimeout(timer);
       var list = kbLoading[pc] || []; kbLoading[pc] = null;
       list.forEach(function (f) { f(false); });
     };
@@ -152,9 +169,21 @@
     if (tbHas[pc]) return cb(true);
     if (tbLoading[pc]) { tbLoading[pc].push(cb); return; }
     tbLoading[pc] = [cb];
+    /* 与 loadCountyOf 同理：网络挂起时必须超时兜底，
+       否则「进乡镇」会永久停在加载态。 */
+    var settled = false;
+    var timer = setTimeout(function () {
+      if (settled) return;
+      settled = true;
+      console.warn('[nat] 乡镇界数据加载超时（' + meta.f + '）');
+      var list = tbLoading[pc] || []; tbLoading[pc] = null;
+      list.forEach(function (f) { f(false); });
+    }, 4500);
     var s = document.createElement('script');
     s.src = 'assets/data/' + meta.f;
     s.onload = function () {
+      if (settled) return;
+      settled = true; clearTimeout(timer);
       var d = window.__KBT__;
       try { delete window.__KBT__; } catch (e) { window.__KBT__ = null; }
       if (d) { for (var k in d) T[k] = d[k]; tbHas[pc] = true; }
@@ -162,6 +191,8 @@
       list.forEach(function (f) { f(!!d); });
     };
     s.onerror = function () {
+      if (settled) return;
+      settled = true; clearTimeout(timer);
       var list = tbLoading[pc] || []; tbLoading[pc] = null;
       list.forEach(function (f) { f(false); });
     };
@@ -215,9 +246,21 @@
     vTried[code] = true;
     if (vLoading[code]) { vLoading[code].push(cb); return; }
     vLoading[code] = [cb];
+    /* 同样加超时兜底：村界文件缺失时若请求挂起（既不 ok 也不 error），
+       乡镇视图会永久停在加载态。 */
+    var settled = false;
+    var timer = setTimeout(function () {
+      if (settled) return;
+      settled = true;
+      vHas[code] = true;
+      var list = vLoading[code] || []; vLoading[code] = null;
+      list.forEach(function (f) { f(false); });
+    }, 4500);
     var s = document.createElement('script');
     s.src = 'assets/data/geo-vill-' + code + '.js';
     s.onload = function () {
+      if (settled) return;
+      settled = true; clearTimeout(timer);
       var d = window.__KVILL__;
       try { delete window.__KVILL__; } catch (e) { window.__KVILL__ = null; }
       if (d) { V[code] = d; vHas[code] = true; }
@@ -226,6 +269,8 @@
       list.forEach(function (f) { f(!!d); });
     };
     s.onerror = function () {
+      if (settled) return;
+      settled = true; clearTimeout(timer);
       // 该县确实没有村界文件（县级要素缺失，非同县其他问题）
       vHas[code] = true;
       var list = vLoading[code] || []; vLoading[code] = null;
@@ -278,16 +323,39 @@
   // 取某县的乡镇集合：优先 adcode 命中，其次用「省|市|县」兜底键
   function townOf(countyCode, pvName, cityName) {
     var k = String(countyCode);
-    if (T[k]) return T[k];
+    /* 标准县码直取。新疆乡镇数据里同一地方两套命名：
+       key='650502' 而 n='哈密市'（组合键那条），countyName() 却返回
+       「伊州区」（来自县界）。按名称匹配必然对不上（实测 T 里 650502
+       明明存在，却因 pvName='伊州区' ≠ '哈密市' 而匹配失败，
+       乡镇面画不出一个）。故先试标准码，命中即用，不再依赖名称。 */
+    if (T[k] && T[k].t && T[k].t.length) return T[k];
     var p2 = k.slice(0, 2);
     var keys = Object.keys(T);
     for (var i = 0; i < keys.length; i++) {
       var parts = keys[i].split('|');
-      if (parts.length === 3 && parts[0] === p2 && parts[2] === (pvName || '') ) {
-        // 名称不唯一时再比市
-        if (!cityName || parts[1] === cityName) return T[keys[i]];
+      if (parts.length === 3 && parts[0] === p2 && parts[2] === (pvName || '')) {
+        return T[keys[i]];
       }
     }
+    /* 再按 CF 的标准码映射兜底（CF 构建时已用 bbox 重叠登记） */
+    var byC = CF_BY_CODE[k];
+    if (byC && byC.t && byC.t.length) {
+      if (!T[k]) T[k] = { n: byC.n, c: Number(k) || 0, t: byC.t, b: byC.b, w: byC.w, h: byC.h };
+      return T[k];
+    }
+    /* 最后按组合键的市名/省名匹配。 */
+    if (cityName) {
+      for (var j = 0; j < keys.length; j++) {
+        var pt = keys[j].split('|');
+        if (pt.length === 3 && pt[0] === p2 && pt[1] === String(cityName)) return T[keys[j]];
+      }
+    }
+    var cand = [];
+    for (var m = 0; m < keys.length; m++) {
+      var pm = keys[m].split('|');
+      if (pm.length === 3 && pm[0] === p2 && pm[1] === String(pvName || '')) cand.push(keys[m]);
+    }
+    if (cand.length === 1) return T[cand[0]];
     return null;
   }
 
@@ -1035,8 +1103,19 @@
     var k = KB[String(code)];
     if (k) return k.n;
     var f = CF[String(code)];
-    return f ? f.n : null;
+    if (f) return f.n;
+    /* 新疆等省的乡镇数据用组合键「65|哈密地区|哈密市」存县级单元，
+       而县面用的是标准码 650502。此时 CF[String(code)] 取不到，
+       countyName 返回 null → pickCounty 首行 `if (!kn) return;`
+       静默退出 → 用户点县「没反应」（实测新疆伊州区）。
+       故补一层按县面自身登记的 c 反查。 */
+    var byC = CF_BY_CODE[String(code)];
+    if (byC && byC.n) return byC.n;
+    return null;
   }
+
+  /* 标准县码 → CF 条目。countyFacesFromTown 建 CF 时登记。 */
+  var CF_BY_CODE = {};
 
   /* 取某县的**绝对世界坐标**环（用于按 shoelace 算真实多边形面积）。
      与 countyBox 一样要兼容两种来源：
@@ -1275,6 +1354,32 @@
   }
 
   /* ---------- 市级下钻 ---------- */
+  /* 加载期间的即时轮廓：只画市域面 + 居中，不设 kind（不可点）。
+     有意不设 data-pick —— 县界没到之前点市域面无意义，
+     设了反而会让用户以为能下钻却原地不动。 */
+  function paintCityOutline(pv, cityObj) {
+    if (!MI || !cityObj) return;
+    DM.clearLayer(MI, 'base'); DM.clearBIZ(MI);
+    DM.clearLayer(MI, 'lab'); DM.clearLayer(MI, 'risk');
+    var st = MI.svg; if (st) st.pxAnchors = [];
+    var rings = abs(cityObj);
+    if (!rings || !rings.length) return;
+    DM.area(MI, { n: pv.n, c: pv.c, r: abs(pv) },
+      { fill: 'rgba(59,130,246,.04)', stroke: 'rgba(96,165,250,.5)', strokeWidth: 1.4 });
+    DM.area(MI, { n: cityObj.n, c: cityObj.c, r: rings }, {
+      fill: 'rgba(59,130,246,.28)', stroke: 'rgba(96,165,250,.75)', strokeWidth: 1.5
+    });
+    var b = abox(cityObj);
+    if (b) DM.fit(MI, b);
+    if (st && st._vw > 620) {
+      var ct = G.polyCentroid(rings);
+      var px = st.toPx(ct[0], ct[1]);
+      var el = DM.pxLabel(MI, 'lab', px.x, px.y, cityObj.n + ' · 加载中',
+        { fill: '#fff', size: 13, halo: 'rgba(3,8,18,.96)', haloW: 5, weight: 800 });
+      if (el) DM.anchor(MI, el, ct[0], ct[1]);
+    }
+  }
+
   function renderCity(pv, cityObj) {
     // 返回上级时收起下级列表（避免面板跨层级残留）
     var _pk = document.getElementById('nat-picker'); if (_pk) _pk.style.display = 'none';
@@ -1285,6 +1390,11 @@
     N.curVillage = null; N.curVillageKey = null;
     $('#nat-title').textContent = pv.n + ' / ' + cityObj.n + ' · 加载县级边界…';
     $('#nat-scope').textContent = pv.n + ' / ' + cityObj.n;
+
+    /* 先把市域轮廓画出来，避免「加载…」期间地图是空的、用户以为没响应。
+       县界/乡镇界到位后下面的回调会 clearLayer 重画，不影响最终结果。
+       （实测弱网下这一步能明显缩短「点进去没反应」的主观等待） */
+    try { paintCityOutline(pv, cityObj); } catch (e) { /* 非致命 */ }
 
     loadCountyOf(pv.c, function (ok) {
       var ks = ok ? countyOfProv(pv.c) : [];
@@ -1425,6 +1535,11 @@
     DM.clearLayer(MI, 'base'); DM.clearBIZ(MI); DM.clearLayer(MI, 'lab'); DM.clearLayer(MI, 'risk');
     var st = MI.svg; if (st) st.pxAnchors = [];
 
+    /* 走到这里说明县界与乡镇界都没取到（通常是弱网/请求挂起）。
+       只画市域面会让「点进去什么都点不到」，与用户报障现象一致。
+       因此如实告知并给出去哪儿了，而不是默默停在市级。 */
+    console.warn('[nat] ' + pv.n + '/' + cityObj.n + ' 县级边界未取到，仅显示市级范围');
+
     DM.area(MI, { n: pv.n, c: pv.c, r: abs(pv) },
       { fill: 'rgba(59,130,246,.04)', stroke: 'rgba(96,165,250,.5)', strokeWidth: 1.4 });
     var stops = vstopsFor(N.activeLayer);
@@ -1439,7 +1554,8 @@
     var el = DM.pxLabel(MI, 'lab', px.x, px.y, cityObj.n, { fill: '#fff', size: 14, halo: 'rgba(3,8,18,.96)', haloW: 5, weight: 800 });
     if (el) DM.anchor(MI, el, ct[0], ct[1]);
 
-    $('#nat-title').textContent = pv.n + ' / ' + cityObj.n + ' · 遥感专题';
+    /* 据实标注：县界未取到，不能让标题看起来像已下钻成功 */
+    $('#nat-title').textContent = pv.n + ' / ' + cityObj.n + ' · 县级边界未取到（仅市级）';
     renderRaster({ layer: N.activeLayer, rings: abs(cityObj), code: cityObj.c, pixelM: 320, alpha: .82, onStats: paintGrowthPanel });
     paintCrumb();
     DM.fit(MI, abox(cityObj));
@@ -2033,6 +2149,15 @@ function drawDisasterCircles() {
     DM.clearLayer(MI, 'risk');
     $('#nat-scope').textContent = pv.n + (meta ? ' / ' + meta.c + ' 市' : '');
 
+    /* 预取该省县界 + 乡镇界。
+       实测 GitHub Pages 首次取 geo-county-65.js 耗时 27.9s（0.3MB，纯冷启动），
+       用户「点地市没反应」正是卡在等这个文件。提前在省级就发起，
+       等用户点市时通常已就绪；配合 loadCountyOf 的 4.5s 超时兜底双保险。 */
+    try {
+      loadCountyOf(pcode, function () { });
+      countyFacesFromTown(pcode, function () { });
+    } catch (e) { /* 预取失败不影响主流程 */ }
+
     if (!meta) {
       // 该省无市级边界数据（15 个省含新疆/青海/甘肃/云南…）
       // 但【乡镇边界数据覆盖全国 31 省】，其中已带县级归属与 adcode，
@@ -2073,9 +2198,21 @@ function drawDisasterCircles() {
     var meta = null;
     for (var i = 0; i < KBTI.length; i++) if (KBTI[i].p === pc) { meta = KBTI[i]; break; }
     if (!meta) { cfLoading[pc] = null; return cb(false); }
+    /* 超时兜底：新疆等无县界省份完全依赖这条 CF 路径，
+       一旦请求挂起不回调，市级就永久停在「加载县级边界…」且无任何可点元素。 */
+    var settled = false;
+    var timer = setTimeout(function () {
+      if (settled) return;
+      settled = true;
+      console.warn('[nat] 乡镇界(CF)加载超时（' + meta.f + '）');
+      var lst = cfLoading[pc] || []; cfLoading[pc] = null;
+      lst.forEach(function (f) { f(false); });
+    }, 4500);
     var s = document.createElement('script');
     s.src = 'assets/data/' + meta.f;
     s.onload = function () {
+      if (settled) return;
+      settled = true; clearTimeout(timer);
       var d = window.__KBT__;
       try { delete window.__KBT__; } catch (e) { window.__KBT__ = null; }
       if (d) {
@@ -2102,6 +2239,36 @@ function drawDisasterCircles() {
           // 同步登记到 T：后续进入县/乡镇时 townOf() 直接命中，无需再发一次请求
           T[k] = v;
           tbHas[pc] = true;
+
+          /* 新疆等省：乡镇数据的 key 是「省|地区|市」组合键且 c=0，
+             与县界的标准码（650502）完全对不上 —— 导致 countyName() 返回
+             null、pickCounty() 首行静默 return，用户点县「没反应」。
+             这里用【县域 bbox 重叠最大】把 CF 条目挂到标准县码上：
+             实测「65|哈密地区|哈密市」bbox 起点与「650502 伊州区」仅差 260m，
+             重叠率 >99%，可安全判定为同一县。 */
+          if (!v.c) {
+            var nb = [v.b[0], v.b[1], v.b[0] + (v.w || 0), v.b[1] + (v.h || 0)];
+            var bestCode = null, bestOv = 0;
+            for (var ck in KB) {
+              if (ck.slice(0, 2) !== pc) continue;
+              var kb2 = KB[ck];
+              if (!kb2 || !kb2.b) continue;
+              var bb2 = kb2.b.length >= 4
+                ? kb2.b
+                : [kb2.b[0], kb2.b[1], kb2.b[0] + (kb2.w || 0), kb2.b[1] + (kb2.h || 0)];
+              var ox = Math.min(nb[2], bb2[2]) - Math.max(nb[0], bb2[0]);
+              var oy = Math.min(nb[3], bb2[3]) - Math.max(nb[1], bb2[1]);
+              if (ox <= 0 || oy <= 0) continue;
+              var ar = (ox * oy) / Math.max(1, nb[2] - nb[0]) / Math.max(1, nb[3] - nb[1]);
+              if (ar > bestOv) { bestOv = ar; bestCode = ck; }
+            }
+            // 阈值 0.6：低于此不敢认定是同一县，宁可不映射也不挂错
+            if (bestCode && bestOv > 0.6) {
+              CF_BY_CODE[bestCode] = CF[k];
+              CF[bestCode] = CF[k];
+              CF[bestCode].c = Number(bestCode);
+            }
+          }
         }
         cfHas[pc] = true;
       }
@@ -2109,6 +2276,8 @@ function drawDisasterCircles() {
       list.forEach(function (f) { f(!!d); });
     };
     s.onerror = function () {
+      if (settled) return;
+      settled = true; clearTimeout(timer);
       var list = cfLoading[pc] || []; cfLoading[pc] = null;
       list.forEach(function (f) { f(false); });
     };
