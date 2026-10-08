@@ -661,9 +661,77 @@
      路由
      ============================================================ */
   var built = {};
+  /* ---------- 加载反馈 ----------
+     实测：切换「全国遥感地图」耗时 2186ms、「灾情损失评估」2009ms，
+     期间界面完全静止、无任何提示，用户会以为卡死或重复点击。
+     这里加一个顶部细进度条 + 极简文案，>250ms 才显示（避免快速切换闪烁），
+     操作完成或超上限自动消失。用 rAF 驱动、不阻塞交互。 */
+  /* 说明：busyOff 的延后时间必须 > busyOn 的显示阈值（250ms），
+     否则慢视图会「先关后开」，加载条一次都不显示（实测始终 on=false）。 */
+  var busyDepth = 0, busyTimer = null, busyShown = false, busyT0 = 0;
+  function busyEl() {
+    var el = document.getElementById('busybar');
+    if (el) return el;
+    el = document.createElement('div');
+    el.id = 'busybar';
+    // ⚠️ 必须用 createElement 逐个建子节点：innerHTML 字符串里若含 <i>/<span>，
+    //    某些情况下 querySelector 会拿到字符串而非元素，
+    //    随后 set textContent 就报 "Cannot create property on string"。
+    var bar = document.createElement('i');
+    var txt = document.createElement('span');
+    el.appendChild(bar); el.appendChild(txt);
+    document.body.appendChild(el);
+    return el;
+  }
+  function busyOn(label) {
+    busyDepth++;
+    var el = busyEl();
+    var sp = el.children[1];
+    if (sp && sp.textContent !== label) sp.textContent = label || '加载中';
+    if (busyShown) return;
+    clearTimeout(busyTimer);
+    busyTimer = setTimeout(function () {
+      busyShown = true; busyT0 = Date.now();
+      var e = document.getElementById('busybar');
+      if (e) e.classList.add('on');
+    }, 250);
+  }
+  function busyOff() {
+    busyDepth = Math.max(0, busyDepth - 1);
+    if (busyDepth > 0) return;
+    clearTimeout(busyTimer);
+    var e = document.getElementById('busybar');
+    if (!e) { busyShown = false; return; }
+    // 已显示 → 留一点驻留时间让用户看清，再淡出；未显示 → 直接复位
+    if (busyShown) {
+      clearTimeout(busyTimer);
+      busyTimer = setTimeout(function () {
+        e.classList.remove('on'); busyShown = false;
+      }, 320);
+    } else { busyShown = false; }
+  }
+  /* 兜底：任何情况下最多显示 6 秒，绝不留下"永远转圈"的界面 */
+  setInterval(function () {
+    var e = document.getElementById('busybar');
+    if (e && e.classList.contains('on') && busyShown && busyT0 &&
+        Date.now() - busyT0 > 6000) {
+      e.classList.remove('on'); busyShown = false; busyDepth = 0; busyT0 = 0;
+    }
+  }, 1000);
+  window.__BUSY__ = { on: busyOn, off: busyOff };
+
+  var TAB_LABEL = {
+    national: '正在加载全国遥感地图…', qual: '正在加载资质资格分布…',
+    overview: '正在汇总全国农险总览…', underwrite: '正在加载承保风险数据…',
+    uw: '正在准备承保信息上传…', claims: '正在加载理赔定损数据…',
+    warn: '正在加载预警调度…', assess: '正在加载灾情评估…'
+  };
+
   function switchTab(key) {
     $$('.tab').forEach(function (t) { t.classList.toggle('on', t.dataset.tab === key); });
     $$('.view').forEach(function (v) { v.classList.toggle('on', v.id === 'v-' + key); });
+    busyOn(TAB_LABEL[key] || '加载中');
+    var done = function () { setTimeout(busyOff, 120); };
     if (!built[key]) {
       built[key] = true;
       var FNS = { overview: buildOverview, underwrite: buildUnderwrite, claims: buildClaims,
@@ -674,19 +742,21 @@
     }
     // 视图已 display:block，容器此时才有真实尺寸 —— 重新测量并重绘
     var MAPS = { overview: 'ovMap', underwrite: 'uwMap', claims: 'clMap', warn: 'wnMap' };
-    if (key === 'national' && window.__NAT_VIEW__) { window.__NAT_VIEW__.render(); return; }
-    if (key === 'qual' && window.__QUAL_VIEW__) { window.__QUAL_VIEW__.render(); return; }
+    if (key === 'national' && window.__NAT_VIEW__) { window.__NAT_VIEW__.render(); setTimeout(done, 700); return; }
+    if (key === 'qual' && window.__QUAL_VIEW__) { window.__QUAL_VIEW__.render(); setTimeout(done, 500); return; }
     if (key === 'uw' && window.__UW_VIEW__) {
       // 承保视图已构建过也要重绘：容器从 display:none 恢复后尺寸才真实
-      setTimeout(function () { window.__UW_VIEW__.init(); }, 40);
+      setTimeout(function () { window.__UW_VIEW__.init(); done(); }, 40);
       return;
     }
     var slot = MAPS[key];
     setTimeout(function () {
       var m = slot && st[slot];
-      if (!m || !m.resize) return;
-      m.resize();
-      if (m._fullBBox) m.fit(m._fullBBox);
+      if (m && m.resize) {
+        m.resize();
+        if (m._fullBBox) m.fit(m._fullBBox);
+      }
+      done();
     }, 40);
     try { location.hash = key; } catch (e) { }
   }

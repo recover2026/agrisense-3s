@@ -560,6 +560,67 @@ body{
   .top-right .btn-ghost{display:none}
 }
 
+/* ========== 窄屏（≤640px）：标签栏独占一行，避免被 logo 挤没 ==========
+   实测 390px 下 .tabs 可用宽仅 63px（8 个标签需 528px），
+   顶栏被 logo + 按钮占满，标签完全不可见、无法切换功能。
+   改为两行布局：上排 logo+按钮，下排标签横向滚动。 */
+/* ========== 全局加载反馈 ==========
+   切换标签实测耗时 0.09~2.19s，此前界面完全静止、无提示，
+   用户会以为卡死或反复点击。用顶部细进度条 + 文案给出反馈。 */
+#busybar{
+  position:fixed;left:0;right:0;top:52px;height:2px;z-index:99998;
+  pointer-events:none;opacity:0;transition:opacity .16s;
+}
+#busybar.on{opacity:1}
+#busybar i{
+  position:absolute;left:0;top:0;height:100%;width:34%;
+  background:linear-gradient(90deg,transparent,var(--brand),transparent);
+  animation:bubyslide 1.05s ease-in-out infinite;
+}
+@keyframes bubyslide{0%{left:-34%}100%{left:100%}}
+#busybar span{
+  position:absolute;top:7px;left:50%;transform:translateX(-50%);
+  font-size:11.5px;color:var(--txt-2);background:rgba(12,20,33,.92);
+  border:1px solid var(--line-2);border-radius:999px;padding:3px 11px;
+  white-space:nowrap;box-shadow:0 4px 14px rgba(0,0,0,.35);
+}
+@media (prefers-reduced-motion:reduce){
+  #busybar i{animation:none;width:100%;opacity:.5}
+}
+
+@media (max-width:640px){
+  .topbar{
+    height:auto;flex:0 0 auto;flex-wrap:wrap;padding:7px 9px;gap:7px;
+    position:sticky;top:0;z-index:60;
+  }
+  .brand{flex:1 1 auto;min-width:0}
+  .brand-name{font-size:14px;white-space:nowrap}
+  .top-right{flex:0 0 auto;gap:6px}
+  /* 标签独占整行，横向滑动 */
+  .tabs{
+    order:9;flex:1 0 100%;margin-left:-9px;margin-right:-9px;
+    padding:0 9px 2px;gap:4px;
+    overflow-x:auto;-webkit-overflow-scrolling:touch;
+    scroll-snap-type:x proximity;
+  }
+  .tab{flex:0 0 auto;padding:7px 12px;scroll-snap-align:start}
+  .tab span.tb{display:inline;font-size:12.5px;margin-left:5px}
+  .tab i{font-size:13px}
+  /* 标签在滚动时给出视觉提示：左右渐隐 */
+  .tabs{
+    -webkit-mask-image:linear-gradient(90deg,transparent 0,#000 10px,#000 calc(100% - 14px),transparent 100%);
+    mask-image:linear-gradient(90deg,transparent 0,#000 10px,#000 calc(100% - 14px),transparent 100%);
+  }
+  /* 地图给足高度 */
+  .mapwrap{min-height:52vh}
+  .side{max-height:none}
+  .gs-ctl{gap:5px}
+  .gs-ctl button{width:34px;height:34px;font-size:15px}
+  .disc{font-size:9.5px;padding:4px 9px}
+  /* 窄屏顶栏变成两行，加载条下移到第二行（标签栏）之下 */
+  #busybar{top:88px}
+}
+
 @media print{.topbar,.ticker,.disc,.gs-ctl{display:none}}
 
 /* ========== 栅格影像模式（放最后以确保优先级最高） ==========

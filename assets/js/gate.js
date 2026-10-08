@@ -31,16 +31,88 @@
 
   function apply() { /* 占位：放行状态无需额外处理，遮罩已在构造时移除 */ }
 
-  /* ---------- SHA-256（浏览器原生 SubtleCrypto） ---------- */
+  /* ---------- SHA-256 ---------- */
+  /* ⚠️ WebCrypto 的 crypto.subtle 只在【安全上下文】可用：
+     https:// 或 http://localhost 可用，**file:// 不可用**。
+     之前一律 reject，导致本地双击 index.html 打开时
+     无论密码对错都提示「请用 https 访问」——本地预览直接不可用。
+     故补一个纯 JS 的 SHA-256 作为 file:// 兜底（仅本地预览场景）。 */
+  function sha256Pure(text) {
+    // 经典 SHA-256，纯 JS 实现（约 60 行）
+    function rr(n, x) { return (x >>> n) | (x << (32 - n)); }
+    var K = [], H = [], primes = [], i = 2, j;
+    for (i = 2; primes.length < 64; i++) {
+      var isP = true;
+      for (j = 2; j * j <= i; j++) if (i % j === 0) { isP = false; break; }
+      if (isP) primes.push(i);
+    }
+    for (i = 0; i < 64; i++) K[i] = (Math.pow(primes[i], 1 / 3) % 1 * 4294967296) | 0;
+    for (i = 0; i < 8; i++) H[i] = (Math.pow(primes[i], 1 / 2) % 1 * 4294967296) | 0;
+
+    function utf8Bytes(s) {
+      var out = [], c, i2;
+      for (i2 = 0; i2 < s.length; i2++) {
+        c = s.charCodeAt(i2);
+        if (c < 0x80) out.push(c);
+        else if (c < 0x800) { out.push(0xc0 | (c >> 6), 0x80 | (c & 63)); }
+        else if (c < 0xd800 || c >= 0xe000) { out.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63)); }
+        else {
+          i2++;
+          var cp = 0x10000 + ((c & 0x3ff) << 10) + (s.charCodeAt(i2) & 0x3ff);
+          out.push(0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 63), 0x80 | ((cp >> 6) & 63), 0x80 | (cp & 63));
+        }
+      }
+      return out;
+    }
+
+    function sha256Bytes(bytes) {
+      var l = bytes.length;
+      var withPad = new Array((((l + 8) >> 6) + 1) << 6);
+      for (var a = 0; a < withPad.length; a++) withPad[a] = 0;
+      for (a = 0; a < l; a++) withPad[a] = bytes[a];
+      withPad[l] = 0x80;
+      var bits = l * 8;
+      for (a = 0; a < 4; a++) withPad[withPad.length - 1 - a] = (bits >>> (a * 8)) & 0xff;
+
+      var w = new Array(64);
+      for (var b = 0; b < withPad.length; b += 64) {
+        for (a = 0; a < 16; a++) {
+          w[a] = (withPad[b + a * 4] << 24) | (withPad[b + a * 4 + 1] << 16) |
+                 (withPad[b + a * 4 + 2] << 8) | withPad[b + a * 4 + 3];
+        }
+        for (a = 16; a < 64; a++) {
+          var s0 = rr(7, w[a - 15]) ^ rr(18, w[a - 15]) ^ (w[a - 15] >>> 3);
+          var s1 = rr(17, w[a - 2]) ^ rr(19, w[a - 2]) ^ (w[a - 2] >>> 10);
+          w[a] = (w[a - 16] + s0 + w[a - 7] + s1) | 0;
+        }
+        var v = H.slice(0);
+        for (a = 0; a < 64; a++) {
+          var S1 = rr(6, v[4]) ^ rr(11, v[4]) ^ rr(25, v[4]);
+          var ch = (v[4] & v[5]) ^ (~v[4] & v[6]);
+          var t1 = (v[7] + S1 + ch + K[a] + w[a]) | 0;
+          var S0 = rr(2, v[0]) ^ rr(13, v[0]) ^ rr(22, v[0]);
+          var mj = (v[0] & v[1]) ^ (v[0] & v[2]) ^ (v[1] & v[2]);
+          var t2 = (S0 + mj) | 0;
+          v[7] = v[6]; v[6] = v[5]; v[5] = v[4]; v[4] = (v[3] + t1) | 0;
+          v[3] = v[2]; v[2] = v[1]; v[1] = v[0]; v[0] = (t1 + t2) | 0;
+        }
+        for (a = 0; a < 8; a++) H[a] = (H[a] + v[a]) | 0;
+      }
+      return H.map(function (x) { return ('00000000' + (x >>> 0).toString(16)).slice(-8); }).join('');
+    }
+    return sha256Bytes(utf8Bytes(text));
+  }
+
   function sha256(text) {
     if (window.crypto && window.crypto.subtle && window.TextEncoder) {
       return window.crypto.subtle.digest('SHA-256',
         new TextEncoder().encode(text)).then(function (buf) {
           return Array.prototype.map.call(new Uint8Array(buf),
             function (b) { return b.toString(16).padStart(2, '0'); }).join('');
-        });
+        }).catch(function () { return sha256Pure(text); });
     }
-    return Promise.reject(new Error('no-subtle-crypto'));
+    // file:// 或旧浏览器 → 纯 JS 兜底，保证本地预览可用
+    return Promise.resolve(sha256Pure(text));
   }
 
   function mount() {
