@@ -1417,6 +1417,34 @@
           var cs = String(c);
           return cs !== mc && cs.slice(0, 4) === mc.slice(0, 4);
         });
+        /* ⚠️ 县界数据本身可能漏县：DataV 县级要素并不完整，
+           山东实测缺 17 个（全是市区：潍城/坊子/奎文/历城/天桥/张店/芝罘/兰山…）。
+           这些县的乡镇数据是齐的，但因 `inCity` 非空而直接走
+           drawCityWithCounties，缺掉的县既画不出来也点不进去
+           （用户报障：「潍坊我不能点到乡镇」——潍坊下辖 12 个区，
+            市界只画出 9 个，潍城区/坊子区/奎文区三个主城区直接消失）。
+           故：先把 CF（乡镇数据聚合出的县面）中属于本市、而县界缺的补上，
+           两类合并后再画。 */
+        var cfMiss = [];
+        if (okCf) {
+          for (var fk in CF) {
+            var fks = String(fk);
+            if (fks.length !== 6) continue;
+            if (fks.slice(0, 4) !== mc.slice(0, 4)) continue;
+            if (fks === mc) continue;
+            if (!CF[fk] || !CF[fk].rings || !CF[fk].rings.length) continue;
+            if (inCity.indexOf(fk) >= 0) continue;
+            cfMiss.push(fk);
+          }
+        }
+        if (cfMiss.length) {
+          if (inCity.length) {
+            drawCityMixed(pv, cityObj, inCity, cfMiss);
+          } else if (cfMiss.length) {
+            drawCityWithCountyFaces(pv, cityObj, cfMiss);
+          }
+          return;
+        }
         if (inCity.length) {
           drawCityWithCounties(pv, cityObj, inCity);
           return;
@@ -1471,6 +1499,71 @@
      画法：把本级面按县样式渲染 + 异步叠加乡镇界（与县级视图一致）。 */
   function drawCityAsCounty(pv, cityObj, code) {
     renderCounty(pv, cityObj, code);
+  }
+
+  /* 市级视图的第三种画法：县界 + CF 混合。
+     用于「县界数据部分缺失」的省（山东缺 17 个市区县、吉林延边等）。
+     两类县用同一样式绘制，用户看不出差别，也都能正常点击下钻。 */
+  function drawCityMixed(pv, cityObj, kbCodes, cfCodes) {
+    DM.clearLayer(MI, 'base'); DM.clearBIZ(MI); DM.clearLayer(MI, 'lab'); DM.clearLayer(MI, 'risk');
+    var st = MI.svg; if (st) st.pxAnchors = [];
+
+    var mc = String(cityObj.c);
+    if (!/^[0-9]{2}0000$/.test(mc)) {
+      DM.area(MI, { n: pv.n, c: pv.c, r: abs(pv) },
+        { fill: 'rgba(59,130,246,.04)', stroke: 'rgba(96,165,250,.5)', strokeWidth: 1.4 });
+    }
+
+    var stops = vstopsFor(N.activeLayer);
+    var bbox = null, placed = [];
+    function paint(name, code, rings, kindLabel) {
+      var v = NAT.topicValue(N.activeLayer, code);
+      var col = N.activeLayer === 'cover' ? 'rgb(59,130,246)' : ramp(stops, v);
+      var rgb = rgbOf(col);
+      DM.area(MI, { n: name, c: code, kind: 'county', r: rings }, {
+        fill: 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',.66)',
+        stroke: EDGE.town.c, strokeWidth: 1.2
+      });
+      if (st && st._vw > 620) {
+        var ct = G.polyCentroid(rings);
+        var px = st.toPx(ct[0], ct[1]);
+        var hit = false;
+        for (var i = 0; i < placed.length; i++) {
+          var dx = placed[i][0] - px.x, dy = placed[i][1] - px.y;
+          if (dx * dx + dy * dy < 48 * 48) { hit = true; break; }
+        }
+        if (!hit) {
+          placed.push([px.x, px.y]);
+          var el = DM.pxLabel(MI, 'lab', px.x, px.y, name,
+            { fill: '#fff', size: 10.5, halo: 'rgba(3,8,18,.96)', haloW: 3.6 });
+          if (el) DM.anchor(MI, el, ct[0], ct[1], 0, null, true, 620);
+        }
+      }
+      var b = ringBBox(rings);
+      if (b) bbox = bbox ? [Math.min(bbox[0], b[0]), Math.min(bbox[1], b[1]),
+        Math.max(bbox[2], b[2]), Math.max(bbox[3], b[3])] : b.slice();
+    }
+
+    // 第一类：县界数据里的县
+    kbCodes.forEach(function (c) {
+      var kk = KB[c]; if (!kk) return;
+      var rings = absKB(kk);
+      if (!rings || !rings.length) return;
+      paint(kk.n, c, rings, 'kb');
+    });
+    // 第二类：县界缺失、由乡镇数据聚合出的县面
+    cfCodes.forEach(function (c) {
+      var f = CF[c]; if (!f || !f.rings || !f.rings.length) return;
+      paint(f.n, f.c || Number(c), f.rings, 'cf');
+    });
+
+    $('#nat-title').textContent = pv.n + ' / ' + cityObj.n + ' · ' +
+      (kbCodes.length + cfCodes.length) + ' 个县区遥感分布';
+    renderRaster({ layer: N.activeLayer, rings: abs(cityObj), code: cityObj.c, pixelM: 320, alpha: .82, onStats: paintGrowthPanel });
+    paintCrumb();
+    if (bbox) DM.fit(MI, bbox);
+    syncSatZoom();
+    showCityInfo(cityObj, pv.c);
   }
 
   /* 市级视图的第二种画法：县面来自 CF（由乡镇数据聚合）
