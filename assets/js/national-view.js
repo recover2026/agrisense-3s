@@ -830,8 +830,7 @@
         var sp = st.toPx(L[0], L[1]);
         if (sp.x < 40 || sp.x > st._vw - 40 || sp.y < 30 || sp.y > st._vh - 30) return;
         RS.overlayLabel(MI.host, st, L[0], L[1], L[2], {
-          fill: L[3] || '#fff', size: L[4] || 12, weight: 700,
-          haloW: 4.4, dy: L[5] || 0
+          fill: L[3] || '#fff', size: L[4] || 12, weight: 700, dy: L[5] || 0
         });
       });
     }
@@ -1170,7 +1169,7 @@
         if (hit) return;
         placed.push([px.x, px.y]);
         var el = DM.pxLabel(MI, 'lab', px.x, px.y, o.n,
-          { fill: '#fff', size: 11.5, halo: 'rgba(3,8,18,.97)', haloW: 4.2, weight: 700 });
+          { fill: '#fff', size: 11.5, halo: 'rgba(3,8,18,.97)', weight: 700 });
         if (el) DM.anchor(MI, el, ct[0], ct[1], 0, null, true, Math.round(GAP * 1.5));
       });
     }
@@ -1345,11 +1344,11 @@
     var ct = G.polyCentroid(rings);
     var px = st.toPx(ct[0], ct[1]);
     var el = DM.pxLabel(MI, 'lab', px.x, px.y - 22, k.n,
-      { fill: '#fff', size: 16, halo: 'rgba(3,8,18,.96)', haloW: 5.5, weight: 800 });
+      { fill: '#fff', size: 16, halo: 'rgba(3,8,18,.96)', weight: 800 });
     if (el) DM.anchor(MI, el, ct[0], ct[1], -22);
     var sub = (pv ? pv.n : '') + (cityObj ? ' · ' + cityObj.n : '');
     var el2 = DM.pxLabel(MI, 'lab', px.x, px.y + 6, sub,
-      { fill: 'rgba(230,240,255,.9)', size: 11, halo: 'rgba(3,8,18,.94)', haloW: 4 });
+      { fill: 'rgba(230,240,255,.9)', size: 11, halo: 'rgba(3,8,18,.94)' });
     if (el2) DM.anchor(MI, el2, ct[0], ct[1], 6);
   }
 
@@ -1375,7 +1374,7 @@
       var ct = G.polyCentroid(rings);
       var px = st.toPx(ct[0], ct[1]);
       var el = DM.pxLabel(MI, 'lab', px.x, px.y, cityObj.n + ' · 加载中',
-        { fill: '#fff', size: 13, halo: 'rgba(3,8,18,.96)', haloW: 5, weight: 800 });
+        { fill: '#fff', size: 13, halo: 'rgba(3,8,18,.96)', weight: 800 });
       if (el) DM.anchor(MI, el, ct[0], ct[1]);
     }
   }
@@ -1535,7 +1534,7 @@
         if (!hit) {
           placed.push([px.x, px.y]);
           var el = DM.pxLabel(MI, 'lab', px.x, px.y, name,
-            { fill: '#fff', size: 10.5, halo: 'rgba(3,8,18,.96)', haloW: 3.6 });
+            { fill: '#fff', size: 10.5, halo: 'rgba(3,8,18,.96)' });
           if (el) DM.anchor(MI, el, ct[0], ct[1], 0, null, true, 620);
         }
       }
@@ -1603,7 +1602,7 @@
         if (!hit) {
           placed.push([px.x, px.y]);
           var el = DM.pxLabel(MI, 'lab', px.x, px.y, f.n,
-            { fill: '#fff', size: 10, halo: 'rgba(3,8,18,.96)', haloW: 3.4 });
+            { fill: '#fff', size: 10, halo: 'rgba(3,8,18,.96)' });
           if (el) DM.anchor(MI, el, ct[0], ct[1], 0, null, true, 620);
         }
       }
@@ -1644,7 +1643,7 @@
     });
     var ct = G.polyCentroid(abs(cityObj));
     var px = st.toPx(ct[0], ct[1]);
-    var el = DM.pxLabel(MI, 'lab', px.x, px.y, cityObj.n, { fill: '#fff', size: 14, halo: 'rgba(3,8,18,.96)', haloW: 5, weight: 800 });
+    var el = DM.pxLabel(MI, 'lab', px.x, px.y, cityObj.n, { fill: '#fff', size: 14, halo: 'rgba(3,8,18,.96)', weight: 800 });
     if (el) DM.anchor(MI, el, ct[0], ct[1]);
 
     /* 据实标注：县界未取到，不能让标题看起来像已下钻成功 */
@@ -1692,7 +1691,7 @@
         if (!hit) {
           placed.push([px.x, px.y]);
           var el = DM.pxLabel(MI, 'lab', px.x, px.y, k.n,
-            { fill: '#fff', size: 10.5, halo: 'rgba(3,8,18,.96)', haloW: 3.6 });
+            { fill: '#fff', size: 10.5, halo: 'rgba(3,8,18,.96)' });
           if (el) DM.anchor(MI, el, ct[0], ct[1], 0, null, true, 620);
         }
       }
@@ -2163,7 +2162,7 @@
         }
         if (hit) return;
         placed.push([px.x, px.y]);
-        var el = DM.pxLabel(MI, 'lab', px.x, px.y, p.n, { fill: '#fff', size: 11, halo: 'rgba(3,8,18,.96)', haloW: 4.4 });
+        var el = DM.pxLabel(MI, 'lab', px.x, px.y, p.n, { fill: '#fff', size: 11, halo: 'rgba(3,8,18,.96)' });
         if (el) DM.anchor(MI, el, ct[0], ct[1], 0, null, true, 620);
       });
     }
@@ -2420,7 +2419,7 @@ function drawDisasterCircles() {
         if (!hit) {
           placed.push([px.x, px.y]);
           var el = DM.pxLabel(MI, 'lab', px.x, px.y, f.n,
-            { fill: '#fff', size: 10, halo: 'rgba(3,8,18,.96)', haloW: 3.4 });
+            { fill: '#fff', size: 10, halo: 'rgba(3,8,18,.96)' });
           if (el) DM.anchor(MI, el, ct[0], ct[1], 0, null, true, 620);
         }
       }
@@ -2473,7 +2472,7 @@ function drawDisasterCircles() {
     var ct = G.polyCentroid(abs(pv));
     if (st && st._vw > 620) {
       var px = st.toPx(ct[0], ct[1]);
-      var el = DM.pxLabel(MI, 'lab', px.x, px.y, pv.n, { fill: '#fff', size: 13, halo: 'rgba(3,8,18,.96)', haloW: 5 });
+      var el = DM.pxLabel(MI, 'lab', px.x, px.y, pv.n, { fill: '#fff', size: 13, halo: 'rgba(3,8,18,.96)' });
       if (el) DM.anchor(MI, el, ct[0], ct[1]);
     }
     // 灾点圈已挪到 DM.fit 之后绘制（toPx 需要新变换）
@@ -2519,7 +2518,7 @@ function drawDisasterCircles() {
         }
         if (!hit) {
           placed.push([px.x, px.y]);
-          var el = DM.pxLabel(MI, 'lab', px.x, px.y, c.n, { fill: '#fff', size: 10.5, halo: 'rgba(3,8,18,.96)', haloW: 3.6 });
+          var el = DM.pxLabel(MI, 'lab', px.x, px.y, c.n, { fill: '#fff', size: 10.5, halo: 'rgba(3,8,18,.96)' });
           if (el) DM.anchor(MI, el, ct[0], ct[1], 0, null, true, 620);
         }
       }

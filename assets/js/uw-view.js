@@ -888,11 +888,11 @@
       // 县名 + 保费标签
       var p = m.toPx(a.x, a.y);
       var lb = m.pxLabel('lab', p.x, p.y - 16, a.n, {
-        fill: '#ffffff', size: 12, halo: 'rgba(4,10,20,.95)', haloW: 4.2, weight: 700
+        fill: '#ffffff', size: 12, halo: 'rgba(4,10,20,.95)', weight: 700
       });
       m.anchor(lb, a.x, a.y, -16);
       var pv = m.pxLabel('lab', p.x, p.y + 12, (a.prem / 1e4).toFixed(1) + '万', {
-        fill: '#a5f3fc', size: 11, halo: 'rgba(4,10,20,.95)', haloW: 4
+        fill: '#a5f3fc', size: 11, halo: 'rgba(4,10,20,.95)'
       });
       m.anchor(pv, a.x, a.y, 12);
     });

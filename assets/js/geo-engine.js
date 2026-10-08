@@ -513,11 +513,22 @@
   GeoCanvas.prototype.pxLabel = function (layerName, x, y, text, style, meta) {
     var L = this.layers[layerName]; if (!L) return null;
     y = this._avoidLabels(layerName, x, y, 0, 0);
+    var fs = style.size || 12;
+    /* 描边宽度必须随字号等比，不能当固定值写死。
+       ⚠️ 实测踩坑：各视图把 haloW 写成 3.4~5.5 的常量，而字号才 10~16px，
+          描边占字号 34%~40%。三个字宽约 31px，描边单侧就吃掉 1.8px，
+          字腔被填满 → 标签糊成「黑底白块」，用户报「文字有重影」。
+       这里改为：显式传入的 haloW 若超过字号的 18% 就按 18% 收敛，
+       未传入则取字号的 15%（小字号描边细一点更清晰）。 */
+    var hw = style.haloW || fs * 0.15;
+    var maxHw = fs * 0.18;
+    if (hw > maxHw) hw = maxHw;
     var t = el('text', {
       x: x, y: y, class: 'gs-label', fill: style.fill || '#e8f0fb',
-      'font-size': style.size || 12, 'text-anchor': style.anchor || 'middle',
+      'font-size': fs, 'text-anchor': style.anchor || 'middle',
       'paint-order': 'stroke', stroke: style.halo || 'rgba(3,8,18,.9)',
-      'stroke-width': style.haloW || 3.4, 'font-weight': style.weight || 700, 'font-family': 'inherit'
+      'stroke-width': hw.toFixed(2), 'stroke-linejoin': 'round',
+      'font-weight': style.weight || 700, 'font-family': 'inherit'
     });
     if (style.opacity != null) t.setAttribute('opacity', style.opacity);
     t.textContent = text;
