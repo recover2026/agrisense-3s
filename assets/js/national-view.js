@@ -2814,6 +2814,13 @@
     var list = N.cityCache[N.curProvince] || [];
     if (N.level === 'province') {
       out.push({ grp: '地级市 · 点击进入' });
+      if (!list.length) {
+        /*市界数据还在路上（弱网/冷启动实测可达十几秒）。
+           此时不能给一个空列表 —— 用户点开只看到标题、下面什么都没有，
+           会以为功能坏了。如实说明并在数据到齐后自动重建。 */
+        out.push({ pending: true });
+        return out;
+      }
       list.forEach(function (c) {
         out.push({ t: shortName(c.n), sub: c.n, act: function () { pickCity(c.c); } });
       });
@@ -2914,6 +2921,23 @@
       var bare = String(sub).replace(/(市|县|区|地区|盟|自治州|自治县|旗|盟|县|市辖区)$/g, '');
       if (bare === t || bare === String(t).replace(/(市|县|区)$/g, '')) return '';
       return sub;
+    }
+    var pending = items.some(function (it) { return it.pending; });
+    if (pending) {
+      pop.innerHTML = '<div class="nat-jump-grp">地级市</div>' +
+        '<div class="nat-jump-empty">正在加载本市下辖区县数据…<br>' +
+        '若持续无内容，请返回上级后重试（网络较慢时需数秒）。</div>';
+      /* 数据到齐后自动重建，用户不用手动再点一次 */
+      clearInterval(buildJump._t);
+      var tries = 0;
+      buildJump._t = setInterval(function () {
+        if (tries++ > 40) { clearInterval(buildJump._t); return; }
+        var l = N.cityCache[N.curProvince] || [];
+        if (!l.length) return;
+        clearInterval(buildJump._t);
+        if (jumpPop && !jumpPop.hidden) { buildJump(); }
+      }, 500);
+      return;
     }
     pop.innerHTML = items.map(function (it, i) {
       if (it.grp) return '<div class="nat-jump-grp">' + it.grp + '</div>';
