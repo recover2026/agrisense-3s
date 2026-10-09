@@ -62,7 +62,28 @@
     this._imgs = [];
     this._sig = '';
     this.zoom = -1;
+    /* 真实出图状态回报。
+       ⚠️ 此前本层【完全不回报状态】，只有腾讯 SDK 的 probeAuth 会回报，
+          而腾讯无 key 时压根不加载 → dual-map 轮询 40×300ms=12s 后才 fallback，
+          右上角引擎文字就在「加载中…」上卡了 11.4 秒（实测）。
+          讽刺的是 Esri 影像 0.22s 就已经铺好了 —— 用户等的是一句假话。
+          这里在首批瓦片 load/error 时如实回报，让状态立刻变成真的。*/
+    this._pending = 0;      // 本轮待定的瓦片数
+    this._settled = null;   // null 未定 / true 有图 / false 全失败
+    this._reported = null;  // 已回报给上层的结论
+    this.onStatus = null;   // function(ok, info)
   }
+
+  function reportStatus(layer, ok, info) {
+    if (layer._reported === ok) return;
+    layer._reported = ok;
+    if (typeof layer.onStatus === 'function') {
+      try { layer.onStatus(ok, info || {}); } catch (e) { }
+    }
+  }
+  EsriLayer.prototype.resetStatus = function () {
+    this._settled = null; this._reported = null;
+  };
 
   /* 在容器上创建一层 img 拼贴（覆盖在业务 SVG 之下）
      ⚠️ GeoCanvas.view() 直接返回 {lng, lat, zoom, scale, bbox}（世界坐标的经纬度），
@@ -137,6 +158,7 @@
     this.px = px;
 
     this.destroy();
+    this.resetStatus();
 
     var n = Math.pow(2, z);
     /* 中心瓦片号要保留小数：视口中心通常落在某块瓦片中间，
@@ -149,6 +171,8 @@
     var nx = Math.ceil(w / px) + 2;
     var ny = Math.ceil(h / px) + 2;
     var cnt = 0;
+    this._pending = 0;
+    var self2 = this;
     for (var dy = -Math.floor(ny / 2); dy <= Math.ceil(ny / 2); dy++) {
       for (var dx = -Math.floor(nx / 2); dx <= Math.ceil(nx / 2); dx++) {
         var X = tx0 + dx, Y = ty0 + dy;
@@ -180,10 +204,24 @@
         } else {
           img = document.createElement('img');
           img.src = this.url.replace('{z}', z).replace('{x}', X).replace('{y}', Y);
-          (function (im, k) {
-            im.addEventListener('load', function () { tileCache[k] = im; });
-            im.addEventListener('error', function () { delete tileCache[k]; });
-          })(img, key);
+          this._pending++;
+          (function (im, k, self) {
+            im.addEventListener('load', function () {
+              tileCache[k] = im;
+              self._pending--;
+              /* 任意一块出图即可判定底图可用 —— 不必等整屏 63 块。
+                 实测首屏 0.22s 就有图出全，状态应立刻转正。*/
+              if (self._settled !== true) { self._settled = true; reportStatus(self, true, { z: self.zoom }); }
+            });
+            im.addEventListener('error', function () {
+              delete tileCache[k];
+              self._pending--;
+              /* 全部失败才算失败（少数瓦片 404 属正常边缘情况） */
+              if (self._pending <= 0 && self._settled !== true) {
+                self._settled = false; reportStatus(self, false, { z: self.zoom });
+              }
+            });
+          })(img, key, this);
         }
         img.style.position = 'absolute';
         img.style.left = Math.round(sp.x) + 'px';
@@ -213,6 +251,22 @@
     this._imgs = [];
   };
 
+  /* 强制重建当前视野的瓦片网格。
+     ⚠️ build() 开头有 _sig 去重：视图没变就直接 return。
+       这对「同一视图重复调用」是优点，但两个场景会被它误伤：
+         ① 底图被 display:none 隐藏后又切回（业务视图的影像/矢量开关）
+         ② destroy() 之后想重新铺图
+       此时瓦片 DOM 已被移除，屏幕上一个都不剩 —— 用户表现为
+       「关了再开，影像变成空白」。这里显式清掉签名强制重建。*/
+  EsriLayer.prototype.invalidate = function () {
+    this._sig = '';
+  };
+  EsriLayer.prototype.rebuild = function (geo) {
+    this.invalidate();
+    this.destroy();
+    return this.build(geo);
+  };
+
   global.EsriImagery = {
     URLS: ESRI,
     /* 底图来源合规自检：供控制台与核验脚本调用
@@ -228,6 +282,17 @@
         advice: '仅限内部演示与方案验证；对外出单/定损出图须改用天地图/腾讯位置服务/高德等境内持证服务'
       };
     },
-    create: function (host, kind) { return new EsriLayer(host, kind); }
+    create: function (host, kind) { return new EsriLayer(host, kind); },
+    /* 供 dual-map / 业务视图挂载：创建并立即出图，不依赖腾讯 SDK */
+    attach: function (host, geo, onStatus) {
+      var layer = new EsriLayer(host, 'satellite');
+      if (onStatus) layer.onStatus = onStatus;
+      layer.build(geo);
+      return layer;
+    },
+    /* 视图容器尺寸变了（标签切换/resize）后强制重建，绕开 _sig 去重 */
+    refresh: function (layer, geo) {
+      if (layer && typeof layer.rebuild === 'function') layer.rebuild(geo);
+    }
   };
 })(window);

@@ -148,6 +148,17 @@
         <!-- 列表与按钮同级、互不嵌套：嵌套时展开的浮层必然压住按钮
              （实测点击被 "intercepts pointer events" 拦截）。 -->
         <div class="nat-jump-pop" id="nat-jump-pop" hidden role="listbox"></div>
+
+        <!-- 下钻加载指示：0.25s 内完成不显示（不闪烁），超过 2.5s 变"慢"态
+             并给出重试入口。此前下钻期间地图毫无变化，用户无法区分
+             "在加载"与"卡死"，于是反复点击、以为点不动。 -->
+        <div class="nat-loading" id="nat-loading" aria-live="polite">
+          <div class="nl-box">
+            <div class="nl-bar"><i></i></div>
+            <div class="nl-t" id="nat-loading-t">正在加载下级边界…</div>
+            <button class="nl-retry" type="button" id="nat-loading-retry">重新加载</button>
+          </div>
+        </div>
       </div>
     </section>
 

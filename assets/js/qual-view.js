@@ -164,8 +164,12 @@
       },
       onEngine: function (e) { setEngine(e.ok, e.label); renderCountry(); },
       onHome: function () { renderCountry(); },
-      onTilesOk: function () { setEngine(true, '卫星影像底图 · 腾讯位置服务'); },
-      onTilesFail: function () { setEngine(false, '矢量底图 · 卫星影像待配置 KEY'); }
+      /* 底图来源据实标注。腾讯需 KEY，而主力底图早已换成免 KEY 的
+         Esri World Imagery —— 原文案「待配置 KEY」是过时且误导的
+         （用户会以为平台没遥感影像）。Esri 的真实出图状态由
+         dual-map 通过 onEngine 回报，与这里不冲突。*/
+      onTilesOk: function () { setEngine(true, '卫星影像底图 · Esri World Imagery'); },
+      onTilesFail: function () { setEngine(false, '矢量底图 · 卫星影像瓦片未取到'); }
     });
     MI.svg.onViewChange = null;
     window.__QUAL_VIEW__.MI = MI;   // 供 renderWhenReady 访问

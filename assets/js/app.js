@@ -779,8 +779,16 @@
     if (key === 'national' && window.__NAT_VIEW__) { window.__NAT_VIEW__.render(); setTimeout(done, 700); return; }
     if (key === 'qual' && window.__QUAL_VIEW__) { window.__QUAL_VIEW__.render(); setTimeout(done, 500); return; }
     if (key === 'uw' && window.__UW_VIEW__) {
-      // 承保视图已构建过也要重绘：容器从 display:none 恢复后尺寸才真实
-      setTimeout(function () { window.__UW_VIEW__.init(); done(); }, 40);
+      /* 承保视图已构建过也要重绘：容器从 display:none 恢复后尺寸才真实。
+         同理补挂影像底图，否则该视图也没有遥感影像（用户报障之一）。*/
+      setTimeout(function () {
+        window.__UW_VIEW__.init();
+        try {
+          var um = window.__UW_MAP__;
+          if (um && window.DualMap && window.DualMap.attachImagery) window.DualMap.attachImagery(um);
+        } catch (e3) { }
+        done();
+      }, 40);
       return;
     }
     var slot = MAPS[key];
@@ -789,6 +797,16 @@
       if (m && m.resize) {
         m.resize();
         if (m._fullBBox) m.fit(m._fullBBox);
+      }
+      /* 给业务视图补上真实卫星影像底图。
+         ⚠️ 这四个视图（总览驾驶舱 / 承保风险 / 理赔定损 / 预警调度）此前
+           直接 new GeoCanvas(容器)，从不经过 DualMap，因此容器内
+           canvas=0、img=0 —— 屏幕上只有纯矢量色块，一眼看去「没有遥感地图」。
+           用户原话："各个功能我也没看到有遥感地图"，说的就是这件事。
+           必须在视图切为 display:block 之后调用：容器隐藏时 clientWidth=0，
+           瓦片网格算不出位置（EsriLayer.build 里 `if (!w || !h) return`）。*/
+      if (m && window.DualMap && window.EsriImagery && window.DualMap.attachImagery) {
+        try { window.DualMap.attachImagery(m); } catch (e2) { }
       }
       done();
     }, 40);
@@ -822,6 +840,18 @@
 
   window.addEventListener('resize', function () {
     Object.keys(st).forEach(function (k) { if (st[k] && st[k].resize) st[k].resize(); });
+    /* 窗口尺寸变了，影像瓦片的屏幕投影宽度也变了，必须按新尺寸重建，
+       否则会留下错位的瓦片或黑边（此前只重建了 SVG 面，没管底图）。*/
+    var MAPS2 = { overview: 'ovMap', underwrite: 'uwMap', claims: 'clMap', warn: 'wnMap' };
+    Object.keys(MAPS2).forEach(function (k) {
+      var m = st[MAPS2[k]];
+      if (m && window.DualMap && window.DualMap.attachImagery) {
+        try { window.DualMap.attachImagery(m); } catch (e) { }
+      }
+    });
+    if (window.__UW_MAP__ && window.DualMap && window.DualMap.attachImagery) {
+      try { window.DualMap.attachImagery(window.__UW_MAP__); } catch (e) { }
+    }
     if (window.__NAT_VIEW__) window.__NAT_VIEW__.render();
     if (window.__QUAL_VIEW__) window.__QUAL_VIEW__.render();
   });

@@ -89,6 +89,12 @@
 
     // 相机：优先用 TMap（卫星底图），失败则用 SVG 自身
     // 主动加载 SDK（attachTMap 内部会等待就绪并重试）
+    /* ⚠️ Esri 底图必须【立即】建起来，不能等 TMap：
+       attachTMap 在无 key 时要走一轮判定才降级，而 Esri 是免 KEY 的、
+       本该第一时间就有图。此前只在 svgToSat / fit 里间接触发，
+       结果资质资格视图首屏【一张瓦片都没有】（实测 tiles=0），
+       用户看到的"各个功能没有遥感地图"包含这个视图。*/
+    try { syncEsri(D); } catch (e0) { }
     if (window.SatMap && window.SatMap.loadSDK) {
       try { window.SatMap.loadSDK(function () { attachTMap(D, tmapHost, opts); }); }
       catch (e) { attachTMap(D, tmapHost, opts); }
@@ -106,9 +112,28 @@
     if (!I) return;
     if (I.map) return;                       // 已接入
     if (!window.TMap) {
+      /* ⚠️ 关键提速点（实测卡 11.4 秒的元凶）：
+         腾讯 SDK 在【无自有 key 且无代理】时，sat-map.loadSDK 会直接放弃
+         （flush(false)，压根不注入 window.TMap）。此时 attachTMap 若还按老逻辑
+         轮询 40 次 × 300ms = 12 秒才 fallback，右上角引擎文字就在
+         「加载中…」上僵持 11.4 秒 —— 而 Esri 真实卫星影像其实 0.22 秒
+         就已经铺满屏幕了。用户看到的就是「一直在加载」。
+         现在先问 sat-map 要一个明确答复：是"决定不加载"还是"还在加载"。
+           · 决定不加载 → 立刻走 Esri 底图 + 立刻回报状态（0 等待）
+           · 还在加载   → 才保留短轮询（SDK 可能马上就绪）
+         轮询上限也从 12s 压到 3.6s：Esri 已能独立供图，再等腾讯纯属拖慢。*/
+      var SM = window.SatMap;
+      var abandoned = SM && SM.state && (SM.state.failed === true) &&
+                      (SM.state.provider === 'esri' || SM.state.provider === 'none');
+      if (abandoned) {
+        I._tries = (I._tries || 0) + 1;
+        if (I._tries < 2) { setTimeout(function () { attachTMap(I, tmapHost, opts); }, 120); return; }
+        fallbackEsriOnly(I, '腾讯底图未配置 KEY，已切换 Esri 卫星影像');
+        return;
+      }
       if (I._tries === undefined) I._tries = 0;
       I._tries++;
-      if (I._tries < 40) {                   // 40 × 300ms ≈ 12s
+      if (I._tries < 12) {                   // 12 × 300ms ≈ 3.6s
         setTimeout(function () { attachTMap(I, tmapHost, opts); }, 300);
         return;
       }
@@ -183,7 +208,8 @@
 
       if (opts.onEngine) opts.onEngine({
         ok: true, label: '卫星影像底图 · 腾讯位置服务',
-        note: D.map.__authFail ? '鉴权受限' : ''
+        note: (typeof I.map.__authFail !== 'undefined' && I.map.__authFail) ? '鉴权受限' : '',
+        source: 'tencent'
       });
     } catch (e) {
       fallback('初始化异常');
@@ -222,10 +248,54 @@ function syncEsri(I) {
         I.esriHost.style.cssText = 'position:absolute;inset:0;z-index:0;' +
           'pointer-events:none;overflow:hidden';
         I.host.insertBefore(I.esriHost, I.host.firstChild);
+        /* 与业务视图同理的开关 class：清不透明底色 + svg 抬到瓦片之上。
+           全国/资质视图原本是靠 #nat-map.has-raster 这类各自的选择器
+           处理的，加了通用开关后统一由 .has-basemap 承担。*/
+        I.host.classList.add('has-basemap');
       }
-      if (!I.esri) I.esri = window.EsriImagery.create(I.esriHost, 'satellite');
+      if (!I.esri) {
+        I.esri = window.EsriImagery.create(I.esriHost, 'satellite');
+        /* 底图真实出图状态 → 立即回报上层，不等腾讯。
+           实测：Esri 首批瓦片 0.22s 出图，这里就会把「加载中…」顶掉；
+           此前这一条链完全不存在，用户只能盯着「加载中…」等满 11.4 秒。*/
+        I.esri.onStatus = function (ok, info) {
+          if (!I.onEngine) return;
+          if (ok) {
+            I.tilesOk = true;
+            I.tilesReason = 'esri';
+            var hide = $('#nat-keyhint'); if (hide) hide.style.display = 'none';
+            I.onEngine({
+              ok: true, label: '卫星影像底图 · Esri World Imagery',
+              note: '实拍影像 z' + (info && info.z != null ? info.z : ''),
+              source: 'esri'
+            });
+          } else {
+            I.tilesOk = false;
+            I.tilesReason = 'esri-tiles-blank';
+            I.onEngine({
+              ok: false, label: '矢量底图 · 卫星影像未取到',
+              note: '瓦片为空', source: 'esri'
+            });
+          }
+        };
+      }
       I.esri.build(I.svg);
     } catch (e) { }
+  }
+
+  /* 无腾讯 KEY 时的一键降级：直接由 Esri 独立供图。
+     与 fallback() 的区别是【不宣告"卫星不可用"】——
+     卫星影像明明是有的（Esri 免 KEY），说不可用既不准确也会让用户
+     以为平台没有遥感能力。*/
+  function fallbackEsriOnly(I, reason) {
+    if (!I) return;
+    I.satOk = false;
+    if (I.tmapHost) I.tmapHost.style.display = 'none';
+    if (I.svg) I.svg.onViewChange = null;
+    syncEsri(I);
+    if (!I.tilesOk && I.onEngine) {
+      I.onEngine({ ok: true, label: '卫星影像底图 · Esri World Imagery', note: reason || '', source: 'esri-pending' });
+    }
   }
 
   function svgToSat(I) {
@@ -298,23 +368,36 @@ function syncEsri(I) {
     if (!I) return;
     I.satOk = false;
     if (I.tmapHost) I.tmapHost.style.display = 'none';
-    if (I.onEngine) I.onEngine({ ok: false, label: '矢量底图（卫星不可用）', note: reason });
+    /* ⚠️ 这里曾经固定宣告「矢量底图（卫星不可用）」，是**事实错误**：
+       腾讯不可用不等于卫星影像不可用 —— Esri World Imagery 免 KEY 一直
+       在正常供图（实测首屏 63 张瓦片全部有图）。用户看到这句会误以为
+       平台没有遥感能力。改为先问 Esri 要真实结论，问不到才给中性文案。*/
+    syncEsri(I);
+    if (I.tilesOk === true) {
+      if (I.onEngine) I.onEngine({ ok: true, label: '卫星影像底图 · Esri World Imagery', note: reason || '', source: 'esri' });
+    } else if (I.onEngine) {
+      I.onEngine({ ok: false, label: '卫星影像底图加载中…', note: reason || '' });
+    }
     // SVG 层自己作为主视图，独立工作
     if (I.svg) {
       I.svg.onViewChange = null;   // 解除反向驱动
       I.svg.host.style.pointerEvents = 'auto';
     }
-    if (I.ctl) {
-      D.ctl.innerHTML = '<button data-a="zin" title="放大">＋</button>' +
-        '<button data-a="zout" title="缩小">－</button>' +
-        '<button data-a="home" title="复位">⌂</button>';
-      D.ctl.addEventListener('click', function (e) {
-        var b = e.target.closest('button'); if (!b || !I.svg) return;
-        var a = b.dataset.a;
-        if (a === 'zin') I.svg.zoomBy(1.5);
-        else if (a === 'zout') I.svg.zoomBy(1 / 1.5);
-        else if (a === 'home' && I.onHome) I.onHome();
-      });
+    if (!I.ctl) {
+      var c = I.host && I.host.querySelector('.dual-ctl');
+      if (c) {
+        c.innerHTML = '<button data-a="zin" title="放大">＋</button>' +
+          '<button data-a="zout" title="缩小">－</button>' +
+          '<button data-a="home" title="复位">⌂</button>';
+        c.addEventListener('click', function (e) {
+          var b = e.target.closest('button'); if (!b || !I.svg) return;
+          var a = b.dataset.a;
+          if (a === 'zin') I.svg.zoomBy(1.5);
+          else if (a === 'zout') I.svg.zoomBy(1 / 1.5);
+          else if (a === 'home' && I.onHome) I.onHome();
+        });
+        I.ctl = c;
+      }
     }
   }
 
@@ -355,12 +438,76 @@ function pxRing(I, l, x, y, r, st) { return I && I.svg && I.svg.pxRing(l, x, y, 
     } catch (e) { }
   }
 
+  /* ---------- 给任意 GeoCanvas 挂 Esri 影像底图 ----------
+     业务视图（总览驾驶舱 / 承保风险 / 理赔定损 / 预警调度）此前直接
+     `new GeoCanvas(容器)`，从不经过 DualMap，因此【一张影像瓦片都没有】——
+     实测 4 个视图的地图容器 canvas=0、img=0，屏幕上只有纯矢量色块。
+     用户原话："各个功能我也没看到有遥感地图"，指的就是这个。
+     这里把 Esri 底图能力独立出来，供这些视图直接挂载。*/
+  function attachImagery(geo, onStatus) {
+    if (!geo || !geo.host) return null;
+    var host = geo.host;
+    if (!host.__imageryHost) {
+      var el = document.createElement('div');
+      el.className = 'esri-imagery biz-imagery';
+      el.style.cssText = 'position:absolute;inset:0;z-index:0;pointer-events:none;overflow:hidden';
+      if (host.firstChild) host.insertBefore(el, host.firstChild);
+      else host.appendChild(el);
+      host.__imageryHost = el;
+      /* 必须加 has-basemap：该 class 是 CSS 里"清掉不透明底色 +
+         svg 提升到瓦片之上 + .gs-bg 透明"的唯一开关。
+         少了它，svg 的不透明 .gs-bg 会整片盖住影像（实测只露出零星几块）。*/
+      host.classList.add('has-basemap');
+    }
+    if (!host.__imageryLayer) {
+      host.__imageryLayer = window.EsriImagery
+        ? window.EsriImagery.create(host.__imageryHost, 'satellite')
+        : null;
+      if (host.__imageryLayer && onStatus) host.__imageryLayer.onStatus = onStatus;
+    }
+    if (host.__imageryLayer) {
+      /* 用 rebuild 而非 build：build 开头有 _sig 去重，视图没变时直接 return。
+         但标签切换/resize 场景下容器刚从 display:none 恢复，
+         瓦片 DOM 还在却已错位或被清空，必须强制重建。
+         瓦片本身走 tileCache 复用，不会重复发网络请求。*/
+      try { host.__imageryLayer.rebuild(geo); } catch (e) { }
+    }
+    /* 影像/矢量切换按钮：业务视图此前完全没有底图概念，
+       用户看的是纯矢量色块，加了影像后需要一个开关以便对比。*/
+    if (!host.__imageryBtn) {
+      var btn = document.createElement('button');
+      btn.className = 'biz-base-btn';
+      btn.type = 'button';
+      btn.title = '切换卫星影像 / 纯矢量';
+      btn.setAttribute('aria-label', '切换卫星影像或纯矢量底图');
+      btn.innerHTML = '<i>◐</i><span>影像</span>';
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        var el = host.__imageryHost;
+        if (!el) return;
+        var on = el.style.display === 'none';
+        el.style.display = on ? '' : 'none';
+        host.classList.toggle('basemap-off', !on);
+        btn.classList.toggle('on', on);
+        btn.querySelector('span').textContent = on ? '影像' : '矢量';
+        /* 切回影像时必须强制重建：_sig 去重会挡住同一视图的重复 build，
+           而瓦片 DOM 在上一轮 destroy 里已被移除 → 切回来是一片空白
+           （实测「关了再开，影像消失」）。*/
+        if (on) { try { host.__imageryLayer.rebuild(geo); } catch (e2) { } }
+      });
+      host.appendChild(btn);
+      host.__imageryBtn = btn;
+    }
+    return host.__imageryLayer;
+  }
+
   window.DualMap = {
     init: init, area: area, pxDot: pxDot, pxRing: pxRing, leader: pxLeader, pxLabel: pxLabel,
     anchor: anchor, clearBIZ: clearBIZ, clearLayer: clearLayer,
     fit: fit, fitLL: fitLL, resize: resize, toPx: toPx, toggleBase: toggleBase,
     syncToSat: svgToSat,
     syncEsri: syncEsri,
+    attachImagery: attachImagery,
     svgHost: function (I) { return I && I.svg && I.svg.host; },
     tmapHost: function (I) { return I && I.tmapHost; },
     get: function (hostId) { return inst(typeof hostId === 'string' ? $(hostId) : hostId); },

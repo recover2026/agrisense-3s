@@ -919,3 +919,142 @@ body.has-detail #v-national .nat-jump-pop{
 #uw-map .esri-imagery img{position:absolute;pointer-events:none;user-select:none}
 /* 控件与比例尺要在底图之上 */
 #uw-map .gs-ctl,#uw-map .gs-scale,#uw-map .gs-coord{z-index:3}
+
+/* ============================================================
+   下钻加载指示（#nat-loading）
+   ------------------------------------------------------------
+   用户报障「一直在加载 / 点不到乡镇」。实测下钻数据其实很快
+   （省→市→县→乡镇 每级约 0.3s），但此前下钻期间地图区域
+   完全没变化、只有标题里一句「加载中…」，用户分不清
+   "在加载"与"卡死"，反复点击后认定"点不动"。
+   这里给一个不遮挡操作、只在慢时才升级的进度提示。
+   ============================================================ */
+.nat-loading{
+  position:absolute;inset:auto 0 50% 0;z-index:11;
+  display:flex;justify-content:center;
+  pointer-events:none;opacity:0;
+  transform:translateY(6px);
+  transition:opacity .18s ease,transform .18s ease;
+}
+.nat-loading.on{opacity:1;transform:translateY(0)}
+/* 0.25s 内完成则不显示，避免每次下钻都闪一下 */
+.nat-loading:not(.show){opacity:0}
+.nat-loading .nl-box{
+  display:flex;align-items:center;gap:10px;
+  padding:7px 14px;border-radius:999px;
+  background:rgba(9,17,30,.86);border:1px solid rgba(120,180,240,.24);
+  backdrop-filter:blur(6px);
+  box-shadow:0 6px 22px rgba(0,0,0,.42);
+}
+.nat-loading .nl-bar{
+  position:relative;width:74px;height:3px;border-radius:2px;
+  background:rgba(255,255,255,.16);overflow:hidden;
+}
+.nat-loading .nl-bar>i{
+  position:absolute;inset:0;width:42%;border-radius:2px;
+  background:linear-gradient(90deg,transparent,#7fd4ff,transparent);
+  animation:nl-slide 1.05s linear infinite;
+}
+@keyframes nl-slide{from{transform:translateX(-110%)}to{transform:translateX(268%)}}
+.nat-loading .nl-t{color:#dce9f7;font:600 12.5px/1.2 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;white-space:nowrap}
+/* 慢速态：补一条可操作的重试入口，而不是让人干等 */
+.nat-loading .nl-retry{
+  display:none;height:22px;padding:0 10px;border-radius:999px;
+  background:rgba(127,212,255,.16);border:1px solid rgba(127,212,255,.42);
+  color:#bfe8ff;font:600 11.5px/1 -apple-system,"PingFang SC",sans-serif;cursor:pointer;
+}
+.nat-loading .nl-retry:hover{background:rgba(127,212,255,.26)}
+.nat-loading.slow .nl-t{color:#ffd08a}
+.nat-loading.slow .nl-retry{display:inline-block}
+@media (max-width:640px){
+  .nat-loading .nl-t{font-size:11.5px}
+  .nat-loading .nl-bar{width:56px}
+}
+
+/* ============================================================
+   业务视图的卫星影像底图（总览驾驶舱/承保风险/理赔定损/预警调度）
+   ------------------------------------------------------------
+   这四个视图的地图容器此前【一张瓦片都没有】（实测 canvas=0、img=0），
+   屏幕上只有纯矢量色块 —— 用户看到的"各个功能没有遥感地图"。
+   现在统一接入 Esri World Imagery，叠放规则与 #uw-map 完全一致：
+     ① 宿主加 .has-basemap 后清掉不透明底色
+     ② svg 提升 absolute + z-index 1（压在瓦片之上，才能接收点击）
+     ③ .gs-bg 透明，瓦片透出来
+   ⚠️ 业务图元的 fill 多为 rgba(.xx) 半透明，正好能透出影像；
+     但少数不透明填充会整片遮挡，故对有底图时的底层面降透明度。
+   ⚠️ z-index 只能取整数，小数会被取整为 0 而失效。
+   ⚠️ 只作用于业务视图的 4 个容器（不含 #nat-map / #qual-map）：
+       那两个走 DualMap + 栅格专题层，有各自既有的叠放规则，
+       套用通用规则会把栅格层的层级打乱。
+   ============================================================ */
+#map-overview.has-basemap,#map-uw.has-basemap,
+#map-cl.has-basemap,#map-wn.has-basemap{background:none !important;background-image:none !important}
+#map-overview.has-basemap .gs-svg,#map-uw.has-basemap .gs-svg,
+#map-cl.has-basemap .gs-svg,#map-wn.has-basemap .gs-svg{position:absolute;inset:0;z-index:1}
+#map-overview.has-basemap .gs-bg,#map-uw.has-basemap .gs-bg,
+#map-cl.has-basemap .gs-bg,#map-wn.has-basemap .gs-bg{fill:transparent !important}
+/* 底图之上，业务面需半透明让影像透出。
+   ⚠️ 图层容器的真实 class 是 .gs-layer-<name>（实测 DOM：
+      class="gs-layer gs-layer-base"），不是 data-layer 属性 ——
+      之前按 [data-layer="base"] 写选择器，一个都没匹配上，
+      影像挂上了却被不透明业务面整片盖住（截图确认）。*/
+#map-overview.has-basemap .gs-layer-base path,
+#map-uw.has-basemap .gs-layer-base path,
+#map-cl.has-basemap .gs-layer-base path,
+#map-wn.has-basemap .gs-layer-base path{opacity:.3}
+#map-overview.has-basemap .gs-layer-cover path,
+#map-uw.has-basemap .gs-layer-cover path,
+#map-cl.has-basemap .gs-layer-cover path,
+#map-wn.has-basemap .gs-layer-cover path{opacity:.45}
+#map-overview .esri-imagery,#map-uw .esri-imagery,
+#map-cl .esri-imagery,#map-wn .esri-imagery{position:absolute;inset:0;z-index:0;pointer-events:none;overflow:hidden}
+#map-overview .esri-imagery img,#map-uw .esri-imagery img,
+#map-cl .esri-imagery img,#map-wn .esri-imagery img{position:absolute;pointer-events:none;user-select:none}
+#map-overview .gs-ctl,#map-uw .gs-ctl,
+#map-cl .gs-ctl,#map-wn .gs-ctl,
+#map-overview .gs-scale,#map-uw .gs-scale,
+#map-cl .gs-scale,#map-wn .gs-scale,
+#map-overview .gs-coord,#map-uw .gs-coord,
+#map-cl .gs-coord,#map-wn .gs-coord{z-index:3}
+
+/* DualMap 视图（#nat-map / #qual-map）的底图叠放：
+   这两个容器结构与业务视图不同（多一层 .dual-svg），
+   但同样需要清底色 + 抬 svg + 让业务面半透明。
+   ⚠️ 不写 .gs-layer-base 降透明度：全国视图的省面是业务主信息，
+      压太淡会看不清；这里只保证底图能透出，不动业务面配色。*/
+#nat-map.has-basemap,#qual-map.has-basemap{background:none !important}
+#nat-map.has-basemap .dual-svg,#qual-map.has-basemap .dual-svg{
+  position:absolute;inset:0;z-index:3;
+}
+#nat-map.has-basemap .gs-bg,#qual-map.has-basemap .gs-bg{fill:transparent !important}
+#nat-map.has-basemap .esri-imagery,#qual-map.has-basemap .esri-imagery{
+  position:absolute;inset:0;z-index:0;pointer-events:none;overflow:hidden;
+}
+#nat-map.has-basemap .esri-imagery img,#qual-map.has-basemap .esri-imagery img{
+  position:absolute;pointer-events:none;user-select:none;
+}
+/* 全国视图的省面填色较实，降到 0.78 让实拍影像透得出纹理，
+   但边界与色块仍需清晰可读。
+   ⚠️ 资质资格视图绝对不能降透明：那里【颜色本身就是主信息】
+     （政策占比分级色），一降透明就只剩灰影、色块全部消失
+     （实测 opacity:.42 直接把整张资格分布图抹平了）。
+     正确做法是不动它的业务面透明度 —— 影像在本视图里仅作弱氛围，
+     压在下面透出一点即可，不追求清晰。*/
+#nat-map.has-basemap .gs-layer-base path{opacity:.78}
+#qual-map.has-basemap .gs-layer-base path{opacity:1}
+
+/* 业务视图的底图切换按钮（右上角，与全国视图的影像按钮同一位置语汇） */
+.biz-base-btn{
+  position:absolute;right:11px;bottom:34px;z-index:12;
+  display:flex;align-items:center;gap:5px;
+  height:29px;padding:0 11px;border-radius:8px;
+  background:rgba(11,20,34,.82);border:1px solid rgba(255,255,255,.16);
+  color:#dbe7f5;font:600 12px/1 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+  cursor:pointer;backdrop-filter:blur(6px);
+}
+.biz-base-btn:hover{background:rgba(24,42,68,.9)}
+.biz-base-btn i{font-style:normal;font-size:13px;opacity:.9}
+.biz-base-btn.on{border-color:rgba(120,200,255,.55);color:#bfe6ff}
+@media (max-width:640px){
+  .biz-base-btn{right:8px;bottom:30px;height:27px;padding:0 9px;font-size:11px}
+}

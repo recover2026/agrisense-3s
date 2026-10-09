@@ -932,8 +932,17 @@
   }
 
   /* ---------- 层级面包屑 ---------- */
+  /* ---------- 下钻加载指示（loadingOn/loadingOff 定义在文件末尾）----------
+     变量声明必须提前到首次使用之前：paintCrumb()（第 935 行）会调 loadingOff()，
+     若 var 声明在后面，首次进入时访问的是 undefined。
+     函数声明本身会被提升，只有 var 不会。*/
+  var loadTimer = null, loadSlow = null, loadWatch = null, loadHard = null;
+
   function paintCrumb() {
     var box = $('#nat-crumb'); if (!box) return;
+    /* 下钻已画完（所有 render / draw 系列函数的出口都会走到这里）→ 收起加载指示。
+       双保险：即便某个分支漏调，loadingOn 里的面数轮询也会兜住。*/
+    loadingOff();
     var pv = N.curProvince ? GP.provinces.filter(function (x) { return String(x.c) === String(N.curProvince); })[0] : null;
     var cityObj = null;
     if (N.level === 'city' || N.level === 'county' || N.level === 'town' || N.level === 'village') {
@@ -1111,6 +1120,7 @@
   /* ---------- 县级下钻：进入某个县，显示大比例尺遥感影像 + 长势 ---------- */
   function renderCounty(pv, cityObj, code) {
     closeJump();
+    loadingOn('正在加载' + countyName(code) + '乡镇边界…');
     /* S2 索引懒加载：只有县级视图用得到真实反演网格。
        首次进入时拉取（约 234KB），拉到后重绘一次把模拟值场换成实测值场；
        拉取失败或该县无记录则维持模拟值场（界面会如实标注）。 */
@@ -1512,6 +1522,7 @@
     N.curVillage = null; N.curVillageKey = null;
     $('#nat-title').textContent = pv.n + ' / ' + cityObj.n + ' · 加载县级边界…';
     $('#nat-scope').textContent = pv.n + ' / ' + cityObj.n;
+    loadingOn('正在加载' + cityObj.n + '县区与乡镇边界…');
 
     /* 先把市域轮廓画出来，避免「加载…」期间地图是空的、用户以为没响应。
        县界/乡镇界到位后下面的回调会 clearLayer 重画，不影响最终结果。
@@ -2253,6 +2264,14 @@
     var back = $('#nat-back');
     if (back) back.addEventListener('click', function () { renderCountry(); });
 
+    /* 加载慢时的「重新加载」：重跑当前层级的渲染。
+       没有它，慢网下用户只能干等或刷新整页（刷新会丢掉已下钻的层级）。*/
+    var retry = $('#nat-loading-retry');
+    if (retry) retry.addEventListener('click', function () {
+      loadingOff();
+      try { redrawCurrent(); } catch (e) { console.warn('[nat] 重绘失败', e); }
+    });
+
     /* 右上角「点选」入口（香港/澳门/厦门/济源/苏州 不显示文字，但仍需可进入） */
     initJump();
     /* 下钻层级变化时关闭已展开的点选列表 —— 否则它停在下层的旧内容上。
@@ -2497,8 +2516,10 @@
        此前只有标题文字变化，地图区域空白，用户无从判断是否卡死。 */
     var BUSY = window.__BUSY__;
     if (BUSY) BUSY.on('正在加载' + pv.n + '市界数据…');
+    loadingOn('正在加载' + pv.n + '市界数据…');
     loadCity(pcode, function (list) {
       if (BUSY) BUSY.off();
+      loadingOff();
       if (!list) {
         /* 市界取不到（网络失败/超时）。此前只改标题、画省域面，
            用户看到的是「标题写着市级下钻、地图却一片空白」，
@@ -3399,6 +3420,50 @@
   function setEngine(ok, text) {
     var e = $('#nat-engine'); if (!e) return;
     e.textContent = text; e.className = ok ? 'engine-ok' : 'engine-warn';
+  }
+
+  /* ---------- 下钻加载指示 ----------
+     ⚠️ 用户报障「一直在加载 / 点不到乡镇」。实测数据链路其实很快
+       （省→市→县→乡镇 每级 0.3s 就绪，5 级全通），真正的观感问题是：
+       下钻期间地图上没有任何变化提示，只有标题里一句「加载中…」，
+       用户无法区分"正在加载"与"卡死了"，于是反复点击、以为点不动。
+       这里加一个显式的加载指示（半透明遮罩 + 进度条），
+       并在超过 1.2s 才出现（快到看不见，不闪烁），2.5s 后给出
+       「仍在加载，可点此重试」的可操作提示，而不是干等。*/
+  function loadingOn(label) {
+    var el = $('#nat-loading'); if (!el) return;
+    var tx = $('#nat-loading-t'); if (tx) tx.textContent = label || '正在加载下级边界…';
+    el.classList.add('on');
+    if (loadTimer) clearTimeout(loadTimer);
+    if (loadSlow) clearTimeout(loadSlow);
+    if (loadWatch) clearInterval(loadWatch);
+    // 0.25s 内完成则不显示，避免每次下钻都闪一下
+    loadTimer = setTimeout(function () { el.classList.add('show'); }, 250);
+    loadSlow = setTimeout(function () { el.classList.add('slow'); }, 2500);
+    /* 兜底自动收起：下钻的出口分散在 6 个 draw 系列函数里（各有 return），
+       逐个插 loadingOff() 极易漏一处，漏了就是"一直转圈"——
+       正是用户报的"一直在加载"。改为轮询检测。
+       ⚠️ 判据不能用「面数 > 1」：乡镇级视图只有 1 个面（点它就是进村），
+         用 > 1 会永远等不到、指示器卡死（实测残留 'nat-loading on'）。
+       改为「层级已推进 且 至少 1 个可拾取面」——
+       进入某一级后画面上必然有可点的面，这才算数据到位。*/
+    var lv0 = N.level;
+    loadWatch = setInterval(function () {
+      var n = document.querySelectorAll('#nat-map path.gs-area[data-pick]').length;
+      var scope = (document.getElementById('nat-scope') || {}).textContent || '';
+      var advanced = (N.level !== lv0) || !/加载中/.test(scope);
+      if (n >= 1 && advanced) loadingOff();
+    }, 120);
+    /* 兜底上限：任何情况下 9 秒必须收起，绝不允许"一直转圈" */
+    loadHard = setTimeout(function () { loadingOff(); }, 9000);
+  }
+  function loadingOff() {
+    var el = $('#nat-loading'); if (!el) return;
+    if (loadTimer) { clearTimeout(loadTimer); loadTimer = null; }
+    if (loadSlow) { clearTimeout(loadSlow); loadSlow = null; }
+    if (loadWatch) { clearInterval(loadWatch); loadWatch = null; }
+    if (loadHard) { clearTimeout(loadHard); loadHard = null; }
+    el.classList.remove('on', 'show', 'slow');
   }
 
   window.__NAT_VIEW__ = {
