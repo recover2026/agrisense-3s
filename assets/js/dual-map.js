@@ -306,7 +306,10 @@ function syncEsri(I) {
    I = 目标实例（由视图 init 时捕获），避免多视图互相踩踏 */
   function area(I, obj, style) { return I && I.svg && I.svg.area('biz', obj, style); }
   function pxDot(I, l, x, y, r, st, m) { return I && I.svg && I.svg.pxDot(l, x, y, r, st, m); }
-  function pxRing(I, l, x, y, r, st) { return I && I.svg && I.svg.pxRing(l, x, y, r, st); }
+    function pxLeader(I, layer, x1, y1, x2, y2, style) {
+    return I && I.svg ? I.svg.pxLeader(layer, x1, y1, x2, y2, style) : null;
+  }
+function pxRing(I, l, x, y, r, st) { return I && I.svg && I.svg.pxRing(l, x, y, r, st); }
   function pxLabel(I, l, x, y, t, st, m) { return I && I.svg && I.svg.pxLabel(l, x, y, t, st, m); }
   function anchor(I, el, wx, wy, dy, sib, opt, minW) { return I && I.svg && I.svg.anchor(el, wx, wy, dy, sib, opt, minW); }
   function clearBIZ(I) { if (I && I.svg) I.svg.clear('biz'); }
@@ -337,7 +340,7 @@ function syncEsri(I) {
   }
 
   window.DualMap = {
-    init: init, area: area, pxDot: pxDot, pxRing: pxRing, pxLabel: pxLabel,
+    init: init, area: area, pxDot: pxDot, pxRing: pxRing, leader: pxLeader, pxLabel: pxLabel,
     anchor: anchor, clearBIZ: clearBIZ, clearLayer: clearLayer,
     fit: fit, fitLL: fitLL, resize: resize, toPx: toPx, toggleBase: toggleBase,
     syncToSat: svgToSat,

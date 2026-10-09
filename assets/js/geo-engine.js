@@ -538,6 +538,39 @@
     return c;
   };
 
+  /* 引线（callout leader）：标签位置 → 要素质心，画一条细白线。
+     用于地理紧邻、质心几乎重合而无法直接分开标注的区域
+     （实测北京↔河北质心距 10px、香港↔澳门仅 8px）。
+     坐标直接存【世界坐标】，随图层变换自动缩放，屏幕上线宽恒定。 */
+  GeoCanvas.prototype.pxLeader = function (layerName, x1, y1, x2, y2, style) {
+    var L = this.layers[layerName]; if (!L) return null;
+    /* 屏幕像素 → 世界坐标 */
+    var wx1 = (x1 - this.tx) / this.scale, wy1 = (this.ty - y1) / this.scale;
+    var wx2 = (x2 - this.tx) / this.scale, wy2 = (this.ty - y2) / this.scale;
+    /* 引线专用子层：必须排在标签之前，否则会盖住所有标签。
+       ⚠️ 踩坑：初版直接 appendChild / insertBefore 到图层最前，
+       结果 5 条引线铺在最上层，elementsFromPoint 命中的全是 line.gs-leader，
+       整幅地图被挡成白底（实测白色像素 98.4%，回退 geo-engine 才恢复 0.2%）。 */
+    if (!L.leaders) {
+      var lg = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+      lg.setAttribute('class', 'gs-leaders');
+      L.g.insertBefore(lg, L.g.firstChild);
+      L.leaders = lg;
+    }
+    var ln = el('line', {
+      x1: wx1.toFixed(1), y1: wy1.toFixed(1),
+      x2: wx2.toFixed(1), y2: wy2.toFixed(1),
+      stroke: (style && style.stroke) || 'rgba(255,255,255,.5)',
+      'stroke-width': (style && style.sw) || 1,
+      'stroke-linecap': 'round',
+      'vector-effect': 'non-scaling-stroke',
+      'pointer-events': 'none',
+      class: 'gs-leader'
+    });
+    L.leaders.appendChild(ln);
+    return ln;
+  };
+
   GeoCanvas.prototype.pxRing = function (layerName, x, y, radiusPx, style) {
     return this.pxDot(layerName, x, y, radiusPx, {
       fill: 'none', stroke: style.stroke, sw: style.sw || 2,

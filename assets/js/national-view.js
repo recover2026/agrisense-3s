@@ -903,6 +903,35 @@
     } catch (e) { }
   }
 
+  /* ---------- 地名简称 ----------
+     用户要求（2026-10-09）：地图上省名一律用简称。
+     原用全称（「新疆维吾尔自治区」8 字）在 11px 字号下压在新疆的
+     狭长经度带上，既挤成一团又与「新疆」混读；实测截图里字被压扁变形，
+     看着像两行重影。
+     简称取「专名 + 通称」的规范简称（与新华社标准简称一致）：
+     内蒙古自治区→内蒙古、新疆维吾尔自治区→新疆、西藏自治区→西藏、
+     广西壮族自治区→广西、宁夏回族自治区→宁夏、
+     香港/澳门特别行政区→香港/澳门。
+     已经是简称的（北京、天津、河北…）原样返回。 */
+  var PROV_SHORT = {
+    '内蒙古自治区': '内蒙古', '新疆维吾尔自治区': '新疆',
+    '西藏自治区': '西藏', '广西壮族自治区': '广西',
+    '宁夏回族自治区': '宁夏', '香港特别行政区': '香港',
+    '澳门特别行政区': '澳门', '新疆生产建设兵团': '兵团'
+  };
+  function shortName(n) {
+    if (!n) return '';
+    if (PROV_SHORT[n]) return PROV_SHORT[n];
+    /* 兜底：任意「××自治区/特别行政区」去掉后缀与民族名 */
+    var m = String(n).match(/^(.+?)(维吾尔|壮族|回族)?(自治区|特别行政区|省|市)/);
+    if (m) {
+      var s = m[1];
+      if (PROV_SHORT[s]) return PROV_SHORT[s];
+      return s;
+    }
+    return String(n);
+  }
+
   /* ---------- 长势面板 ---------- */
   var LVNAME = {
     ndvi: ['差', '较差', '中', '良好', '优'],
@@ -1174,7 +1203,7 @@
         }
         if (hit) return;
         placed.push([px.x, px.y]);
-        var el = DM.pxLabel(MI, 'lab', px.x, px.y, o.n,
+        var el = DM.pxLabel(MI, 'lab', px.x, px.y, shortName(o.n),
           { fill: '#fff', size: 11.5, halo: 'rgba(3,8,18,.97)', weight: 700 });
         if (el) DM.anchor(MI, el, ct[0], ct[1], 0, null, true, Math.round(GAP * 1.5));
       });
@@ -2179,36 +2208,89 @@
 
     // 灾点圈已挪到 DM.fit 之后绘制（toPx 需要新变换）
 
-    // 省名标注（面积优先 + 碰撞避让）
-    if (st && st._vw > 620) {
-      var placed = [];
-      GP.provinces.slice().sort(function (a, b) { return (b.w * b.h) - (a.w * a.h); }).forEach(function (p) {
-        var ct = G.polyCentroid(abs(p));
-        var px = st.toPx(ct[0], ct[1]);
-        var hit = false;
-        for (var i = 0; i < placed.length; i++) {
-          var dx = placed[i][0] - px.x, dy = placed[i][1] - px.y;
-          if (dx * dx + dy * dy < 56 * 56) { hit = true; break; }
-        }
-        if (hit) return;
-        placed.push([px.x, px.y]);
-        var el = DM.pxLabel(MI, 'lab', px.x, px.y, p.n, { fill: '#fff', size: 11, halo: 'rgba(3,8,18,.96)' });
-        if (el) DM.anchor(MI, el, ct[0], ct[1], 0, null, true, 620);
-      });
-    }
 
     DM.fit(MI, bbox);
+
+    /* 栅格底纹必须在 DM.fit 之后 —— 栅格 canvas 依赖当前视图变换定位，
+       放在 fit 之前会导致整幅底色错位（实测地图区白底占比 98.4%）。
+       ⚠️ 原来还传了 overlay.labels = 全部省名（ovl3），会把下方已标注
+       （含避让与引线）的省名【再画一遍】，且第二遍无避让 ——
+       北京/天津压在河北上、港澳压在广东旁，正是用户看到的"重叠"。
+       现只传栅格层，省名标注单一来源。 */
     if (N.activeLayer !== 'disaster') drawDisasterCircles();   // 必须在 fit 之后：否则 toPx 用的还是上一级变换
-    var ovl3 = [];
-    GP.provinces.forEach(function (p) {
-      var cc = G.polyCentroid(abs(p));
-      ovl3.push([cc[0], cc[1], p.n.replace(/维吾尔|壮族|回族|自治区|特别行政区|省|市/g, ''), '#fff', 11, 0]);
-    });
+    /* 栅格底纹。⚠️ 这里原本还传了 overlay.labels = 全部省名（ovl3），
+       会把上面已标注（含避让与引线）的省名【再画一遍】——
+       第二遍没有任何碰撞避让，于是北京/天津直接压在河北上、
+       港澳压在广东旁，正是用户看到的"重叠"。
+       现只传栅格层，省名标注统一由上方的 pxLabel 负责，单一来源。 */
     renderRaster({
       layer: N.activeLayer, rings: null, code: 0, pixelM: 1200, alpha: .22,
       onStats: paintGrowthPanel,
-      overlay: { rings: null, labels: ovl3 }
+      overlay: { rings: null }
     });
+
+    /* 省名标注必须在 DM.fit 之后 —— toPx 依赖当前视图变换，
+       放在 fit 之前算的是上一级视图的坐标，避让判据完全失效
+       （实测北京与河北实际相距 5px，却双双通过了避让判定）。 */
+
+    /* 省名标注（面积优先 + 碰撞避让 + 引线标注）
+       实测遗留 5 处重叠：河北∩北京、河北∩天津、广东∩香港、
+       香港∩澳门、南海诸岛∩台湾 —— 全是地理紧邻区。
+       旧逻辑用固定 56px 圆距避让：北京与河北质心仅 10px、
+       香港与澳门仅 8px（而分开需要 77px），固定阈值根本挡不住。
+       现改为【矩形真实相交】判定；重叠时把标签拉到旁边并画引线，
+       这是地图标注的标准做法（callout label）。 */
+    if (st && st._vw > 620) {
+      var placed = [];
+      var shortList = GP.provinces.slice().sort(function (a, b) { return (b.w * b.h) - (a.w * a.h); });
+      /* 第一轮：正常标注，重叠的记下来 */
+      var crowded = [];
+      shortList.forEach(function (p) {
+        var nm = shortName(p.n);
+        var estW = nm.length * 11 + 2;
+        var ct = G.polyCentroid(abs(p));
+        var px = st.toPx(ct[0], ct[1]);
+        var half = estW / 2 + 2, ht = 9;
+        var hit = false;
+        for (var i = 0; i < placed.length; i++) {
+          var o = placed[i];
+          if (Math.abs(o[0] - px.x) < half + o[2] && Math.abs(o[1] - px.y) < ht * 2 + 3) { hit = true; break; }
+        }
+        if (hit) { crowded.push({ p: p, ct: ct, px: px, w: estW }); return; }
+        placed.push([px.x, px.y, half]);
+        var el = DM.pxLabel(MI, 'lab', px.x, px.y, nm, { fill: '#fff', size: 11, halo: 'rgba(3,8,18,.96)' });
+        if (el) DM.anchor(MI, el, ct[0], ct[1], 0, null, true, 620);
+      });
+      /* 第二轮：拥挤者按上下左右四个方向找空位，用引线连回原质心 */
+      var DIRS = [[0, -1], [0, 1], [1, 0], [-1, 0], [1, -1], [-1, 1], [1, 1], [-1, -1]];
+      crowded.forEach(function (c) {
+        var half2 = c.w / 2 + 2, ok = null;
+        for (var ring = 1; ring <= 5 && !ok; ring++) {
+          for (var di = 0; di < DIRS.length && !ok; di++) {
+            var nx = c.px.x + DIRS[di][0] * (26 + ring * 15);
+            var ny = c.px.y + DIRS[di][1] * (26 + ring * 15);
+            if (nx < 30 || nx > st._vw - 30 || ny < 16 || ny > st._vh - 16) continue;
+            var bad = false;
+            for (var j = 0; j < placed.length; j++) {
+              var o2 = placed[j];
+              if (Math.abs(o2[0] - nx) < o2[2] + half2 && Math.abs(o2[1] - ny) < 21) { bad = true; break; }
+            }
+            if (!bad) ok = { x: nx, y: ny };
+          }
+        }
+        if (!ok) ok = { x: c.px.x, y: c.px.y };
+        placed.push([ok.x, ok.y, half2]);
+        /* 引线：从标签位置回到该省质心 */
+        try {
+          DM.leader(MI, 'lab', ok.x, ok.y, c.px.x, c.px.y,
+            { stroke: 'rgba(255,255,255,.5)', sw: 1 });
+        } catch (e) { }
+        var el2 = DM.pxLabel(MI, 'lab', ok.x, ok.y, shortName(c.p.n),
+          { fill: '#fff', size: 11, halo: 'rgba(3,8,18,.96)' });
+        if (el2) DM.anchor(MI, el2, c.ct[0], c.ct[1], 0, null, true, 620);
+      });
+    }
+
     paintCrumb();;
   }
 
@@ -2534,7 +2616,7 @@
     var ct = G.polyCentroid(abs(pv));
     if (st && st._vw > 620) {
       var px = st.toPx(ct[0], ct[1]);
-      var el = DM.pxLabel(MI, 'lab', px.x, px.y, pv.n, { fill: '#fff', size: 13, halo: 'rgba(3,8,18,.96)' });
+      var el = DM.pxLabel(MI, 'lab', px.x, px.y, shortName(pv.n), { fill: '#fff', size: 13, halo: 'rgba(3,8,18,.96)' });
       if (el) DM.anchor(MI, el, ct[0], ct[1]);
     }
     // 灾点圈已挪到 DM.fit 之后绘制（toPx 需要新变换）
