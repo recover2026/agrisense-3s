@@ -160,8 +160,24 @@
         window.SatMap.probeAuth(I.map, function (ok, reason) {
           I.tilesOk = (ok === true);
           I.tilesReason = reason;
-          if (ok === false && I.onTilesFail) I.onTilesFail(reason);
-          else if (ok === true && I.onTilesOk) I.onTilesOk(reason);
+          if (ok === false) {
+            /* ⚠️ 必须把腾讯底图整层隐藏，不只是改文字提示。
+               腾讯位置服务鉴权失败时行为是「瓦片请求发出、但图片画不出来」
+               —— canvas 采样全黑（sat-map.probeTiles 就是据此判定的）。
+               这些黑色 canvas 就留在页面上，叠在 SVG 之上，
+               表现为地图上凭空出现一条条纯黑矩形（用户截图：新疆图上 8 条黑带）。
+               既然这层没有任何可用内容，直接 display:none 最干净 ——
+               底图主力本就是免 KEY 的 Esri World Imagery，隐藏它不影响任何功能。 */
+            if (tmapHost) tmapHost.style.display = 'none';
+            I.baseHidden = true;
+            if (I.onTilesFail) I.onTilesFail(reason);
+          } else {
+            /* 探测通过（腾讯可用）时才显示。上面失败路径已隐藏过，
+               这里复原，避免「先失败后成功」时底图一直空着。 */
+            if (tmapHost && !I.baseUserOff) tmapHost.style.display = '';
+            I.baseHidden = false;
+            if (I.onTilesOk) I.onTilesOk(reason);
+          }
         });
       }
 
