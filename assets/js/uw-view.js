@@ -363,9 +363,32 @@
       S.sheetIdx = bi;
       onSheetChange();
       renderParsed();
+      /* 校验这一步是否真的解析出了可用的承保数据。
+         ⚠️ 之前无论内容是什么都显示绿色 ✅「已解析 N 行」——
+         上传一段普通文字也会显示"成功"，但实际记录数为 0，
+         用户以为上传好了，看不到任何后续结果，无从判断问题在哪。
+         真实结构：S.map = { 字段key: 列索引 }，值 -1 表示未匹配。 */
+      var dataRows = (res.sheets[bi].rows || []).length;
+      var mapped = S.map ? Object.keys(S.map).filter(function (k) {
+        return Number(S.map[k]) >= 0;
+      }).length : 0;
+      if (!dataRows) {
+        st.className = 'uw-status err';
+        st.textContent = '❌ 未读到任何数据行：文件可能是空的，或缺少表头行。请核对文件后重传。';
+        renderMapPanel();
+        return;
+      }
+      if (!mapped) {
+        st.className = 'uw-status err';
+        st.textContent = '❌ 已读到 ' + dataRows + ' 行，但没匹配到任何字段。' +
+          '请确认表头含「保单号 / 被保险人 / 作物 / 承保面积 / 保费 / 乡镇 / 行政村 / 县」等列名。';
+        renderMapPanel();
+        return;
+      }
       st.className = 'uw-status ok';
       st.textContent = '✅ 已解析 ' + res.sheets.length + ' 个工作表 · 编码 ' + (res.enc || 'XLSX') +
-        ' · 选中「' + res.sheets[bi].name + '」共 ' + res.sheets[bi].rows.length + ' 行';
+        ' · 选中「' + res.sheets[bi].name + '」共 ' + dataRows + ' 行' +
+        ' · 匹配到 ' + mapped + ' 个字段';
       renderMapPanel();
     }).catch(function (e) {
       console.error(e);

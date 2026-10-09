@@ -2002,11 +2002,12 @@
     }
     /* 超时兜底：市界文件最大 2MB+，弱网/冷启动可能十几秒才到
        （实测 GitHub Pages 首次取 0.3MB 就要 27.9s）。
-       无超时时用户会看到「点了没反应、地图空白」且无从判断。 */
+       无超时时用户会看到「点了没反应、地图空白」且无从判断。
+       取 6 秒：再慢的收益也不抵用户等待，且可重新点击重试。 */
     var timer = setTimeout(function () {
       console.warn('[nat] 市界数据加载超时（' + meta.f + '）');
       finish(null);
-    }, 9000);
+    }, 6000);
 
     var s = document.createElement('script');
     s.src = 'assets/data/' + meta.f;
@@ -2305,7 +2306,12 @@ function drawDisasterCircles() {
     loadCity(pcode, function (list) {
       if (BUSY) BUSY.off();
       if (!list) {
-        $('#nat-title').textContent = pv.n + ' · 省级概况';
+        /* 市界取不到（网络失败/超时）。此前只改标题、画省域面，
+           用户看到的是「标题写着市级下钻、地图却一片空白」，
+           长达 9 秒且无任何说明 → 以为坏了。
+           现在标题据实说明，并给出可操作的下一步。 */
+        $('#nat-title').textContent = pv.n + ' · 市界数据未取到，已切至省级视图';
+        $('#nat-scope').textContent = pv.n + ' / 市级下钻数据缺失';
         drawProvinceOnly(pv); showProvinceInfo(pv); return;
       }
       $('#nat-title').textContent = pv.n + ' · 市级遥感下钻';
@@ -2542,7 +2548,7 @@ function drawDisasterCircles() {
     var st = MI.svg; if (st) st.pxAnchors = [];
     var info = NAT.provInfo(pv.c) || { risk: 3 };
     var rgb = rgbOf(riskColor(info.risk));
-    DM.area(MI, { n: pv.n, c: pv.c, r: abs(pv) }, {
+    DM.area(MI, { n: pv.n, c: pv.c, kind: 'prov', r: abs(pv) }, {
       fill: 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',.58)',
       stroke: EDGE.prov.c, strokeWidth: 1.8
     });
