@@ -16,6 +16,7 @@
   var st = {};   // 全局状态
 
   /* ============ 通用 UI ============ */
+  var detailView = '';   // 详情打开时所在的视图，用于切标签时判断要不要折叠
   function detail(title, sub, html) {
     var d = $('#detail');
     $('#dt-title').textContent = title;
@@ -36,9 +37,40 @@
           两者之间没有祖先-后代关系，自然匹配不上。
        正解：标记挂在 body 上，与 #detail 同级，作用域关系才成立。 */
     document.body.classList.add('has-detail');
+    /* 详情弹层固定在地图右上角，必然压住那一带的地图（实测 6 个采样点命中 2 个），
+       用户想点右上角的图斑/县面就被挡住。
+       解决：① 标题栏加「收起」按钮，折叠成窄条让出地图；
+             ② 切换标签时自动收起（换视图了，上个视图的详情已无意义）；
+             ③ 点折叠态的标题可再展开。详见 CSS .detail.mini。*/
+    var fold = document.getElementById('dt-fold');
+    if (fold) {
+      if (!fold.dataset.bound) {
+        fold.dataset.bound = '1';
+        fold.addEventListener('click', function (e) {
+          e.stopPropagation();
+          d.classList.toggle('mini');
+          fold.textContent = d.classList.contains('mini') ? '▸' : '▾';
+        });
+      }
+      fold.textContent = '▾';
+    }
+    var head = $('#detail .dt-h');
+    if (head && !head.dataset.bound) {
+      head.dataset.bound = '1';
+      head.addEventListener('click', function (e) {
+        if (e.target.closest('#dt-close') || e.target.closest('#dt-fold')) return;
+        if (!d.classList.contains('mini')) return;   // 仅折叠态响应展开
+        d.classList.remove('mini');
+        if (fold) fold.textContent = '▾';
+      });
+    }
+    d.classList.remove('mini');
+    /* 记录所属视图：切标签时据此判断"这是上个视图的详情，该折叠让出地图"。*/
+    var cur = document.querySelector('.view.on');
+    if (cur) detailView = cur.id.replace(/^v-/, '');
   }
   function closeDetail() {
-    $('#detail').classList.remove('on');
+    $('#detail').classList.remove('on', 'mini');
     document.body.classList.remove('has-detail');
   }
   $('#dt-close').addEventListener('click', closeDetail);
@@ -1000,6 +1032,19 @@
       t.setAttribute('tabindex', on ? '0' : '-1');
     });
     $$('.view').forEach(function (v) { v.classList.toggle('on', v.id === 'v-' + key); });
+    /* 换视图时把详情收起（折叠态），而不是直接关掉：
+       用户常在两个视图间对照数据，直接关掉会丢上下文；
+       但完全展开又会挡住新视图右上角的地图（实测 6 个采样点命中 2 个）。
+       折叠成窄条 = 既保留标题信息，又几乎完全让出地图。*/
+    if (key !== detailView) {
+      var dd = document.getElementById('detail');
+      if (dd && dd.classList.contains('on')) {
+        dd.classList.add('mini');
+        var f = document.getElementById('dt-fold');
+        if (f) f.textContent = '▸';
+      }
+      detailView = key;
+    }
     /* 标签切换时更新浏览器标题；地图视图随后会再由 paintCrumb 细化为具体层级 */
     try { document.title = (TAB_TITLE[key] || '') + ' · 阳光3S遥感平台（测试版）'; } catch (e) { }
     busyOn(TAB_LABEL[key] || '加载中');

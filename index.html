@@ -451,7 +451,12 @@
 <div class="detail" id="detail">
   <div class="dt-h">
     <div><div class="dt-t" id="dt-title">详情</div><div class="dt-s" id="dt-sub"></div></div>
-    <button class="dt-x" id="dt-close" aria-label="关闭">×</button>
+    <div style="display:flex;align-items:center;gap:6px;flex:0 0 auto">
+      <!-- 收起：详情浮层固定在地图右上角，会压住那一带的地图。
+           折叠成窄条后让出地图，点标题可再展开。 -->
+      <button class="dt-fold" id="dt-fold" type="button" title="收起详情，让出地图">▾</button>
+      <button class="dt-x" id="dt-close" aria-label="关闭">×</button>
+    </div>
   </div>
   <div class="dt-b" id="dt-body"></div>
 </div>

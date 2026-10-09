@@ -3497,17 +3497,27 @@
   function disasterDetail(i) {
     var d = (NAT.DISASTERS || [])[i];
     if (!d) return;
-    /* 从灾情描述里解析出省份名，能匹配就给出"定位到该省"的下钻按钮。
-       不用 adcode → 名称映射表，直接按名称在省级数据里找，最省事也最稳。*/
-    var hit = null;
+    /* ⚠️ 这里原来拿 d.region 去字符串匹配省名（"江淮·长江中下游".indexOf("江苏")），
+       而 region 是【地理区域描述】、不含任何省名 → 永远匹配不到 → 
+       "定位到该省"按钮从不出现（实测 6 条灾情全部无按钮）。
+       数据里本来就有精确的 provinces 省码数组，直接用它，
+       既是准确口径，也不需要任何名称映射表。*/
+    var codes = Array.isArray(d.provinces) ? d.provinces : [];
+    var hits = [];
     (GP.provinces || []).forEach(function (p) {
-      if (hit) return;
-      if (d.region && d.region.indexOf(p.n) >= 0) hit = p;
+      if (codes.indexOf(Number(p.c)) >= 0 || codes.indexOf(String(p.c)) >= 0) hits.push(p);
     });
+    /* 去重（源数据 provinces 数组里有重复项，如 W02 的 410000 出现两次）*/
+    var seen = {}, uniq = [];
+    hits.forEach(function (p) { if (!seen[p.c]) { seen[p.c] = 1; uniq.push(p); } });
+    hits = uniq;
     var html =
       '<div class="kv"><span>灾情</span><b>' + d.name + '</b></div>' +
       '<div class="kv"><span>预警等级</span><b>' + d.level + '</b></div>' +
       '<div class="kv"><span>影响区域</span><b>' + d.region + '</b></div>' +
+      '<div class="kv"><span>涉及省份</span><b>' +
+        (hits.length ? hits.map(function (p) { return p.n; }).join('、') : '—') +
+        '（' + hits.length + ' 个）</b></div>' +
       '<div class="kv"><span>受灾农户</span><b>' + fmt(d.farmers, 0) + ' 户</b></div>' +
       '<div class="kv"><span>涉及面积</span><b>' + wan(d.mu) + ' 万亩</b></div>' +
       '<div class="kv"><span>预估损失</span><b>' + d.loss + ' 亿元</b></div>' +
@@ -3516,8 +3526,19 @@
       '<b>② 查勘排班</b>：按损失量级与承保密度安排查勘力量，优先重灾区<br>' +
       '<b>③ 遥感支撑</b>：调取灾区当期影像做初筛，圈定疑似受灾图斑<br>' +
       '<b>④ 理赔时效</b>：预启动赔付流程，重大灾情开通绿色通道</div>' +
-      (hit ? '<button class="uw-btn primary" style="width:100%;margin-top:9px" id="nat-dis-go">定位到' +
-        hit.n + ' ›</button>' : '') +
+      /* 一条灾情通常影响多个省（源数据 provinces 最多 6 个），
+         所以给【全部受影响省份】的入口，而不是只给一个。*/
+      (hits.length
+        ? '<div class="dt-sub">定位到受影响省份</div>' +
+          '<div class="nat-dis-go" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">' +
+          hits.map(function (p) {
+            /* 用简称而非全称：全称会出现"新疆维吾尔自治区""内蒙古自治区"
+               这类冗长文字，按钮里挤成一排很难看（shortName 已在
+               全国省名标注中统一使用，这里保持一致）。*/
+            return '<button class="uw-btn" type="button" data-dis-code="' + p.c + '">' +
+              shortName(p.n) + ' ›</button>';
+          }).join('') + '</div>'
+        : '') +
       '<div class="note warn" style="margin-top:8px"><b>数据说明</b>：灾情为平台在监模拟数据，' +
       '用于说明预警—查勘—理赔的衔接流程，不代表真实灾情。</div>';
     /* ⚠️ 必须走 window.__APP__.detail：详情弹层是 app.js 的 IIFE 私有函数，
@@ -3525,10 +3546,11 @@
        "detail is not defined"（实测 6 处报错，正是这里）。
        同文件内其他 show*Info 也是这么调的，保持一致。*/
     window.__APP__.detail(d.name, '全国在监灾情 · ' + d.level + '预警', html);
-    var go = document.getElementById('nat-dis-go');
-    if (go) go.addEventListener('click', function () {
-      if (window.__APP__ && window.__APP__.closeDetail) window.__APP__.closeDetail();
-      try { pickProvince(hit.c); } catch (e) { }
+    $$('#detail [data-dis-code]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        if (window.__APP__ && window.__APP__.closeDetail) window.__APP__.closeDetail();
+        try { pickProvince(btn.dataset.disCode); } catch (e) { }
+      });
     });
   }
   function setEngine(ok, text) {

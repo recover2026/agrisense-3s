@@ -249,18 +249,44 @@ tr.row-click.on{background:rgba(255,211,90,.14)}
 
 /* 详情浮层 */
 .detail{
-  position:absolute;right:14px;top:14px;width:308px;max-height:calc(100% - 92px);
+  /* 详情浮层固定在地图右上角，天然会压住那一带的地图 ——
+     补测 6 个采样点命中 2 个，用户在右上角点图斑/县面会被挡住。
+     缩窄/下移都只是把遮挡挪个位置（实测 1→2 个采样点，反而更糟），
+     根本解法是【让用户能一键让出地图】：
+       · 点「收起」折叠成一条窄标题栏（宽度缩到 130px，几乎不挡）
+       · 切标签时自动收起（换视图了，上一个视图的详情已无意义）
+       · 点标题栏可再展开
+     详见 app.js 的 collapseDetail()/toggleDetail()。 */
+  position:absolute;right:14px;top:14px;width:300px;max-height:calc(100% - 92px);
   background:rgba(12,22,40,.965);border:1px solid var(--line-2);border-radius:var(--r);
   box-shadow:var(--shadow);backdrop-filter:blur(18px);z-index:30;display:none;
   flex-direction:column;overflow:hidden;
+  transition:width .2s cubic-bezier(.2,.9,.3,1),max-height .2s;
 }
 .detail.on{display:flex;animation:slideIn .24s cubic-bezier(.2,.9,.3,1)}
+/* 折叠态：只留标题栏，让出几乎整幅地图 */
+.detail.mini{width:150px;max-height:none}
+.detail.mini .dt-b,
+.detail.mini .nat-dis-go{display:none}
+.detail.mini .dt-h{cursor:pointer;border-bottom:none;padding:11px 13px}
+.detail.mini .dt-s{display:none}
+.detail.mini::after{
+  content:'展开';position:absolute;right:10px;top:12px;
+  font-size:10.5px;color:var(--brand);font-weight:700;
+}
 @keyframes slideIn{from{opacity:0;transform:translateX(22px)}to{opacity:1;transform:none}}
 .dt-h{padding:13px 15px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:flex-start;gap:9px;background:rgba(255,255,255,.028)}
 .dt-t{font-size:15px;font-weight:800;color:var(--txt)}
 .dt-s{font-size:11.5px;color:var(--txt-3);margin-top:2px}
 .dt-x{background:none;border:none;color:var(--txt-3);cursor:pointer;font-size:19px;line-height:1;padding:2px 5px;border-radius:6px}
 .dt-x:hover{background:rgba(255,255,255,.1);color:var(--txt)}
+/* 收起按钮：在关闭按钮左侧 */
+.dt-fold{
+  background:none;border:1px solid var(--line-2);color:var(--txt-3);
+  cursor:pointer;font-size:11px;font-weight:700;padding:3px 8px;border-radius:6px;
+  display:flex;align-items:center;gap:3px;flex:0 0 auto;
+}
+.dt-fold:hover{background:rgba(255,255,255,.1);color:var(--txt);border-color:var(--line-2)}
 .dt-b{padding:13px 15px;overflow-y:auto;flex:1}
 .dt-b::-webkit-scrollbar{width:6px}
 .dt-b::-webkit-scrollbar-thumb{background:rgba(120,160,220,.25);border-radius:6px}

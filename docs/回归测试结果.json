@@ -1,0 +1,172 @@
+[
+ {
+  "name": "首屏加载",
+  "ok": true,
+  "note": "0.69s"
+ },
+ {
+  "name": "全国：35 省可点",
+  "ok": true,
+  "note": "35 个省面"
+ },
+ {
+  "name": "全国：底图状态真实",
+  "ok": true,
+  "note": "卫星影像底图 · Esri World Imagery"
+ },
+ {
+  "name": "全国：卫星影像",
+  "ok": true,
+  "note": "140 张瓦片"
+ },
+ {
+  "name": "全国：专题图层切换",
+  "ok": true,
+  "note": "图例 761→736, 当前=flood"
+ },
+ {
+  "name": "全国：在监灾情详情",
+  "ok": true,
+  "note": "暴雨洪涝 621字"
+ },
+ {
+  "name": "全国：点选入口",
+  "ok": true,
+  "note": "35 个可下钻项"
+ },
+ {
+  "name": "全国：点选浮层可关闭",
+  "ok": true,
+  "note": ""
+ },
+ {
+  "name": "全国：省→市下钻（山东）",
+  "ok": true,
+  "note": "16 个市面"
+ },
+ {
+  "name": "全国：市→县下钻",
+  "ok": true,
+  "note": "山东省 / 济南市 · 12 个县面"
+ },
+ {
+  "name": "全国：县→乡镇下钻",
+  "ok": true,
+  "note": "山东省 / 济南市 / 历下区 · 14 个乡镇面"
+ },
+ {
+  "name": "全国：直辖市链路（北京）",
+  "ok": true,
+  "note": "北京市 / 1 市 · 35 个面（市即省，无下级属正常）"
+ },
+ {
+  "name": "全国：加载指示无残留",
+  "ok": true,
+  "note": "'nat-loading'"
+ },
+ {
+  "name": "资质：地图+影像",
+  "ok": true,
+  "note": "35面 140瓦片 · 卫星影像底图 · Esri World Imagery"
+ },
+ {
+  "name": "资质：区县搜索",
+  "ok": true,
+  "note": "命中 8 条"
+ },
+ {
+  "name": "资质：搜索结果详情",
+  "ok": true,
+  "note": ""
+ },
+ {
+  "name": "总览：地图+影像+指标",
+  "ok": true,
+  "note": "18面 68瓦片 4指标"
+ },
+ {
+  "name": "承保风险：县→画像+图斑",
+  "ok": true,
+  "note": "详情2170字 图斑47 瓦片88"
+ },
+ {
+  "name": "承保上传：解析→空间化",
+  "ok": true,
+  "note": "明细16行 县面4 图例True"
+ },
+ {
+  "name": "承保上传：县面点选详情",
+  "ok": true,
+  "note": ""
+ },
+ {
+  "name": "理赔定损：案件→图斑",
+  "ok": true,
+  "note": "图斑29 乡镇7"
+ },
+ {
+  "name": "理赔定损：乡镇进度详情",
+  "ok": true,
+  "note": "685字"
+ },
+ {
+  "name": "预警：任务详情",
+  "ok": true,
+  "note": "1040字"
+ },
+ {
+  "name": "预警：类型口径详情",
+  "ok": true,
+  "note": "522字"
+ },
+ {
+  "name": "评估：精度口径解读",
+  "ok": true,
+  "note": "621字"
+ },
+ {
+  "name": "评估：灾损详情+跳转",
+  "ok": true,
+  "note": "2032字"
+ },
+ {
+  "name": "评估：跳转到理赔地图",
+  "ok": true,
+  "note": "v-claims"
+ },
+ {
+  "name": "overview: 缩放+复位",
+  "ok": true,
+  "note": ""
+ },
+ {
+  "name": "underwrite: 缩放+复位",
+  "ok": true,
+  "note": ""
+ },
+ {
+  "name": "claims: 缩放+复位",
+  "ok": true,
+  "note": ""
+ },
+ {
+  "name": "warn: 缩放+复位",
+  "ok": true,
+  "note": ""
+ },
+ {
+  "name": "uw: 缩放+复位",
+  "ok": true,
+  "note": ""
+ },
+ {
+  "name": "影像/矢量切换往返",
+  "ok": true,
+  "note": "关(矢量)→开 80→80 张"
+ },
+ {
+  "name": "标签键盘导航",
+  "ok": true,
+  "note": ""
+ }
+]
