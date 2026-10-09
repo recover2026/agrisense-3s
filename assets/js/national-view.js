@@ -2222,36 +2222,15 @@
       全国视图 0 个圈、省级视图反而 29 个（实测）。
    3) 省级视图**只画本省境内**的灾点圈 —— 灾点数据是全国口径，
       直接遍历会把外省的圈画到当前省的地图边缘/境外海域上，
-      视觉上就是"地图右侧凭空悬着几个红圈"（用户截图实况）。 */
-function drawDisasterCircles() {
-    var st = MI.svg;
-    if (!st) return;
-    if (N.level !== 'country' && N.level !== 'province') return;
-    var R = 32, m = R + 6;
-    var curProv = (N.level === 'province') ? String(N.curProvince) : null;
-    // 本省面（省级时用于判断圈是否落在省内）
-    var provRings = null;
-    if (curProv) {
-      var pv0 = GP.provinces.filter(function (p) { return String(p.c) === curProv; })[0];
-      if (pv0) provRings = abs(pv0);
-    }
-    NAT.DISASTERS.forEach(function (d) {
-      d.provinces.forEach(function (pc) {
-        // 省级视图：只保留本省的灾点
-        if (curProv && String(pc) !== curProv) return;
-        var pv = GP.provinces.filter(function (p) { return p.c == pc; })[0];
-        if (!pv) return;
-        var ct = G.polyCentroid(abs(pv));
-        if (!ct) return;
-        var px = st.toPx(ct[0], ct[1]);
-        // 视口裁剪：圈必须完整落在视口内才画（否则是边缘悬空的红圈）
-        if (px.x - m < 0 || px.x + m > st._vw || px.y - m < 0 || px.y + m > st._vh) return;
-        var el = DM.pxRing(MI, 'risk', px.x, px.y, R,
-          { stroke: 'rgba(248,113,113,.8)', sw: 1.5, dash: '5,4' });
-        if (el) DM.anchor(MI, el, ct[0], ct[1], 0);
-      });
-    });
-  }
+      视觉上就是"地图右侧凭空悬着几个红圈"（用户截图实况）。
+
+   ★ 2026-10-09 用户明确要求移除：「你不要放那个虚线圆圈」。
+     全国视图会同时出现 29 个大圆圈压在省名标签上，既干扰读图
+     （用户曾两次把圈边误认成"文字重影"），又只是示意、无明确业务含义
+     （灾点数据本身只到省级，不构成精确落区）。
+     现整段停用、函数保留为空实现，调用点无需改动。
+     灾点信息仍在左侧「全国在监灾情」面板中可查 —— 移到面板是更合适的呈现方式。 */
+  function drawDisasterCircles() { /* 已停用：见上方说明 */ }
 
   /* ---------- 省级下钻 ---------- */
   function renderProvince(pcode) {

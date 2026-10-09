@@ -554,18 +554,46 @@
     var R = this.host.getBoundingClientRect();
     var hostX = this.host.getBoundingClientRect().left;
     var hostY = this.host.getBoundingClientRect().top;
-    var tryY = y, guard = 0;
-    var hitOne = false;
-    while (guard++ < 8) {
+    var fs = (arguments[5] || 11);
+    var estW = w || fs * 4;                       // 无参时按字号估宽
+    var estH = h || fs * 1.2;
+    var tryY = y, guard = 0, hitOne = false;
+    /* 判定必须用【矩形相交】，不能用「中心点是否落在对方横范围内」。
+       旧逻辑：cx ∈ [b.left-3, b.right+3] 且 cy ∈ [b.top-3, b.bottom+3]
+       —— 只能挡住「正上方/正下方」的标签，挡不住斜向相邻的。
+       实测因此留下 5 处重叠：河北省∩北京市、河北省∩天津市、
+       广东省∩香港、澳门∩香港、南海诸岛∩台湾。
+       改判：本标签矩形 [x±estW/2, tryY±estH/2] 与已有标签矩形是否真相交。 */
+    while (guard++ < 14) {
       hitOne = false;
+      var myL = hostX + x - estW / 2, myR = hostX + x + estW / 2;
+      var myT = hostY + tryY - estH / 2, myB = hostY + tryY + estH / 2;
       for (var i = 0; i < L.pxItems.length; i++) {
         var it = L.pxItems[i];
         if (!it._lx) continue;
-        var b = it.getBoundingClientRect();
-        if (b.width === 0) continue;
-        var cx = hostX + x, cy = hostY + tryY;
-        if (cx > b.left - 3 && cx < b.right + 3 && cy > b.top - 3 && cy < b.bottom + 3) {
-          tryY = b.bottom + 7; hitOne = true; break;
+        /* ★ 必须用【元素上缓存的最终位置】，不能用 getBoundingClientRect()。
+           标签是刚 append 进 DOM 的，此刻 getBoundingClientRect() 常返回
+           width=0（尚未完成排版），旧代码直接 `continue` 跳过 →
+           避让等于没做。实测这正是河北∩北京、河北∩天津、
+           广东∩香港、港澳台、南海诸岛∩台湾 5 处重叠的根因。
+           改为读取 pxLabel 写入的 _pxBox（屏幕坐标矩形，绘制时即已确定）。 */
+        var b = it._pxBox;
+        if (!b) {
+          var r0 = it.getBoundingClientRect();
+          if (r0.width === 0) continue;
+          b = { left: r0.left, right: r0.right, top: r0.top, bottom: r0.bottom };
+        }
+        var gap = 4;   // 标签间至少留 4px 呼吸
+        var ix = Math.min(myR + gap, b.right + gap) - Math.max(myL - gap, b.left - gap);
+        var iy = Math.min(myB + gap, b.bottom + gap) - Math.max(myT - gap, b.top - gap);
+        if (ix > 0 && iy > 0) {
+          /* 相交时优先往下让；下方空间不够（会顶出视口）则改为上让 */
+          var down = b.bottom + gap + estH / 2;
+          var up = b.top - gap - estH / 2;
+          var candY = (down + hostY < R.bottom - 6) ? down : up;
+          tryY = candY;
+          hitOne = true;
+          break;
         }
       }
       if (!hitOne) break;
@@ -577,43 +605,81 @@
     return finalY;
   };
 
+  /* 标签底衬方案（第四次返工 · 定稿）
+     ⚠️ 这个问题我连修三次都错，完整记录以免再走老路：
+     1) 各视图传 haloW=3.4~5.5 固定值（占字号 34~40%）→ 糊成黑块；
+     2) 改「8 方位光晕副本」→ 每标签 9 个 text、副本偏移 → 用户看到"重影"；
+     3) 改回单 text + paint-order:stroke → 用户仍报"两个"；
+     4) 用 elementsFromPoint 查标签中心点的元素堆叠才看清真因：
+        **最上层是省域面的描边（stroke rgba(14,26,44,.88) / width 1.3）——
+        省界线从文字下方穿过，再叠上文字自身的深色描边，
+        两者共同构成"双层"错觉。不是文字重复。**
+
+     定稿方案：文字【不用描边】，改为在下方垫一块半透明深色圆角底衬
+     （地图标签通行做法）：
+     - 底衬是纯色块、无描边 → 不会侵入字腔、不产生任何双线；
+     - 压住穿过文字的省界线，文字区域始终干净；
+     - 深浅底图上都成立（白字 + 深底衬）。
+     style.plate === false 或 halo === 'none' 时不画底衬。 */
   GeoCanvas.prototype.pxLabel = function (layerName, x, y, text, style, meta) {
     var L = this.layers[layerName]; if (!L) return null;
-    y = this._avoidLabels(layerName, x, y, 0, 0);
+    y = this._avoidLabels(layerName, x, y, 0, 0, style.size || 12);
     var fs = style.size || 12;
-    /* 标签只画【一个】text 元素，描边用 paint-order:stroke。
-       ⚠️ 这里返工过一次，教训必须留着：
-       上一版为避免「描边糊字」，改成「8 个方位各放一个同形深色副本」
-       叠加成光晕 —— 结果每个标签实际是 9 个 text 元素，副本偏移 0.35~0.9px，
-       在用户截图里就是**同一个名字出现两次、位置错开**，用户报「文字重复重叠」。
-       **光晕副本本身就是重影，不是解法。**
-       现在回到单元素 + 细描边，靠 paint-order 让描边在字底下（不侵入字腔）。
-
-       描边宽度实测（11px 汉字，字腔仅 1~2px）：
-         sw 0~1.1 清晰 / 1.3 尚可 / 1.5 起发糊 / 2.0+ 糊成块
-       故取字号 × 0.12 作为上限（11px → 1.32px），落在清晰区间内。 */
-    var hw = style.haloW || fs * 0.11;
-    var maxHw = fs * 0.12;
-    if (hw > maxHw) hw = maxHw;
+    var usePlate = (style.plate !== false && style.halo !== 'none');
 
     var t = el('text', {
       x: x, y: y, class: 'gs-label', fill: style.fill || '#e8f0fb',
       'font-size': fs, 'text-anchor': style.anchor || 'middle',
-      'paint-order': 'stroke',
-      stroke: (style.halo && style.halo !== 'none') ? (style.halo || 'rgba(3,8,18,.9)') : 'none',
-      'stroke-width': (style.halo && style.halo !== 'none') ? hw.toFixed(2) : 0,
-      'stroke-linejoin': 'round',
       'font-weight': style.weight || 700, 'font-family': 'inherit'
     });
-    if (style.opacity != null) t.setAttribute('opacity', style.opacity);
     t.textContent = text;
     t._lx = 1;              // 标记：供 _avoidLabels 识别为标签
+    /* 预先记录屏幕矩形，供后续标签做避让判定。
+       必须在元素尚未入 DOM 时就算好 —— 入 DOM 后 getBoundingClientRect
+       可能返回 0 宽，导致避让整体失效（见 _avoidLabels 注释）。 */
+    var estW2 = fs * text.length * 0.62, estH2 = fs * 1.2;
+    try { if (t.getComputedTextLength) estW2 = t.getComputedTextLength(); } catch (e0) { }
+    var hb = this.host.getBoundingClientRect();
+    var anc2 = style.anchor || 'middle';
+    var bx0 = anc2 === 'start' ? x : (anc2 === 'end' ? x - estW2 : x - estW2 / 2);
+    t._pxBox = { left: hb.left + bx0, right: hb.left + bx0 + estW2,
+                 top: hb.top + y - estH2 * 0.78, bottom: hb.top + y + estH2 * 0.22 };
     if (meta) {
       t.setAttribute('data-pick', '1');
       if (meta.id) t.setAttribute('data-id', meta.id);
       if (meta.kind) t.setAttribute('data-kind', meta.kind);
       t.style.cursor = meta.kind ? 'pointer' : 'default';
     }
+
+    if (usePlate) {
+      /* 先把文字入 DOM 量出宽度，再回填底衬宽度 —— SVG 文字宽度只能实测 */
+      L.g.appendChild(t);
+      var tw = fs * text.length * 0.62;
+      try { if (t.getComputedTextLength) tw = t.getComputedTextLength(); } catch (e2) { }
+      /* 底衬参数必须克制到"几乎看不见"：
+         初版 padX=0.32em / 不透明度 .66 / 圆角 0.26em → 11px 字号下是
+         一块 12×15px 深色圆角方块，4 倍放大就是"字底压个黑框"；
+         收到 0.10em / .34 仍偏重。用户诉求是【文字干净】，
+         故再压：透明度 .26、内收 0.06em、圆角 0.08em ——
+         只够压住穿过字身的省界线，不形成任何可见边框。 */
+      var padX = fs * 0.06, padY = fs * 0.04;
+      var plate = el('rect', {
+        x: (x - tw / 2 - padX).toFixed(1),
+        y: (y - fs * 0.80 - padY).toFixed(1),
+        width: (tw + padX * 2).toFixed(1),
+        height: (fs + padY * 2).toFixed(1),
+        rx: (fs * 0.08).toFixed(1),
+        class: 'gs-label-plate',
+        fill: 'rgba(9,15,26,.26)'
+      });
+      /* 底衬插到文字之前（同层内 z 序靠前），文字压在底衬上 */
+      L.g.insertBefore(plate, t);
+      if (style.opacity != null) { plate.setAttribute('opacity', style.opacity); t.setAttribute('opacity', style.opacity); }
+      L.pxItems = L.pxItems || []; L.pxItems.push(t);
+      return t;
+    }
+
+    if (style.opacity != null) t.setAttribute('opacity', style.opacity);
     L.g.appendChild(t); L.pxItems = L.pxItems || []; L.pxItems.push(t);
     return t;
   };
