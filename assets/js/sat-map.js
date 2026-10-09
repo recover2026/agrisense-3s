@@ -18,7 +18,7 @@
   /* ---------- 卫星影像底图定义 ---------- */
   var BASEMAPS = {
     satellite: { type: 'satellite', features: ['base', 'road'], label: '卫星影像' },
-    vector:    { type: 'vector', features: ['base', 'building2d', 'road', 'label'], label: '矢量地图' },
+    vector:    { type: 'vector', features: ['base', 'building2d', 'road'], label: '矢量地图' },
     terrain:   { type: 'vector', features: ['base'], label: '简约底图' }
   };
 

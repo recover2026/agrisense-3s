@@ -426,17 +426,84 @@
   };
 
   /* ---------- 拾取 ---------- */
+  /* ⚠️ 必须【穿透式】拾取，不能只取最上层命中元素。
+     原因：同一视图里会叠多层可拾取要素（省域底面 → 市域面 → 县面 → 乡镇面），
+     后画的在上面。原实现用 closest('[data-pick]') 只取第一个命中，
+     于是被上层的省域底面挡住时，下面的县面点不到 ——
+     实测全国 106 个县面中 10 个点错（达坂城→乌鲁木齐县、
+     玛纳斯县/奇台县/木垒县完全点不到、武昌区→洪山区…）。
+     用户看到的现象就是「点不进乡镇」。
+     现在改为：沿 document.elementsFromPoint 自上而下遍历，
+     取第一个【kind 层级更细】的可拾取要素（即用户视觉上想点的那层），
+     找不到再退回最上层命中。 */
+  var PICK_ORDER = { vill: 0, town: 1, county: 2, city: 3, prov: 4 };
   GeoCanvas.prototype._pick = function (e) {
-    var target = e.target.closest ? e.target.closest('[data-pick]') : null;
-    if (target) {
+    var self = this;
+    var stack = [];
+    /* els 需在同层消歧时复用，故提到外层并保证始终有值 */
+    var els = (document.elementsFromPoint)
+      ? document.elementsFromPoint(e.clientX, e.clientY) : [];
+    for (var i = 0; i < els.length; i++) {
+      var t = els[i].closest ? els[i].closest('[data-pick]') : null;
+      if (t && stack.indexOf(t) < 0) stack.push(t);   // 去重
+    }
+    if (!stack.length) {
+      var tgt = e.target.closest ? e.target.closest('[data-pick]') : null;
+      if (tgt) stack.push(tgt);
+    }
+    if (stack.length) {
+      // 取层级最细的一个（vill > town > county > city > prov）
+      var best = stack[0], bestRank = 99;
+      for (var j = 0; j < stack.length; j++) {
+        var rk = PICK_ORDER[stack[j].dataset.kind];
+        if (rk != null && rk < bestRank) { bestRank = rk; best = stack[j]; }
+      }
+      /* 同层重叠消歧：CF 聚合的县面彼此可能重叠
+         （实测阿勒泰市/布尔津县、昌吉市/呼图壁县、洛龙区/老城区、
+           锦江区/武侯区 —— 源数据乡镇环共用边界所致）。
+         此时命中兄弟县面而非本县，用户点 A 却进 B。
+
+         规则不能只比面积：小县被大县完全覆盖时面积更小，但用户点击的
+         位置若落在大县外缘的可见部分，就该进大县。
+         正确判据是「谁在该点的最上层」——
+         即在 elementsFromPoint 序列中，index 最小的那个就是视觉上在最上面的，
+         同层重叠时它就是用户真正点到的那个。
+         只有当它不在栈里时，才退回面积最小者。 */
+      var sameRank = stack.filter(function (t) {
+        return PICK_ORDER[t.dataset.kind] === bestRank && t !== best;
+      });
+      if (sameRank.length) {
+        var cand = [best].concat(sameRank);
+        // 在 elementsFromPoint 序列里最靠前的 = 绘制顺序上最上层
+        var win = null;
+        for (var q = 0; q < els.length; q++) {
+          for (var w = 0; w < cand.length; w++) {
+            if (els[q] === cand[w] || (els[q].closest && els[q].closest('[data-pick]') === cand[w])) {
+              win = cand[w]; break;
+            }
+          }
+          if (win) break;
+        }
+        if (!win) {
+          var scored = cand.map(function (t) {
+            var bb = t.getBBox ? t.getBBox() : null;
+            return { t: t, a: bb ? bb.width * bb.height : Infinity };
+          });
+          scored.sort(function (x, y) { return x.a - y.a; });
+          win = scored[0].t;
+        }
+        best = win;
+      }
       var payload = {};
-      if (target.dataset.id) payload.id = target.dataset.id;
-      if (target.dataset.kind) payload.kind = target.dataset.kind;
-      if (target.dataset.ti != null) payload.ti = Number(target.dataset.ti);
-      this.onPick(payload, target);
+      if (best.dataset.id) payload.id = best.dataset.id;
+      if (best.dataset.kind) payload.kind = best.dataset.kind;
+      if (best.dataset.ti != null) payload.ti = Number(best.dataset.ti);
+      if (best.dataset.vi != null) payload.vi = Number(best.dataset.vi);
+      if (best.dataset.vk) payload.vk = best.dataset.vk;
+      this.onPick(payload, best);
       return;
     }
-    // 兜底：按坐标找要素
+    // 兜底：按世界坐标找要素
     var r = this.host.getBoundingClientRect();
     var px = e.clientX - r.left, py = e.clientY - r.top;
     var gx = (px - this.tx) / this.scale, gy = (this.ty - py) / this.scale;
@@ -514,58 +581,31 @@
     var L = this.layers[layerName]; if (!L) return null;
     y = this._avoidLabels(layerName, x, y, 0, 0);
     var fs = style.size || 12;
-    /* 描边宽度必须随字号等比，不能当固定值写死。
-       ⚠️ 实测踩坑（两轮）：
-       1) 各视图把 haloW 写成 3.4~5.5 的常量，而字号才 10~16px，
-          描边占字号 34%~40%。三个字宽约 31px，描边单侧就吃掉 1.8px，
-          字腔被填满 → 标签糊成「黑底白块」。
-       2) 收到 0.18×字号 后仍不够 —— 省名标签（11px→1.65px）在深色地图上
-          依旧明显发黑糊边，用户再次报「各省地图名称都有明显的重影」。
-       逐档实测（11px 字号、paint-order=stroke、深色底）：
-          sw 0~1.1 清晰 / 1.3 尚可 / 1.5 起发糊 / 1.65 明显发黑 / 2.0+ 糊成块
-       故上限从 0.18 收紧到 0.12，默认 0.10：11px 字 → 描边 1.1~1.32px，
-       落在清晰区间内，同时仍保留必要的底图可读性。 */
-    var hw = style.haloW || fs * 0.10;
+    /* 标签只画【一个】text 元素，描边用 paint-order:stroke。
+       ⚠️ 这里返工过一次，教训必须留着：
+       上一版为避免「描边糊字」，改成「8 个方位各放一个同形深色副本」
+       叠加成光晕 —— 结果每个标签实际是 9 个 text 元素，副本偏移 0.35~0.9px，
+       在用户截图里就是**同一个名字出现两次、位置错开**，用户报「文字重复重叠」。
+       **光晕副本本身就是重影，不是解法。**
+       现在回到单元素 + 细描边，靠 paint-order 让描边在字底下（不侵入字腔）。
+
+       描边宽度实测（11px 汉字，字腔仅 1~2px）：
+         sw 0~1.1 清晰 / 1.3 尚可 / 1.5 起发糊 / 2.0+ 糊成块
+       故取字号 × 0.12 作为上限（11px → 1.32px），落在清晰区间内。 */
+    var hw = style.haloW || fs * 0.11;
     var maxHw = fs * 0.12;
     if (hw > maxHw) hw = maxHw;
 
-    /* 描边方案：不用 stroke，改「双层文字」实现光晕。
-       ⚠️ 为什么不用 stroke：实测 11px 字号下描边要到 sw≥2 才明显，
-          而 1.5 起字就开始发糊、1.65 明显发黑、2.0+ 糊成黑块
-          （用户连续两次报「文字有重影」）。
-          因为小字号汉字的笔画间隙只有 1~2px，任何 1px 以上的描边都会
-          侵入字腔、把白字糊掉。
-          改为在文字下方 8 个方位各放一个同形深色副本（不透明度递减），
-          叠加成「柔和暗晕」—— 视觉上有底衬、字腔不被破坏，
-          且不依赖 paint-order 兼容性。 */
     var t = el('text', {
       x: x, y: y, class: 'gs-label', fill: style.fill || '#e8f0fb',
       'font-size': fs, 'text-anchor': style.anchor || 'middle',
+      'paint-order': 'stroke',
+      stroke: (style.halo && style.halo !== 'none') ? (style.halo || 'rgba(3,8,18,.9)') : 'none',
+      'stroke-width': (style.halo && style.halo !== 'none') ? hw.toFixed(2) : 0,
+      'stroke-linejoin': 'round',
       'font-weight': style.weight || 700, 'font-family': 'inherit'
     });
-    var g = el('g', { class: 'gs-lbl' });
-    if (style.halo !== 'none') {
-      var hc = style.halo || 'rgba(3,8,18,.92)';
-      /* 光晕半径压到字号的 3.5%（且不超过 0.9px），并降不透明度。
-         初版取 0.06×字号（11px→0.66px）视觉上能看出"双边"，
-         压到 0.035×（→0.39px）后边缘均匀、字腔不受影响。 */
-      var hr = Math.min(fs * 0.035, 0.9);
-      var hal = 0.5;
-      var dirs = [[-1, -1], [0, -1], [1, -1], [-1, 0], [1, 0], [-1, 1], [0, 1], [1, 1]];
-      for (var hi = 0; hi < dirs.length; hi++) {
-        var h = el('text', {
-          x: (x + dirs[hi][0] * hr).toFixed(2), y: (y + dirs[hi][1] * hr).toFixed(2),
-          class: 'gs-label-halo', fill: hc, 'font-size': fs,
-          opacity: hal,
-          'text-anchor': style.anchor || 'middle',
-          'font-weight': style.weight || 700, 'font-family': 'inherit'
-        });
-        h.textContent = text;
-        h._lx = 1;
-        g.appendChild(h);
-      }
-    }
-    if (style.opacity != null) g.setAttribute('opacity', style.opacity);
+    if (style.opacity != null) t.setAttribute('opacity', style.opacity);
     t.textContent = text;
     t._lx = 1;              // 标记：供 _avoidLabels 识别为标签
     if (meta) {
@@ -574,8 +614,7 @@
       if (meta.kind) t.setAttribute('data-kind', meta.kind);
       t.style.cursor = meta.kind ? 'pointer' : 'default';
     }
-    g.appendChild(t);
-    L.g.appendChild(g); L.pxItems = L.pxItems || []; L.pxItems.push(t);
+    L.g.appendChild(t); L.pxItems = L.pxItems || []; L.pxItems.push(t);
     return t;
   };
 

@@ -270,7 +270,7 @@ function syncEsri(I) {
     try {
       D.map.setBaseMap(D.satOn
         ? { type: 'satellite', features: ['base', 'road'] }
-        : { type: 'vector', features: ['base', 'building2d', 'road', 'label'] });
+        : { type: 'vector', features: ['base', 'building2d', 'road'] });
       var b = D.ctl && D.ctl.querySelector('button[data-a="base"]');
       if (b) b.classList.toggle('on', D.satOn);
       if (D.onBaseChange) D.onBaseChange(D.satOn);
@@ -329,7 +329,7 @@ function syncEsri(I) {
     try {
       I.map.setBaseMap(I.satOn
         ? { type: 'satellite', features: ['base', 'road'] }
-        : { type: 'vector', features: ['base', 'building2d', 'road', 'label'] });
+        : { type: 'vector', features: ['base', 'building2d', 'road'] });
       var b = I.ctl && I.ctl.querySelector('button[data-a="base"]');
       if (b) b.classList.toggle('on', I.satOn);
       if (I.onBaseChange) I.onBaseChange(I.satOn);
