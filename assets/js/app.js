@@ -453,7 +453,13 @@
         '<div class="bar"><i style="width:' + (c.done * 100).toFixed(0) + '%"></i></div></div>';
     }).join('');
     $$('#cl-counties .row').forEach(function (el) {
-      el.addEventListener('click', function () { renderClaims(el.dataset.cd); syncCL(el.dataset.cd); });
+      el.addEventListener('click', function () {
+        renderClaims(el.dataset.cd); syncCL(el.dataset.cd);
+        /* ⚠️ 原来只切换地图、完全不开详情 —— 用户点"秭归县"看到的是
+           地图变了，但不知道这个县的案情全貌（承保/出险/损失率/定损进度）。
+           补上案件详情，并提供"定位到该县"与"转理赔流程"两个后续动作。*/
+        claimCaseDetail(el.dataset.cd);
+      });
     });
 
     $('#cl-img').innerHTML = D.WARN_TYPES.slice(0, 4).map(function (t) {
@@ -567,6 +573,57 @@
         townProgressDetail(el.dataset.cd, tn);
       });
     });
+  }
+
+  /* 理赔案件详情：点案件行后弹出，交代该县的灾情全貌与定损进展。
+     这是理赔员点开一个县时最需要的一屏信息 —— 光看地图不知道该干什么。*/
+  function claimCaseDetail(code) {
+    var c = D.LOSS_CASES[code];
+    if (!c) return;
+    var towns = (c.towns || []).slice().sort(function (a, b) { return b.loss - a.loss; });
+    var done = towns.filter(function (t) { return t.st === '已定损'; });
+    var col = lossColor(c.lossRate);
+    var est = c.claimMu * c.avgLoss;
+    /* 定损进展：分段进度条 + 逐乡镇图例，一眼看出还剩多少没干完。
+       （初版误写成 towns.map(function(t){...}).join('')，外层迭代只返回
+        一次结果、纯属多余，且会让人误以为每个乡镇都渲一遍，已去掉。）*/
+    var ST_COLOR = { '已定损': '#34d399', '核验中': '#fbbf24', '待查损': '#fb923c', '待查勘': '#64748b' };
+    var muTotal = towns.reduce(function (s, y) { return s + y.mu; }, 0) || 1;
+    var segBar = '<div style="display:flex;height:9px;border-radius:5px;overflow:hidden;margin:8px 0 8px">' +
+      towns.map(function (x) {
+        var w = x.mu / muTotal * 100;
+        return '<i style="width:' + w.toFixed(2) + '%;background:' + (ST_COLOR[x.st] || '#64748b') +
+          '" title="' + x.n + ' · ' + x.st + '"></i>';
+      }).join('') + '</div>';
+    var segLegend = towns.map(function (x) {
+      return '<div style="display:flex;align-items:center;gap:6px;font-size:11.5px;margin-top:4px">' +
+        '<span style="width:9px;height:9px;border-radius:2px;background:' + (ST_COLOR[x.st] || '#64748b') + '"></span>' +
+        '<span style="color:var(--txt-2)">' + x.n + '</span>' +
+        '<span style="margin-left:auto;color:var(--txt-3)">' + x.st +
+        ' · 损失率 ' + (x.loss * 100).toFixed(0) + '%</span></div>';
+    }).join('');
+    var html =
+      '<div class="kv"><span>县区</span><b>' + c.name + '</b></div>' +
+      '<div class="kv"><span>主要作物</span><b>' + c.crop + '</b></div>' +
+      '<div class="kv"><span>灾害类型</span><b>' + c.disaster + '</b></div>' +
+      '<div class="kv"><span>灾情等级</span><b>' + (c.level || '—') + '</b></div>' +
+      '<div class="kv"><span>承保面积</span><b>' + fmt(c.areaMu, 0) + ' 亩</b></div>' +
+      '<div class="kv"><span>出险面积</span><b>' + fmt(c.claimMu, 0) + ' 亩</b></div>' +
+      '<div class="kv"><span>损失率</span><b style="color:rgb(' + col[0] + ',' + col[1] + ',' + col[2] + ')">' +
+        (c.lossRate * 100).toFixed(0) + '%</b></div>' +
+      '<div class="kv"><span>受灾农户</span><b>' + fmt(c.households, 0) + ' 户</b></div>' +
+      '<div class="kv"><span>亩均损失</span><b>' + fmt(c.avgLoss, 0) + ' 元/亩</b></div>' +
+      '<div class="kv"><span>损失初估</span><b>' + fmt(est / 10000, 0) + ' 万元</b></div>' +
+      '<div class="kv"><span>定损进度</span><b>' + (c.done * 100).toFixed(0) + '%</b></div>' +
+      '<div class="kv"><span>影像来源</span><b>' + c.imagery + '</b></div>' +
+      '<div class="kv"><span>数据更新</span><b>' + c.updated + '</b></div>' +
+      '<div class="dt-sub">乡镇定损进展（进度条按承保面积着色）</div>' +
+      segBar + segLegend +
+      '<div class="note" style="margin-top:9px"><b>已定损 ' + done.length + ' / ' + towns.length +
+      ' 个乡镇</b>；剩余乡镇仍需完成图斑解译与人工抽核。</div>' +
+      '<div class="note warn" style="margin-top:8px"><b>合规提示</b>：损失初估与定损结论均为模拟测算，' +
+      '实际赔付须以查勘证据链与核赔结果为准，不得直接作为赔付依据。</div>';
+    detail(c.name + ' · 定损案件', '理赔定损 · ' + c.disaster + ' · 模拟测算', html);
   }
 
   /* 乡镇定损进度详情：点乡镇行后弹出，交代这个乡镇定损到什么程度了 */
