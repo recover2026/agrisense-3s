@@ -481,23 +481,52 @@ body{
       实测点击被 "nat-jump-grp ... intercepts pointer events" 拦截。
    教训：**浮层与触发按钮的定位必须彻底解耦**，
    共用一个父容器时两者必然互相干扰。 */
+/* 详情弹层展开时（body.has-detail，由 app.js 的 detail() 打上）
+   把点选按钮推到弹层下方。
+
+   ⚠️ 踩了两个坑，都必须记住：
+   1) 原来用 document.querySelector('.mapwrap') 打 has-detail ——
+      但全站有 7 个 mapwrap，只取到【第一个】（总览驾驶舱的），
+      全国视图的按钮纹丝不动，用户仍看到「按钮被弹层压住」；
+   2) 改成全量标记 mapwrap 后仍不生效 ——
+      因为 #detail 根本不在任何 .mapwrap 内，它是 body 的直接子元素
+      （index.html:440），CSS 写 .mapwrap.has-detail（后代选择器）
+      自然匹配不上。
+   正解：标记挂在 body 上，CSS 侧限定到全国视图的 mapwrap。 */
+body.has-detail #v-national .mapwrap{
+  /* 详情弹层（.detail，右 14px/宽 308px/顶 14px）占住了右上角，
+     按钮无论放右上还是下移都躲不开它（实测下移到 btnTop=836 时
+     按钮仍落在弹层的水平投影内，视觉上仍被压）。
+     正解：详情态下把按钮【移到左侧】—— 那块区域永远空着。
+     列表则贴在按钮右侧展开，同样避开弹层。 */
+  --jump-right: 336px;
+  --jump-top: 14px;
+  --jump-btn-h: 32px;
+}
+
 .nat-jump{
-  position:absolute;right:14px;top:var(--jump-top, 126px);z-index:31;
+  position:absolute;right:var(--jump-right, 14px);top:var(--jump-top, 126px);z-index:31;
   display:flex;align-items:center;gap:5px;
   height:var(--jump-btn-h, 32px);padding:0 11px;border-radius:10px;
   border:1px solid var(--line-2);background:rgba(11,20,36,.92);color:var(--txt);
   font-size:11.5px;font-weight:700;cursor:pointer;font-family:inherit;
   backdrop-filter:blur(8px);transition:.16s;
 }
-.nat-jump-btn:hover{background:rgba(255,211,90,.2);border-color:rgba(255,211,90,.5);color:var(--brand)}
-.nat-jump-btn i{font-style:normal;font-size:13px;line-height:1}
-.nat-jump-btn[aria-expanded="true"]{
+.nat-jump:hover{background:rgba(255,211,90,.2);border-color:rgba(255,211,90,.5);color:var(--brand)}
+.nat-jump i{font-style:normal;font-size:13px;line-height:1}
+.nat-jump[aria-expanded="true"]{
   background:rgba(255,211,90,.24);border-color:rgba(255,211,90,.7);color:var(--brand);
 }
 .nat-jump-pop{
   /* 挂在 .mapwrap 上、与按钮同级，位置只由 --jump-top 决定，
-     不受按钮自身尺寸/层叠影响 —— 两者永远不会互相压住。 */
-  position:absolute;right:14px;z-index:32;
+     不受按钮自身尺寸/层叠影响 —— 两者永远不会互相压住。
+
+     展开方向：默认【向下】。但当按钮被详情弹层推到地图下方时
+     （实测 btnTop=836、mapBottom=856，只剩 20px 余量），
+     向下列表会整块溢出地图外（popInMap:false）。
+     故用 --jump-up 变量切换：body.has-detail 时置1，
+     列表改为向上展开（transform 反向），两种场景都在可视范围内。 */
+  position:absolute;right:var(--jump-right, 14px);z-index:32;
   /* 贴在按钮【下沿】之下，向【下】生长。
      向上展开会盖住按钮（实测 btnClickable:false），
      向下展开则按钮完全不受影响；只要--jump-top 留足下方空间即可不出界，
@@ -509,6 +538,18 @@ body{
   box-shadow:0 10px 30px rgba(0,0,0,.5);
   font-size:12px;color:var(--txt-2);
 }
+/* 详情态：按钮已移到右上角【左侧 336px 处】（--jump-right），
+   列表紧贴其下方展开。
+   ⚠️ 定位基准是 .mapwrap（pop 的父级），不是按钮 ——
+      之前写 left:calc(100% + 8px) 是相对 pop 自身宽度，
+      等于把自己推到屏幕外（实测列表完全不可见）。
+      与按钮共用同一个 --jump-right，两者的水平位置自然对齐。 */
+body.has-detail #v-national .nat-jump-pop{
+  right:var(--jump-right, 336px);
+  left:auto;
+  top:calc(var(--jump-top, 14px) + var(--jump-btn-h, 32px) + 6px);
+}
+
 .nat-jump-pop[hidden]{display:none}
 .nat-jump-grp{
   padding:6px 8px 4px;font-size:10px;font-weight:700;color:var(--txt-3);

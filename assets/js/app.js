@@ -22,21 +22,24 @@
     $('#dt-sub').textContent = sub || '';
     $('#dt-body').innerHTML = html;
     d.classList.add('on');
-    /* 详情弹层固定在地图右上角（right:14px/top:14px, z-index:30），
+    /* 详情弹层（#detail，在页面根部 z-index:30）固定在地图右上角，
        会把同样位于右上角的「点选」按钮盖住 —— 用户点不到。
-       打开时给所有 mapwrap 打标记，让按钮下移到弹层下方。
+       打开时标记 <body>，CSS 侧据此把按钮下移到弹层下方。
 
-       ⚠️ 踩坑：原来用 document.querySelector('.mapwrap') 只取到【第一个】，
-       而全站有 7 个 mapwrap（总览/全国/资质/承保/上传/理赔/预警），
-       第一个是总览驾驶舱的 —— 标记打错地方，全国视图的按钮纹丝不动，
-       用户看到的仍是「按钮被弹层压住」（实测线上截图确认）。
-       必须用 querySelectorAll 全量标记；作用域由 CSS 侧
-       （.mapwrap:has(.nat-jump)）限定，不依赖 JS 判断视图。 */
-    $$('.mapwrap').forEach(function (m) { m.classList.add('has-detail'); });
+       ⚠️ 这里踩了两个坑，都记下来：
+       1) 原来用 document.querySelector('.mapwrap') 打has-detail，
+          但全站有 7 个 mapwrap，只取到【第一个】（总览驾驶舱的），
+          全国视图的按钮纹丝不动；
+       2) 改成全量标记后仍不生效 —— 因为 #detail 根本不在任何 mapwrap 内，
+          它是 body 的直接子元素（index.html:440），
+          而 CSS 规则写的是 `.mapwrap.has-detail`（后代选择器），
+          两者之间没有祖先-后代关系，自然匹配不上。
+       正解：标记挂在 body 上，与 #detail 同级，作用域关系才成立。 */
+    document.body.classList.add('has-detail');
   }
   function closeDetail() {
     $('#detail').classList.remove('on');
-    $$('.mapwrap').forEach(function (m) { m.classList.remove('has-detail'); });
+    document.body.classList.remove('has-detail');
   }
   $('#dt-close').addEventListener('click', closeDetail);
 
