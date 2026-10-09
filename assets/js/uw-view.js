@@ -836,8 +836,24 @@
     if (!codes.length) {
       m.clear('base'); m.clear('uw'); m.clear('lab');
       $('#uw-mapinfo').textContent = '尚未上传数据';
+      /* 空状态：地图无内容时，隐藏图例与坐标读数，改显示引导说明。
+         此前图例（保费低/中/较高/最高 + 有精确坐标的保单）始终悬在
+         空图左下角，坐标读数显示「—」，让人以为漏了数据或功能坏了。 */
+      var lg = document.getElementById('uw-legend-box');
+      var eh = document.getElementById('uw-empty-hint');
+      if (lg) lg.hidden = true;
+      if (eh) eh.hidden = false;
+      var cd = document.querySelector('#v-uw .gs-coord');
+      if (cd) cd.style.display = 'none';
       return;
     }
+    /* 有数据：恢复图例、坐标读数，隐藏引导 */
+    var lg2 = document.getElementById('uw-legend-box');
+    var eh2 = document.getElementById('uw-empty-hint');
+    if (lg2) lg2.hidden = false;
+    if (eh2) eh2.hidden = true;
+    var cd2 = document.querySelector('#v-uw .gs-coord');
+    if (cd2) cd2.style.display = '';
     // 容器必须已有真实尺寸，否则 fit() 静默失效（画面空白）
     m.resize();
     if (!m._vw || !m._vh) {
