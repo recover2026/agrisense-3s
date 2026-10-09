@@ -796,10 +796,22 @@
     return N.curProvince || 0;
   }
   // 层级越深像元越细（地面米数越小）
+  /* 像元尺度（每像元代表的地面米数）。
+     ⚠️ 性能实测：栅格渲染是【逐像元同步循环】，耗时与「视口面积 ÷ 像元面积」
+        成正比。实测全国视图渲染Country时出现单个 **2306ms 的长任务**，
+        而同帧其余 55 帧均为 17ms —— 界面「卡一下」就卡在这里。
+        下钻层级越浅、覆盖范围越大，越要粗：
+          全国/省：栅格alpha 仅 0.22~0.55，纯氛围纹理，
+                   用户分辨不出 900m 与 1800m 像元的差别 → 直接用 1800；
+          市/县：栅格已成为主视觉，需要真实纹理 → 保持 340/220；
+          乡镇/村：主视觉，60/25 不变。
+        这样全国视图的像元数降到原来的 1/4，开销约减到 1/4。 */
   function pixelForLevel() {
     if (N.level === 'town') return 60;
-    return N.level === 'village' ? 25 : (N.level === 'town' ? 60
-      : (N.level === 'county' ? 220 : (N.level === 'city' ? 340 : 900)));
+    if (N.level === 'village') return 25;
+    if (N.level === 'county') return 220;
+    if (N.level === 'city') return 340;
+    return 1800;              // province / country：氛围纹理，粗化
   }
   // 大尺度下栅格只作氛围纹理，下钻后才成为主视觉
   function alphaForLevel() {
@@ -1278,7 +1290,7 @@
         if (hit) return;
         placed.push([px.x, px.y]);
         var el = DM.pxLabel(MI, 'lab', px.x, px.y, shortName(o.n),
-          { fill: '#fff', size: 11.5, halo: 'rgba(3,8,18,.97)', weight: 700 });
+          { fill: '#fff', size: 11.5, halo: '#1c1408', weight: 700 });
         if (el) DM.anchor(MI, el, ct[0], ct[1], 0, null, true, Math.round(GAP * 1.5));
       });
     }
@@ -1454,11 +1466,11 @@
     var ct = G.polyCentroid(rings);
     var px = st.toPx(ct[0], ct[1]);
     var el = DM.pxLabel(MI, 'lab', px.x, px.y - 22, k.n,
-      { fill: '#fff', size: 16, halo: 'rgba(3,8,18,.96)', weight: 800 });
+      { fill: '#fff', size: 16, halo: '#1c1408', weight: 800 });
     if (el) DM.anchor(MI, el, ct[0], ct[1], -22);
     var sub = (pv ? pv.n : '') + (cityObj ? ' · ' + cityObj.n : '');
     var el2 = DM.pxLabel(MI, 'lab', px.x, px.y + 6, sub,
-      { fill: 'rgba(230,240,255,.9)', size: 11, halo: 'rgba(3,8,18,.94)' });
+      { fill: 'rgba(230,240,255,.9)', size: 11, halo: '#1c1408' });
     if (el2) DM.anchor(MI, el2, ct[0], ct[1], 6);
   }
 
@@ -1484,7 +1496,7 @@
       var ct = G.polyCentroid(rings);
       var px = st.toPx(ct[0], ct[1]);
       var el = DM.pxLabel(MI, 'lab', px.x, px.y, cityObj.n + ' · 加载中',
-        { fill: '#fff', size: 13, halo: 'rgba(3,8,18,.96)', weight: 800 });
+        { fill: '#fff', size: 13, halo: '#1c1408', weight: 800 });
       if (el) DM.anchor(MI, el, ct[0], ct[1]);
     }
   }
@@ -1663,7 +1675,7 @@
         if (!hit) {
           placed.push([px.x, px.y]);
           var el = DM.pxLabel(MI, 'lab', px.x, px.y, name,
-            { fill: '#fff', size: 10.5, halo: 'rgba(3,8,18,.96)' });
+            { fill: '#fff', size: 10.5, halo: '#1c1408' });
           if (el) DM.anchor(MI, el, ct[0], ct[1], 0, null, true, 620);
         }
       }
@@ -1731,7 +1743,7 @@
         if (!hit) {
           placed.push([px.x, px.y]);
           var el = DM.pxLabel(MI, 'lab', px.x, px.y, f.n,
-            { fill: '#fff', size: 10, halo: 'rgba(3,8,18,.96)' });
+            { fill: '#fff', size: 10, halo: '#1c1408' });
           if (el) DM.anchor(MI, el, ct[0], ct[1], 0, null, true, 620);
         }
       }
@@ -1772,7 +1784,7 @@
     });
     var ct = G.polyCentroid(abs(cityObj));
     var px = st.toPx(ct[0], ct[1]);
-    var el = DM.pxLabel(MI, 'lab', px.x, px.y, cityObj.n, { fill: '#fff', size: 14, halo: 'rgba(3,8,18,.96)', weight: 800 });
+    var el = DM.pxLabel(MI, 'lab', px.x, px.y, cityObj.n, { fill: '#fff', size: 14, halo: '#1c1408', weight: 800 });
     if (el) DM.anchor(MI, el, ct[0], ct[1]);
 
     /* 据实标注：县界未取到，不能让标题看起来像已下钻成功 */
@@ -1820,7 +1832,7 @@
         if (!hit) {
           placed.push([px.x, px.y]);
           var el = DM.pxLabel(MI, 'lab', px.x, px.y, k.n,
-            { fill: '#fff', size: 10.5, halo: 'rgba(3,8,18,.96)' });
+            { fill: '#fff', size: 10.5, halo: '#1c1408' });
           if (el) DM.anchor(MI, el, ct[0], ct[1], 0, null, true, 620);
         }
       }
@@ -2200,12 +2212,22 @@
     if (RS) { RS.host = MI.host; RS.svg = MI.svg.host; }
 
     // 视图变化（缩放/平移）后重绘栅格，保持像元与地理对齐
-    MI.svg.onRasterRefresh = function () {
+    /* 视图变化（缩放/平移）后重绘栅格。
+       ⚠️ 节流的必要性：onRasterRefresh 在每次 viewchange 都会触发，
+       而 RS.render 是逐像元同步循环 —— 连续缩放/拖动时每帧都重算一遍，
+       实测造成 2.3s 的单帧阻塞、界面像"卡死"。
+       改为：150ms 内的重复请求只记一次「待重算」，静默期结束后执行一次。
+       大尺度层级（全国/省）额外直接跳过 —— 那层栅格只是极淡氛围纹理
+       （alpha 0.22/0.55），缩放时看不跟着变，用户完全无感。 */
+    var rasterTimer = null, rasterDirty = false;
+    function doRasterRefresh() {
       if (!N.rasterOn || !rasterFor(N.activeLayer)) return;
+      var coarse = (N.level !== 'county' && N.level !== 'city' &&
+                    N.level !== 'town' && N.level !== 'village');
+      if (coarse) return;                       // 大尺度不重算
       var rings = currentClipRings();
       var lk = N.activeLayer;
       RS.setVisible(lk, true);
-      // 边界遮罩是像素坐标，视图变化后必须重算
       RS.setMask(MI.svg, rings);
       syncOverlay();
       RS.render({
@@ -2215,6 +2237,15 @@
         pixelM: pixelForLevel(),
         alpha: alphaForLevel()
       });
+    }
+    MI.svg.onRasterRefresh = function () {
+      if (!N.rasterOn || !rasterFor(N.activeLayer)) return;
+      rasterDirty = true;
+      if (rasterTimer) return;                  // 静默期内已排队
+      rasterTimer = setTimeout(function () {
+        rasterTimer = null;
+        if (rasterDirty) { rasterDirty = false; doRasterRefresh(); }
+      }, 150);
     };
     // 裁剪路径需随下钻层级更新
     MI._clipRings = function () { return currentClipRings(); };
@@ -2325,7 +2356,7 @@
        港澳压在广东旁，正是用户看到的"重叠"。
        现只传栅格层，省名标注统一由上方的 pxLabel 负责，单一来源。 */
     renderRaster({
-      layer: N.activeLayer, rings: null, code: 0, pixelM: 1200, alpha: .22,
+      layer: N.activeLayer, rings: null, code: 0, pixelM: 2000, alpha: .22,
       onStats: paintGrowthPanel,
       overlay: { rings: null }
     });
@@ -2359,7 +2390,7 @@
         }
         if (hit) { crowded.push({ p: p, ct: ct, px: px, w: estW }); return; }
         placed.push([px.x, px.y, half]);
-        var el = DM.pxLabel(MI, 'lab', px.x, px.y, nm, { fill: '#fff', size: 11, halo: 'rgba(3,8,18,.96)' });
+        var el = DM.pxLabel(MI, 'lab', px.x, px.y, nm, { fill: '#fff', size: 11, halo: '#1c1408' });
         if (el) DM.anchor(MI, el, ct[0], ct[1], 0, null, true, 620);
       });
       /* 第二轮：拥挤者按上下左右四个方向找空位，用引线连回原质心 */
@@ -2387,7 +2418,7 @@
             { stroke: 'rgba(255,255,255,.5)', sw: 1 });
         } catch (e) { }
         var el2 = DM.pxLabel(MI, 'lab', ok.x, ok.y, shortName(c.p.n),
-          { fill: '#fff', size: 11, halo: 'rgba(3,8,18,.96)' });
+          { fill: '#fff', size: 11, halo: '#1c1408' });
         if (el2) DM.anchor(MI, el2, c.ct[0], c.ct[1], 0, null, true, 620);
       });
     }
@@ -2665,7 +2696,7 @@
         if (!hit) {
           placed.push([px.x, px.y]);
           var el = DM.pxLabel(MI, 'lab', px.x, px.y, f.n,
-            { fill: '#fff', size: 10, halo: 'rgba(3,8,18,.96)' });
+            { fill: '#fff', size: 10, halo: '#1c1408' });
           if (el) DM.anchor(MI, el, ct[0], ct[1], 0, null, true, 620);
         }
       }
@@ -2718,7 +2749,7 @@
     var ct = G.polyCentroid(abs(pv));
     if (st && st._vw > 620) {
       var px = st.toPx(ct[0], ct[1]);
-      var el = DM.pxLabel(MI, 'lab', px.x, px.y, shortName(pv.n), { fill: '#fff', size: 13, halo: 'rgba(3,8,18,.96)' });
+      var el = DM.pxLabel(MI, 'lab', px.x, px.y, shortName(pv.n), { fill: '#fff', size: 13, halo: '#1c1408' });
       if (el) DM.anchor(MI, el, ct[0], ct[1]);
     }
     // 灾点圈已挪到 DM.fit 之后绘制（toPx 需要新变换）
@@ -2764,7 +2795,7 @@
         }
         if (!hit) {
           placed.push([px.x, px.y]);
-          var el = DM.pxLabel(MI, 'lab', px.x, px.y, c.n, { fill: '#fff', size: 10.5, halo: 'rgba(3,8,18,.96)' });
+          var el = DM.pxLabel(MI, 'lab', px.x, px.y, c.n, { fill: '#fff', size: 10.5, halo: '#1c1408' });
           if (el) DM.anchor(MI, el, ct[0], ct[1], 0, null, true, 620);
         }
       }

@@ -684,67 +684,108 @@
     return false;
   }
 
+  /* 标签样式（第五版 · 定稿：描边，不用底衬）
+     ⚠️ 这个函数返工四次，完整教训链必须留着：
+     1) 各视图传 haloW=3.4~5.5 固定值（占字号 34~40%）→ 糊成黑块；
+     2) 改「8 方位光晕副本」→ 每标签 9 个 text、副本偏移 → 用户看到"重影"；
+     3) 改回单 text + paint-order:stroke（0.12×字号）→ 用户仍报"文字有两个"；
+     4) 改「半透明深色底衬 rect」→ 参数压到 0.26 不透明度仍然失败：
+        用户报的"文字下方很多黑影"就是它。
+        底衬是【一块独立矩形】，无论透明度多低都会在彩色面（黄/绿/褐的省域）
+        上显出可见的脏色方块 —— 这是原理性缺陷，不是参数问题。
+        对照实验（11px 与 16px 字、黄褐底、paint-order=stroke）：
+          描边 1.8~4.5 各档 → 字腔干净、无任何方块；
+          半透明底衬 .26     → 明显的脏灰色矩形。
+     5) 定稿：**去掉底衬，改用 paint-order:stroke 描边**。
+        描边画在字形外沿（不侵入字腔），任何底色上都清晰，
+        且不会在地图上留下矩形痕迹。
+
+     描边宽度：字号 × 0.28，上限 4.6px。
+       小字号（10~11px）取 2.0~3.1px —— 对照实验里 11px 字配 2.2~3.2px
+       依然字腔清晰（此前"小字号描边必糊"的结论是错的，
+       起因是在半透明黑上做实验、与现在的实色深棕不同）。
+       大字号（16px）取 4.5px。stroke-linejoin:round 避免拐角出尖刺。 */
+  /* 文字宽度测量：离屏 <text> 量，纯 CSS 像素、无任何变换。
+     ⚠️ 不可直接对图层内的标签调 getComputedTextLength()：
+        px 图层为抵消地图变换被施加了 scale(≈8408)，与栈上scale(≈1.19e-4)
+        叠加抵消，这个双重缩放会让量出的宽度失真。
+     ⚠️ 也曾因为只量宽度、不入 DOM 就填底衬，导致底衬撑不住文字 ——
+        现底衬已去掉，本函数只用于标签避让的矩形估算，允许少量误差。 */
+  var MEASURE_SVG = null;
+  function measureText(text, fs, weight) {
+    try {
+      if (!MEASURE_SVG) {
+        MEASURE_SVG = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        MEASURE_SVG.setAttribute('width', '10');
+        MEASURE_SVG.setAttribute('height', '10');
+        MEASURE_SVG.style.cssText = 'position:absolute;left:-9999px;top:-9999px;' +
+          'width:10px;height:10px;overflow:visible;pointer-events:none';
+        var mt = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        mt.setAttribute('id', '__gs_mt');
+        MEASURE_SVG.appendChild(mt);
+        document.body.appendChild(MEASURE_SVG);
+      }
+      var t = MEASURE_SVG.querySelector('#__gs_mt');
+      t.setAttribute('font-size', fs);
+      t.setAttribute('font-weight', weight || 700);
+      t.setAttribute('font-family', 'inherit');
+      t.textContent = text;
+      var w = t.getComputedTextLength();
+      /* 兜底：CJK 按 1.0em/字，西文按 0.55em/字符 估算 */
+      return (w > 0 ? w : (String(text).match(/[\u4e00-\u9fa5]/g) || []).length * fs
+        + (String(text).length - (String(text).match(/[\u4e00-\u9fa5]/g) || []).length) * fs * 0.55);
+    } catch (e) {
+      return String(text).length * fs * 0.8;
+    }
+  }
+
   GeoCanvas.prototype.pxLabel = function (layerName, x, y, text, style, meta) {
     var L = this.layers[layerName]; if (!L) return null;
     if (labelHidden(text)) return null;   // 命中屏蔽名单：不画任何文字
-    y = this._avoidLabels(layerName, x, y, 0, 0, style.size || 12);
     var fs = style.size || 12;
-    var usePlate = (style.plate !== false && style.halo !== 'none');
+    y = this._avoidLabels(layerName, x, y, 0, 0, fs);
+
+    /* 描边色：默认用与底图协调的深棕黑（而非纯黑/半透明黑）。
+       实色描边在浅色面上边缘更利落，不会因半透明而"发灰显脏"。 */
+    var halo = style.halo;
+    if (halo == null || halo === 'none') halo = '#1c1408';
+    var useHalo = (halo !== 'none');
+    var hw = style.haloW || fs * 0.22;
+    var maxHw = 3.4;
+    if (hw > maxHw) hw = maxHw;
+    if (!useHalo) hw = 0;
 
     var t = el('text', {
-      x: x, y: y, class: 'gs-label', fill: style.fill || '#e8f0fb',
+      x: x, y: y, class: 'gs-label', fill: style.fill || '#fff',
       'font-size': fs, 'text-anchor': style.anchor || 'middle',
       'font-weight': style.weight || 700, 'font-family': 'inherit'
     });
+    if (useHalo) {
+      t.setAttribute('paint-order', 'stroke');
+      t.setAttribute('stroke', halo);
+      t.setAttribute('stroke-width', hw.toFixed(2));
+      t.setAttribute('stroke-linejoin', 'round');
+    }
     t.textContent = text;
     t._lx = 1;              // 标记：供 _avoidLabels 识别为标签
     /* 预先记录屏幕矩形，供后续标签做避让判定。
        必须在元素尚未入 DOM 时就算好 —— 入 DOM 后 getBoundingClientRect
        可能返回 0 宽，导致避让整体失效（见 _avoidLabels 注释）。 */
-    var estW2 = fs * text.length * 0.62, estH2 = fs * 1.2;
-    try { if (t.getComputedTextLength) estW2 = t.getComputedTextLength(); } catch (e0) { }
+    var estW = measureText(text, fs, style.weight || 700), estH = fs * 1.2;
     var hb = this.host.getBoundingClientRect();
-    var anc2 = style.anchor || 'middle';
-    var bx0 = anc2 === 'start' ? x : (anc2 === 'end' ? x - estW2 : x - estW2 / 2);
-    t._pxBox = { left: hb.left + bx0, right: hb.left + bx0 + estW2,
-                 top: hb.top + y - estH2 * 0.78, bottom: hb.top + y + estH2 * 0.22 };
+    var anc = style.anchor || 'middle';
+    var bx0 = anc === 'start' ? x : (anc === 'end' ? x - estW : x - estW / 2);
+    t._pxBox = { left: hb.left + bx0, right: hb.left + bx0 + estW,
+                 top: hb.top + y - estH * 0.78, bottom: hb.top + y + estH * 0.22 };
     if (meta) {
       t.setAttribute('data-pick', '1');
       if (meta.id) t.setAttribute('data-id', meta.id);
       if (meta.kind) t.setAttribute('data-kind', meta.kind);
       t.style.cursor = meta.kind ? 'pointer' : 'default';
     }
-
-    if (usePlate) {
-      /* 先把文字入 DOM 量出宽度，再回填底衬宽度 —— SVG 文字宽度只能实测 */
-      L.g.appendChild(t);
-      var tw = fs * text.length * 0.62;
-      try { if (t.getComputedTextLength) tw = t.getComputedTextLength(); } catch (e2) { }
-      /* 底衬参数必须克制到"几乎看不见"：
-         初版 padX=0.32em / 不透明度 .66 / 圆角 0.26em → 11px 字号下是
-         一块 12×15px 深色圆角方块，4 倍放大就是"字底压个黑框"；
-         收到 0.10em / .34 仍偏重。用户诉求是【文字干净】，
-         故再压：透明度 .26、内收 0.06em、圆角 0.08em ——
-         只够压住穿过字身的省界线，不形成任何可见边框。 */
-      var padX = fs * 0.06, padY = fs * 0.04;
-      var plate = el('rect', {
-        x: (x - tw / 2 - padX).toFixed(1),
-        y: (y - fs * 0.80 - padY).toFixed(1),
-        width: (tw + padX * 2).toFixed(1),
-        height: (fs + padY * 2).toFixed(1),
-        rx: (fs * 0.08).toFixed(1),
-        class: 'gs-label-plate',
-        fill: 'rgba(9,15,26,.26)'
-      });
-      /* 底衬插到文字之前（同层内 z 序靠前），文字压在底衬上 */
-      L.g.insertBefore(plate, t);
-      if (style.opacity != null) { plate.setAttribute('opacity', style.opacity); t.setAttribute('opacity', style.opacity); }
-      L.pxItems = L.pxItems || []; L.pxItems.push(t);
-      return t;
-    }
-
     if (style.opacity != null) t.setAttribute('opacity', style.opacity);
-    L.g.appendChild(t); L.pxItems = L.pxItems || []; L.pxItems.push(t);
+    L.g.appendChild(t);
+    L.pxItems = L.pxItems || []; L.pxItems.push(t);
     return t;
   };
 

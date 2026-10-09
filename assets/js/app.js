@@ -89,13 +89,17 @@
 
     // 湖北面
     map.area('base', hb, { fill: 'rgba(59,130,246,.09)', stroke: 'rgba(96,165,250,.62)', strokeWidth: 1.6 });
-    // 邻省淡显
-    GEO.provinces.forEach(function (p) {
+    /* 邻省淡显。
+       ⚠️ 此前遍历 GEO.provinces（geo.js 里的全国 35 省，449KB），
+         而该文件在 app.js 里只被用到湖北一省 —— 为此首屏多背了 437KB。
+         现改用已在首屏的 __GEO_PROV__（geo-province.js，全国省界），
+         并同样只取湖北的 bbox 邻域，效果一致、首屏省437KB。
+         两套省界精度不同，此处仅作极淡的底图轮廓，无可辨识要求。 */
+    (window.__GEO_PROV__ && window.__GEO_PROV__.provinces || []).forEach(function (p) {
       if (p.c === 420000) return;
-      var b = p.b;
-      var dx = Math.max(0, hbB[0] - b[2]); // 粗略相邻判断：仅显示紧邻的
       var d2 = G.ringsBBox(p.r);
-      var near = !(d2[2] < hbB[0] - 200000 || d2[0] > hbB[2] + 200000 || d2[3] < hbB[1] - 200000 || d2[1] > hbB[3] + 200000);
+      var near = !(d2[2] < hbB[0] - 200000 || d2[0] > hbB[2] + 200000 ||
+                   d2[3] < hbB[1] - 200000 || d2[1] > hbB[3] + 200000);
       if (near) map.area('base', p, { fill: 'rgba(120,160,220,.035)', stroke: 'rgba(120,160,220,.13)', strokeWidth: .8 });
     });
 
@@ -116,7 +120,7 @@
       var r1 = map.pxRing('hot', p.x, p.y, 17, { stroke: 'rgba(255,211,90,.9)', sw: 1.6, dash: '4,3' });
       var d1 = map.pxDot('hot', p.x, p.y, 6, { fill: '#ffd35a', stroke: 'rgba(7,13,24,.9)', sw: 1.4, filter: 'url(#gsGlow)' },
         { kind: 'city', title: f.name + ' · 点击进入理赔定损' });
-      var t1 = map.pxLabel('lab', p.x, p.y - 24, f.name, { fill: '#ffd35a', size: 12, halo: 'rgba(4,10,20,.95)', haloW: 4.2 });
+      var t1 = map.pxLabel('lab', p.x, p.y - 24, f.name, { fill: '#ffd35a', size: 12, halo: '#1c1408', haloW: 4.2 });
       map.anchor(d1, f.xy[0], f.xy[1], 0, [r1]);
       map.anchor(t1, f.xy[0], f.xy[1], -24);
     });
@@ -128,7 +132,7 @@
       if (ct[0] < hbB[0] || ct[0] > hbB[2] || ct[1] < hbB[1] || ct[1] > hbB[3]) return;
       var p = map.toPx(ct[0], ct[1]);
       var lt3 = map.pxLabel('lab', p.x, p.y, c.n.replace(/市|土家族苗族自治州|林区/, ''),
-        { fill: '#ffffff', size: 11.5, halo: 'rgba(4,10,20,.95)', haloW: 4.2, weight: 700 });
+        { fill: '#ffffff', size: 11.5, halo: '#1c1408', haloW: 4.2, weight: 700 });
       map.anchor(lt3, ct[0], ct[1], 0, null, true, 700);
     });
 
@@ -299,7 +303,7 @@
         var pp = st.uwParcels[idx];
         if (!pp) return;
         var sp = map.toPx(pp.xy[0], pp.xy[1]);
-        var lt = map.pxLabel('lab', sp.x, sp.y, t.n, { fill: '#ffffff', size: 11, halo: 'rgba(4,10,20,.95)', haloW: 4, weight: 700 });
+        var lt = map.pxLabel('lab', sp.x, sp.y, t.n, { fill: '#ffffff', size: 11, halo: '#1c1408', haloW: 4, weight: 700 });
         map.anchor(lt, pp.xy[0], pp.xy[1], 0, null, true, 620);
       });
     }
@@ -437,7 +441,7 @@
       var col = lossColor(t.loss);
       var sp = map.toPx(cx, cy);
       var lt2 = map.pxLabel('lab', sp.x, sp.y - 13, t.n + ' ' + (t.loss * 100).toFixed(0) + '%', {
-        fill: 'rgb(' + col[0] + ',' + col[1] + ',' + col[2] + ')', size: 11.5, halo: 'rgba(4,10,20,.95)', haloW: 4.2
+        fill: 'rgb(' + col[0] + ',' + col[1] + ',' + col[2] + ')', size: 11.5, halo: '#1c1408', haloW: 4.2
       });
       // 标记为可选标注：由引擎按当前容器宽度统一显隐
       map.anchor(lt2, cx, cy, -13, null, true);
@@ -551,7 +555,7 @@
       var a3 = map.pxDot('warn', p.x, p.y, 6.5, { fill: col, stroke: 'rgba(7,13,24,.9)', sw: 1.5 },
         { id: t.id, kind: 'task', title: t.type + t.level + '预警 · ' + t.city });
       var a4 = map.pxRing('warn', p.x, p.y, 13, { stroke: col, sw: 1.2, opacity: .55 });
-      var a5 = map.pxLabel('lab', p.x, p.y - R0 - 9, t.city + ' · ' + t.level, { fill: col, size: 11.5, halo: 'rgba(4,10,20,.95)', haloW: 4.2 });
+      var a5 = map.pxLabel('lab', p.x, p.y - R0 - 9, t.city + ' · ' + t.level, { fill: col, size: 11.5, halo: '#1c1408', haloW: 4.2 });
       map.anchor(a3, cc[0], cc[1], 0, [a1, a2, a4]);
       map.anchor(a5, cc[0], cc[1], -(R0 + 9), null, true, 620);
       st.warnTasks.push(t);

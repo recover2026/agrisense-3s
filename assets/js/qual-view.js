@@ -228,7 +228,7 @@
         placed.push([px.x, px.y]);
         var short = p.n.replace(/维吾尔|壮族|回族|自治区|特别行政区|省|市/g, '');
         var txt = q >= 100 ? short : short + ' ' + q + (g ? '/' + g : '');
-        var el = DM.pxLabel(MI, 'lab', px.x, px.y, txt, { fill:'#fff', size:10.5, halo:'rgba(3,8,18,.96)' });
+        var el = DM.pxLabel(MI, 'lab', px.x, px.y, txt, { fill:'#fff', size:10.5, halo: '#1c1408' });
         if (el) DM.anchor(MI, el, ct[0], ct[1], 0, null, true, 620);
       });
     }
@@ -363,7 +363,7 @@
         placed.push([px.x, px.y]);
         var isPol = !!IDX.polByCode[code];
         var el = DM.pxLabel(MI, 'lab', px.x, px.y, k.n, {
-          fill: isPol ? '#ffd35a' : '#cfe0f5', size: 10, halo:'rgba(3,8,18,.96)'
+          fill: isPol ? '#ffd35a' : '#cfe0f5', size: 10, halo: '#1c1408'
         });
         if (el) DM.anchor(MI, el, ct[0], ct[1], 0, null, true, 700);
       });
