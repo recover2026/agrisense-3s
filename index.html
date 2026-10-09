@@ -137,6 +137,16 @@
           <div class="nat-crumb" id="nat-crumb"></div>
         </div>
         <button class="nat-raster-toggle" id="nat-raster-toggle" title="切换遥感影像 / 纯矢量"><i>◐</i><span>影像</span></button>
+
+        <!-- 点选入口：香港/澳门/厦门/济源/苏州 等面积极小的区域不显示文字，
+             但仍需能进入。点此按钮从列表直接下钻。 -->
+        <div class="nat-jump" id="nat-jump">
+          <button class="nat-jump-btn" id="nat-jump-btn" title="按名称直接下钻到指定区域"
+                  aria-haspopup="listbox" aria-expanded="false">
+            <i>⌖</i><span>点选</span>
+          </button>
+          <div class="nat-jump-pop" id="nat-jump-pop" hidden role="listbox"></div>
+        </div>
       </div>
     </section>
 

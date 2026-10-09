@@ -654,8 +654,39 @@
      - 压住穿过文字的省界线，文字区域始终干净；
      - 深浅底图上都成立（白字 + 深底衬）。
      style.plate === false 或 halo === 'none' 时不画底衬。 */
+  /* ---------- 标签屏蔽名单（用户要求不显示的文字）----------
+     需求（2026-10-09）：香港、澳门、厦门、济源（计划单列市）、苏州
+     这些面积极小或紧邻他区，名称压在图上既看不清又挤占空间，
+     但必须仍能点进去 —— 所以只【不画文字】，面本身照旧可拾取下钻。
+     入口改由地图右上角的「点选」按钮提供（见 nat-jump）。
+
+     实现放在引擎层而不是各视图调用点：pxLabel 有 13 处调用，
+     逐处判断必然漏改，且以后新增视图又会踩同一个坑。
+     用精确匹配 + 「名称含关键字」两级：
+       精确——「香港」只匹配「香港」，不会误伤「香港中路」之类；
+       关键字——用于简称形态（如「香港特别行政区」与「香港」）。
+     名单可运行时增删，便于用户后续自己调整。 */
+  var HIDE_LABELS = ['香港', '澳门', '厦门', '济源', '苏州'];
+  GeoCanvas.hiddenLabels = function () { return HIDE_LABELS.slice(); };
+  GeoCanvas.setHiddenLabels = function (arr) {
+    HIDE_LABELS = (arr || []).map(function (s) { return String(s).trim(); })
+      .filter(function (s) { return !!s; });
+  };
+  function labelHidden(text) {
+    if (!text) return false;
+    var t = String(text);
+    for (var i = 0; i < HIDE_LABELS.length; i++) {
+      var h = HIDE_LABELS[i];
+      if (!h) continue;
+      if (t === h) return true;          // 精确
+      if (t.indexOf(h) >= 0) return true; // 「香港特别行政区」含「香港」
+    }
+    return false;
+  }
+
   GeoCanvas.prototype.pxLabel = function (layerName, x, y, text, style, meta) {
     var L = this.layers[layerName]; if (!L) return null;
+    if (labelHidden(text)) return null;   // 命中屏蔽名单：不画任何文字
     y = this._avoidLabels(layerName, x, y, 0, 0, style.size || 12);
     var fs = style.size || 12;
     var usePlate = (style.plate !== false && style.halo !== 'none');

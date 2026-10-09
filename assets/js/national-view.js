@@ -139,6 +139,75 @@
     document.head.appendChild(s);
   }
 
+  /* ---------- 省直辖县级行政区的真实边界（county-ref 的 _r）----------
+     背景：农险业务里「省直辖县级行政区」不是概念，是真实承保单元 ——
+     河南济源(419001)、湖北仙桃/潜江/天门/神农架(429004/05/06/21)。
+     它们在「市」这一层出现（点河南 → 列表里有「济源市」），
+     但县界文件 geo-county-<省>.js 里【没有】它们的要素
+     （实测 geo-county-41.js 有156 个县，唯独没有 419001）。
+     结果：点进去提示「县级边界未取到（仅市级）」，地图一个县面都没有，
+     真正能承保的单元反而进不去 —— 与业务直觉相反。
+
+     这 5 个（连同海南儋州等）的真实边界其实已在 county-ref.js 的 `_r` 里
+     （仓库 tools/patch_direct_counties.py 当初就是为此写的补丁），
+     只是 national-view 从未加载该文件（此前仅 uw-view 用到）。
+     这里按需加载并注册进 KB，使其与普通县走完全相同的绘制/拾取/下钻路径。 */
+  var refLoading = [], refHas = false;
+  function ensureCountyRef(cb) {
+    if (window.__COUNTY_REF__) { refHas = true; return cb(true); }
+    if (refLoading.length) { refLoading.push(cb); return; }
+    refLoading.push(cb);
+    var s = document.createElement('script');
+    s.src = 'assets/data/geo-county-ref.js';
+    var settled = false;
+    var timer = setTimeout(function () {
+      if (settled) return; settled = true;
+      var l = refLoading; refLoading = [];
+      l.forEach(function (f) { f(false); });
+    }, 4000);
+    s.onload = function () {
+      if (settled) return; settled = true; clearTimeout(timer);
+      refHas = true;
+      var l = refLoading; refLoading = [];
+      l.forEach(function (f) { f(true); });
+    };
+    s.onerror = function () {
+      if (settled) return; settled = true; clearTimeout(timer);
+      var l = refLoading; refLoading = [];
+      l.forEach(function (f) { f(false); });
+    };
+    document.head.appendChild(s);
+  }
+  /* 把 county-ref 中带 _r 的省直辖县注册进 KB（_r 已是绝对世界坐标）。
+     已存在于 KB 的不覆盖 —— 省级县界文件优先。 */
+  function absorbCountyRef() {
+    if (!window.__COUNTY_REF__) return 0;
+    var REF = window.__COUNTY_REF__, add = 0;
+    for (var code in REF) {
+      var v = REF[code];
+      if (!v || !v._r || !v._r.length) continue;
+      if (KB[String(code)]) continue;
+      /* ⚠️ b 必须填【真实世界坐标 bbox】，不能图省事写 [0,0,0,0]。
+         countyBox()/abox() 会读 b 交给 fit()，b 为 0 会把视野fit 到
+         原点 —— 画面全空、比例尺显示「0 m」，而 DOM 里 17 个面都在
+         （实测济源）。county-ref 里本身带 x/y/b，正好可用（已是绝对坐标）。 */
+      var bb = (v.b && v.b.length === 4) ? v.b.slice() : bboxOfRings(v._r);
+      KB[String(code)] = { n: v.n, c: Number(code), r: v._r, b: bb, _absRef: true };
+      add++;
+    }
+    return add;
+  }
+  function bboxOfRings(rings) {
+    var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    rings.forEach(function (rg) {
+      rg.forEach(function (p) {
+        if (p[0] < x0) x0 = p[0]; if (p[0] > x1) x1 = p[0];
+        if (p[1] < y0) y0 = p[1]; if (p[1] > y1) y1 = p[1];
+      });
+    });
+    return (x0 === Infinity) ? [0, 0, 0, 0] : [x0, y0, x1, y1];
+  }
+
   // 县级 adcode 前2位 = 省码；不能直接 indexOf(省adcode)
   function countyOfProv(code) {
     var p2 = String(code).slice(0, 2);
@@ -147,6 +216,10 @@
 
   function absKB(k) {
     if (k._abs) return k._abs;
+    /* county-ref 补进来的省直辖县：_r 已是【绝对世界坐标】，
+       再加 b 会平移出一个错位的空区（实测会画到省外）。
+       故以 _absRef 标记，b 固定为 [0,0] 并跳过加法。 */
+    if (k._absRef) { k._abs = k.r; return k._abs; }
     var b = k.b;
     k._abs = k.r.map(function (r) { return r.map(function (p) { return [p[0] + b[0], p[1] + b[1]]; }); });
     return k._abs;
@@ -1025,6 +1098,7 @@
 
   /* ---------- 县级下钻：进入某个县，显示大比例尺遥感影像 + 长势 ---------- */
   function renderCounty(pv, cityObj, code) {
+    closeJump();
     /* S2 索引懒加载：只有县级视图用得到真实反演网格。
        首次进入时拉取（约 234KB），拉到后重绘一次把模拟值场换成实测值场；
        拉取失败或该县无记录则维持模拟值场（界面会如实标注）。 */
@@ -1223,6 +1297,7 @@
 
   // 点击乡镇 → 乡镇级大比例尺遥感视图
   function renderTown(pv, cityObj, k, ti, ccode) {
+    closeJump();
     var cc = ccode != null ? ccode : (k && k.c != null ? k.c : N.curCounty);
     var tf = townOf(cc, k.n, cityObj ? cityObj.n : '');
     if (!tf || !tf.t[ti]) { showCountyInfo(k, cityObj, pv); return; }
@@ -1415,6 +1490,7 @@
   }
 
   function renderCity(pv, cityObj) {
+    closeJump();
     // 返回上级时收起下级列表（避免面板跨层级残留）
     var _pk = document.getElementById('nat-picker'); if (_pk) _pk.style.display = 'none';
 
@@ -1430,9 +1506,27 @@
        （实测弱网下这一步能明显缩短「点进去没反应」的主观等待） */
     try { paintCityOutline(pv, cityObj); } catch (e) { /* 非致命 */ }
 
-    loadCountyOf(pv.c, function (ok) {
-      var ks = ok ? countyOfProv(pv.c) : [];
-      var mc = String(cityObj.c);
+    /* mc 提到外层：proceedCity 内部（countyFacesFromTown 的回调）也要用它，
+       定义在 loadCountyOf 回调里会因作用域不到而抛 "mc is not defined"。 */
+    var mc = String(cityObj.c);
+
+    loadCountyOf(pv.c, function () {
+      /* 省直辖县级行政区（济源/仙桃/潜江/天门/神农架…）：
+         县界文件里没有它们，但 county-ref 的 _r 里有真实边界。
+         不补这一步，这些「真实承保单元」点进去会停在「县级边界未取到」。
+         判据直接看 KB 是否有本级要素 —— countyOfProv() 每次都现算，
+         补进 KB 后自然为真，无需缓存快照。 */
+      if (!KB[mc]) {
+        ensureCountyRef(function () { absorbCountyRef(); proceedCity(); });
+      } else { proceedCity(); }
+    });
+
+    function proceedCity() {
+      /* ⚠️ ks 必须在这里重取，不能用外层快照 ——
+         absorbCountyRef() 会往 KB 里补进省直辖县（如 419001 济源），
+         外层 ks 是补全前算的，里面没有这些码，
+         导致判定永远不成立、界面停在「加载县级边界…」。 */
+      var ks = countyOfProv(pv.c);
       /* 省级直辖县级市：市码本身就是县级码（海南儋州 460400、五指山 469001…），
          本级即是县，直接进县级视图下钻到乡镇。
          ⚠️ 绝不能按"前4位相同"筛辖县：海南 10 个直辖县都是 4690xx，
@@ -1525,8 +1619,8 @@
         if (!codes.length) { renderRasterCity(pv, cityObj); return; }
         drawCityWithCountyFaces(pv, cityObj, codes);
       });
-    });
-  }
+    }
+    }
 
   /* 省级直辖县级市（如海南儋州/五指山/琼海、河南济源）：
      本级就是县级行政区，没有下辖区县，但仍可下钻到乡镇。
@@ -2128,6 +2222,12 @@
     var back = $('#nat-back');
     if (back) back.addEventListener('click', function () { renderCountry(); });
 
+    /* 右上角「点选」入口（香港/澳门/厦门/济源/苏州 不显示文字，但仍需可进入） */
+    initJump();
+    /* 下钻层级变化时关闭已展开的点选列表 —— 否则它停在下层的旧内容上。
+       直接在 render* / pick* 内部调用（closeJump 对未展开时是空操作），
+       不做导出包装，避免内外两套函数引用。 */
+
     /* 腾讯 SDK 仅作为「有有效 key 时」的备用底图：
        无 key 时 sat-map.js 会直接跳过加载（省 40 次无效请求）。
        底图主力是免 KEY 的 Esri World Imagery，
@@ -2167,6 +2267,7 @@
 
   /* ---------- 全国 ---------- */
   function renderCountry() {
+    closeJump();
     // 返回上级时收起下级列表（避免面板跨层级残留）
     var _pk = document.getElementById('nat-picker'); if (_pk) _pk.style.display = 'none';
 
@@ -2316,6 +2417,7 @@
 
   /* ---------- 省级下钻 ---------- */
   function renderProvince(pcode) {
+    closeJump();
     // 返回上级时收起下级列表（避免面板跨层级残留）
     var _pk = document.getElementById('nat-picker'); if (_pk) _pk.style.display = 'none';
 
@@ -2686,13 +2788,178 @@
     paintCrumb();
   }
 
+  /* ---------- 右上角「点选」入口 ----------
+     香港/澳门/厦门/济源/苏州 这类区域按用户要求不显示文字
+     （面积极小或紧邻他区，名字压在图上既看不清又挤占空间），
+     但仍要能进去 —— 所以提供按名称直接下钻的入口。
+     与地图点击走同一套pickProvince/pickCity/pickCounty，
+     不另造逻辑，保证「点按钮进去」与「点图面进去」结果完全一致。
+
+     列表随当前层级变化：
+       全国 → 34 个省级（含香港/澳门，它们在这里仍可选）
+       省级 → 该省全部地级市（厦门、苏州、济源在这里）
+       市级 → 该市全部县区
+       县级 → 该县全部乡镇
+     屏蔽名单里若有当前层的项，仍照常列出（只是图上不画字）。 */
+  var jumpPop = null;
+  function jumpItems() {
+    var out = [];
+    if (N.level === 'country' || !N.curProvince) {
+      out.push({ grp: '省级 · 点击进入' });
+      GP.provinces.forEach(function (p) {
+        out.push({ t: shortName(p.n), sub: p.n, act: function () { pickProvince(p.c); } });
+      });
+      return out;
+    }
+    var list = N.cityCache[N.curProvince] || [];
+    if (N.level === 'province') {
+      out.push({ grp: '地级市 · 点击进入' });
+      list.forEach(function (c) {
+        out.push({ t: shortName(c.n), sub: c.n, act: function () { pickCity(c.c); } });
+      });
+      return out;
+    }
+    var pv = GP.provinces.filter(function (x) { return String(x.c) === String(N.curProvince); })[0];
+    var cc = (N.level === 'city') ? N.curCity : N.curCounty;
+    var cityObj = list.filter(function (x) { return String(cc).slice(0, 4) === String(x.c).slice(0, 4); })[0];
+    if (N.level === 'city') {
+      /* 省直辖县级行政区（如济源/仙桃）本级就是县，无下辖县区，
+         此时列表里的其实是乡镇 —— 分组标题要跟着变，否则写着「县区」
+         却列出一堆镇，用户会以为点错了。 */
+      var selfIsCounty = !!(cityObj && String(cityObj.c) === String(N.curCounty));
+      out.push({ grp: (cityObj ? shortName(cityObj.n) + ' · ' : '') +
+        (selfIsCounty ? '乡镇 · 点击进入' : '县区 · 点击进入') });
+      countyListOf().forEach(function (k) {
+        /* 不展示裸 adcode —— 用户要的是地名，编码对它无意义 */
+        out.push({ t: k.n, sub: '', act: function () { pickCounty(k.c); } });
+      });
+      return out;
+    }
+    /* 县级：列出乡镇 */
+    out.push({ grp: '乡镇 · 点击进入' });
+    var kb = KB[String(N.curCounty)] || { n: countyName(N.curCounty), c: String(N.curCounty) };
+    var tf = townOf(N.curCounty, kb.n || countyName(N.curCounty) || '', cityObj ? cityObj.n : '');
+    if (tf && tf.t) {
+      tf.t.forEach(function (o, i) {
+        out.push({ t: o.n, sub: '', act: function () {
+          renderTown(pv, cityObj, kb, i, N.curCounty);
+        } });
+      });
+    }
+    return out;
+  }
+
+  /* 当前市级下辖的县区清单。
+     ⚠️ 必须与 renderCity 画出的一致，否则「列表里有、图上点不到」或反之。
+     KB（真实县界）与 CF（乡镇聚合）都是【异步填充】的：
+     市级渲染完成时二者可能只到一部分，此时读快照会漏项
+     （实测苏州图上 9 个县面，列表只列出 5 个 —— 因为读的是 KB 的瞬时快照）。
+
+     正解：直接从 DOM 上已绘制的 path[data-kind="county"] 读取 ——
+     它就是用户眼睛看到、鼠标能点到的集合，且已含 CF 兜底与混合绘制的结果。 */
+  function countyListOf() {
+    var out = [];
+    if (!MI || !MI.svg || !MI.svg.host) return out;
+    var seen = {};
+    $$('#nat-map path[data-kind="county"]').forEach(function (p) {
+      var c = p.getAttribute('data-id');
+      var t = p.querySelector('title');
+      var n = (t && t.textContent) || countyName(c) || c;
+      if (c && !seen[c]) { seen[c] = 1; out.push({ n: n, c: c }); }
+    });
+    if (out.length) return out;
+    /* 图上还没画（数据未到）时退回 KB/CF 快照，至少让用户看到名字 */
+    var pv = GP.provinces.filter(function (x) { return String(x.c) === String(N.curProvince); })[0];
+    var list = N.cityCache[N.curProvince] || [];
+    var cc = (N.level === 'city') ? N.curCity : N.curCounty;
+    var cityObj = list.filter(function (x) { return String(cc).slice(0, 4) === String(x.c).slice(0, 4); })[0];
+    if (!cityObj) return out;
+    var mc = String(cityObj.c);
+    Object.keys(KB).forEach(function (c) {
+      if (String(c) !== mc && String(c).slice(0, 4) === mc.slice(0, 4)) {
+        out.push({ n: KB[c].n || countyName(c) || c, c: c });
+      }
+    });
+    if (!out.length) {
+      Object.keys(CF).forEach(function (c) {
+        if (String(c) !== mc && String(c).slice(0, 4) === mc.slice(0, 4)) {
+          out.push({ n: (CF[c] && CF[c].n) || countyName(c) || c, c: c });
+        }
+      });
+    }
+    return out;
+  }
+
+  function closeJump() {
+    if (!jumpPop) return;
+    jumpPop.hidden = true;
+    var b = $('#nat-jump-btn');
+    if (b) b.setAttribute('aria-expanded', 'false');
+  }
+  function buildJump() {
+    var pop = $('#nat-jump-pop'), btn = $('#nat-jump-btn');
+    if (!pop || !btn) return;
+    jumpPop = pop;
+    var items = jumpItems();
+    if (!items.length) {
+      pop.innerHTML = '<div class="nat-jump-empty">当前层级无可下钻项。<br>请先返回上一级。</div>';
+      return;
+    }
+    /* 副标题只在【提供额外信息】时才显示。
+       shortName('福州市')='福州'、sub='福州市' —— 直接并列会显示成
+       「福州 福州市」这种同义重复（实测列表里 9 个福建市全是这个样子）。
+       规则：sub 去掉尾部「市/县/区/地区/盟/州」后若与 t 相同，则不显示副标题。 */
+    function subUseful(t, sub) {
+      if (!sub || sub === t) return '';
+      var bare = String(sub).replace(/(市|县|区|地区|盟|自治州|自治县|旗|盟|县|市辖区)$/g, '');
+      if (bare === t || bare === String(t).replace(/(市|县|区)$/g, '')) return '';
+      return sub;
+    }
+    pop.innerHTML = items.map(function (it, i) {
+      if (it.grp) return '<div class="nat-jump-grp">' + it.grp + '</div>';
+      var sb = subUseful(it.t, it.sub);
+      return '<button type="button" data-j="' + i + '">' + it.t +
+        (sb ? '<small>' + sb + '</small>' : '') + '</button>';
+    }).join('');
+    $$('#nat-jump-pop button').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var it = items[Number(b.dataset.j)];
+        closeJump();
+        if (it && it.act) it.act();
+      });
+    });
+  }
+
+  function initJump() {
+    var btn = $('#nat-jump-btn');
+    if (!btn || btn._hooked) return;
+    btn._hooked = true;
+    btn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      var pop = $('#nat-jump-pop');
+      if (!pop) return;
+      if (!pop.hidden) { closeJump(); return; }
+      buildJump();
+      pop.hidden = false;
+      btn.setAttribute('aria-expanded', 'true');
+    });
+    /* 点地图任意处关闭 */
+    var map = document.querySelector('#v-national .mapwrap');
+    if (map) map.addEventListener('click', function () { closeJump(); }, true);
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') closeJump();
+    });
+  }
+
   /* ---------- 交互 ---------- */
   function pickProvince(code) {
+    closeJump();
     var p = GP.provinces.filter(function (x) { return String(x.c) === String(code); })[0];
     if (p) renderProvince(p.c);
   }
   // 点市 → 进入市级（县级下钻）
   function pickCity(code) {
+    closeJump();
     var pv = GP.provinces.filter(function (x) { return String(x.c) === String(N.curProvince); })[0];
     var list = N.cityCache[N.curProvince]; if (!pv || !list) return;
     var c = list.filter(function (x) { return String(x.c) === String(code); })[0];
@@ -2700,6 +2967,7 @@
   }
   // 点县 → 进入县级（大比例尺遥感长势影像）；已在该县时再点则出详情
   function pickCounty(code) {
+    closeJump();
     var k = KB[String(code)];
     var kn = countyName(code);
     if (!kn) return;

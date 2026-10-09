@@ -461,6 +461,62 @@ body{
 .dual-raster{position:absolute;inset:0;z-index:4;pointer-events:none}
 
 /* 影像/矢量切换按钮 */
+/* ---------- 点选入口（右上角）----------
+   香港/澳门/厦门/济源/苏州 这类区域按用户要求不显示文字，
+   但仍需能进入 —— 右上角此按钮按名称直接下钻。
+   定位：紧贴缩放控件（.gs-ctl 也在 right:14px）下方一行，
+   用 column 排布避免与＋/－/⌂ 三个按钮重叠。 */
+.nat-jump{
+  position:absolute;right:14px;top:126px;z-index:31;
+  display:flex;flex-direction:column;align-items:flex-end;gap:6px;
+  transition:top .2s cubic-bezier(.2,.9,.3,1);
+}
+/* 详情弹层展开时（.has-detail）整体下移，避免被弹层覆盖而点不到。
+   弹层 max-height:calc(100% - 92px)、顶在 top:14px，故下移到 60px 起算。 */
+.mapwrap.has-detail .nat-jump{top:calc(14px + min(58vh, 420px) + 10px)}
+@media (max-height:620px){
+  .mapwrap.has-detail .nat-jump{top:calc(14px + 46vh + 8px)}
+}
+.nat-jump-btn{
+  display:flex;align-items:center;gap:5px;padding:7px 11px;border-radius:10px;
+  border:1px solid var(--line-2);background:rgba(11,20,36,.92);color:var(--txt);
+  font-size:11.5px;font-weight:700;cursor:pointer;font-family:inherit;
+  backdrop-filter:blur(8px);transition:.16s;
+}
+.nat-jump-btn:hover{background:rgba(255,211,90,.2);border-color:rgba(255,211,90,.5);color:var(--brand)}
+.nat-jump-btn i{font-style:normal;font-size:13px;line-height:1}
+.nat-jump-btn[aria-expanded="true"]{
+  background:rgba(255,211,90,.24);border-color:rgba(255,211,90,.7);color:var(--brand);
+}
+.nat-jump-pop{
+  /* z-index 31 已高于详情弹层(30) —— 但展开列表必须压在弹层之上，
+     否则进入市级后（详情自动展开）列表会被弹层盖住、看得见却点不到。 */
+  position:relative;z-index:32;
+  width:236px;max-height:min(58vh,420px);overflow:auto;
+  padding:6px;border-radius:12px;border:1px solid var(--line-2);
+  background:rgba(9,16,28,.96);backdrop-filter:blur(12px);
+  box-shadow:0 10px 30px rgba(0,0,0,.5);
+  font-size:12px;color:var(--txt-2);
+}
+.nat-jump-pop[hidden]{display:none}
+.nat-jump-grp{
+  padding:6px 8px 4px;font-size:10px;font-weight:700;color:var(--txt-3);
+  letter-spacing:.06em;border-top:1px solid rgba(255,255,255,.06);
+}
+.nat-jump-grp:first-child{border-top:0}
+.nat-jump-pop button{
+  display:block;width:100%;text-align:left;padding:6px 9px;margin:1px 0;
+  border:0;border-radius:8px;background:transparent;color:var(--txt);
+  font-size:12px;font-family:inherit;cursor:pointer;line-height:1.5;
+}
+.nat-jump-pop button:hover{background:rgba(255,211,90,.18);color:var(--brand)}
+.nat-jump-pop button small{
+  display:block;color:var(--txt-3);font-size:10.5px;margin-top:1px;
+}
+.nat-jump-empty{padding:12px 9px;color:var(--txt-3);font-size:11.5px;line-height:1.6}
+@media (max-width:640px){
+  .nat-jump{top:auto;bottom:96px;right:14px}
+}
 .nat-raster-toggle{
   position:absolute;right:14px;bottom:44px;z-index:15;
   display:flex;align-items:center;gap:6px;padding:7px 12px;border-radius:10px;

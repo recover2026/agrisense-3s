@@ -22,8 +22,18 @@
     $('#dt-sub').textContent = sub || '';
     $('#dt-body').innerHTML = html;
     d.classList.add('on');
+    /* 详情弹层固定在地图右上角（right:14px/top:14px, z-index:30），
+       会把同样位于右上角的「点选」按钮整个盖住 —— 用户点不到。
+       实测进入市级后详情自动展开，此时点选按钮点击被拦截。
+       打开弹层时给 mapwrap 打标记，让点选按钮自动下移到弹层下方。 */
+    var mw = document.querySelector('.mapwrap');
+    if (mw) mw.classList.add('has-detail');
   }
-  function closeDetail() { $('#detail').classList.remove('on'); }
+  function closeDetail() {
+    $('#detail').classList.remove('on');
+    var mw = document.querySelector('.mapwrap');
+    if (mw) mw.classList.remove('has-detail');
+  }
   $('#dt-close').addEventListener('click', closeDetail);
 
   function tick() {
