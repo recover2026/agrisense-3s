@@ -140,13 +140,14 @@
 
         <!-- 点选入口：香港/澳门/厦门/济源/苏州 等面积极小的区域不显示文字，
              但仍需能进入。点此按钮从列表直接下钻。 -->
-        <div class="nat-jump" id="nat-jump">
-          <button class="nat-jump-btn" id="nat-jump-btn" title="按名称直接下钻到指定区域"
-                  aria-haspopup="listbox" aria-expanded="false">
-            <i>⌖</i><span>点选</span>
-          </button>
-          <div class="nat-jump-pop" id="nat-jump-pop" hidden role="listbox"></div>
-        </div>
+        <button class="nat-jump" id="nat-jump-btn"
+                title="按名称直接下钻到指定区域"
+                aria-haspopup="listbox" aria-expanded="false">
+          <i>⌖</i><span>点选</span>
+        </button>
+        <!-- 列表与按钮同级、互不嵌套：嵌套时展开的浮层必然压住按钮
+             （实测点击被 "intercepts pointer events" 拦截）。 -->
+        <div class="nat-jump-pop" id="nat-jump-pop" hidden role="listbox"></div>
       </div>
     </section>
 

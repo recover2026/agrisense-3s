@@ -23,16 +23,20 @@
     $('#dt-body').innerHTML = html;
     d.classList.add('on');
     /* 详情弹层固定在地图右上角（right:14px/top:14px, z-index:30），
-       会把同样位于右上角的「点选」按钮整个盖住 —— 用户点不到。
-       实测进入市级后详情自动展开，此时点选按钮点击被拦截。
-       打开弹层时给 mapwrap 打标记，让点选按钮自动下移到弹层下方。 */
-    var mw = document.querySelector('.mapwrap');
-    if (mw) mw.classList.add('has-detail');
+       会把同样位于右上角的「点选」按钮盖住 —— 用户点不到。
+       打开时给所有 mapwrap 打标记，让按钮下移到弹层下方。
+
+       ⚠️ 踩坑：原来用 document.querySelector('.mapwrap') 只取到【第一个】，
+       而全站有 7 个 mapwrap（总览/全国/资质/承保/上传/理赔/预警），
+       第一个是总览驾驶舱的 —— 标记打错地方，全国视图的按钮纹丝不动，
+       用户看到的仍是「按钮被弹层压住」（实测线上截图确认）。
+       必须用 querySelectorAll 全量标记；作用域由 CSS 侧
+       （.mapwrap:has(.nat-jump)）限定，不依赖 JS 判断视图。 */
+    $$('.mapwrap').forEach(function (m) { m.classList.add('has-detail'); });
   }
   function closeDetail() {
     $('#detail').classList.remove('on');
-    var mw = document.querySelector('.mapwrap');
-    if (mw) mw.classList.remove('has-detail');
+    $$('.mapwrap').forEach(function (m) { m.classList.remove('has-detail'); });
   }
   $('#dt-close').addEventListener('click', closeDetail);
 

@@ -2934,8 +2934,21 @@
     var btn = $('#nat-jump-btn');
     if (!btn || btn._hooked) return;
     btn._hooked = true;
-    btn.addEventListener('click', function (e) {
-      e.stopPropagation();
+    /* 点地图任意处关闭。用 document 捕获阶段监听，
+       但【不能】让按钮自己被它拦掉—— 所以这里判一下事件目标：
+       命中按钮（或按钮内部元素）时直接 return，交给按钮自己的 handler。
+       ⚠️ 实测踩坑：原先在按钮 handler 里调 e.stopPropagation()，
+          而地图监听挂在祖先的捕获阶段 —— 捕获先于目标阶段执行，
+          stopPropagation 拦不住它，于是点第二下时
+          「按钮 handler 先展开 → 立刻又被地图监听 closeJump()」，
+          表现为【点开后再点收不起来】（实测 3 次点击 open 恒为 true）。 */
+    document.addEventListener('click', function (e) {
+      if (btn.contains(e.target)) return;      // 点按钮本身不关
+      var pop = $('#nat-jump-pop');
+      if (pop && !pop.hidden && e.target.closest && e.target.closest('#nat-jump-pop')) return;
+      closeJump();
+    }, true);
+    btn.addEventListener('click', function () {
       var pop = $('#nat-jump-pop');
       if (!pop) return;
       if (!pop.hidden) { closeJump(); return; }
@@ -2943,9 +2956,6 @@
       pop.hidden = false;
       btn.setAttribute('aria-expanded', 'true');
     });
-    /* 点地图任意处关闭 */
-    var map = document.querySelector('#v-national .mapwrap');
-    if (map) map.addEventListener('click', function () { closeJump(); }, true);
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Escape') closeJump();
     });
