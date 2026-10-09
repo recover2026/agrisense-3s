@@ -471,12 +471,21 @@ body{
   display:flex;flex-direction:column;align-items:flex-end;gap:6px;
   transition:top .2s cubic-bezier(.2,.9,.3,1);
 }
-/* 详情弹层展开时（.has-detail）整体下移，避免被弹层覆盖而点不到。
-   弹层 max-height:calc(100% - 92px)、顶在 top:14px，故下移到 60px 起算。 */
-.mapwrap.has-detail .nat-jump{top:calc(14px + min(58vh, 420px) + 10px)}
-@media (max-height:620px){
-  .mapwrap.has-detail .nat-jump{top:calc(14px + 46vh + 8px)}
+/* 详情弹层展开时（.has-detail）整体下移到弹层下方。
+   弹层 top:14px、高度 min(100% - 92px, 内容实际高度)，用 vh 估不准 ——
+   实测 1366x700 时按 vh 算出的位置按钮底部已贴到地图边缘。
+   改为按【地图自身高度】算：地图高 H，弹层最多占 H-92，
+   按钮下移到 14 + (H-92) + 8，但不超过 H - 按钮高 - 12（留底边）。
+   这样任何窗口尺寸下按钮既不被压、也不出界。 */
+.mapwrap.has-detail .nat-jump{
+  top:min(
+    calc(14px + (100% - 92px) + 8px),
+    calc(100% - 32px - 10px)
+  );
 }
+/* 弹层比地图矮时（内容少），按钮贴着弹层底部即可；
+   上面的 min() 已保证不出界，这里再兜一个下限避免贴到缩放控件上。 */
+.mapwrap.has-detail .nat-jump{min-height:0}
 .nat-jump-btn{
   display:flex;align-items:center;gap:5px;padding:7px 11px;border-radius:10px;
   border:1px solid var(--line-2);background:rgba(11,20,36,.92);color:var(--txt);
