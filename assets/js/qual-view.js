@@ -569,7 +569,7 @@
         var all = hitQ.map(function(r){return ['资质',r];}).concat(hitP.map(function(r){return ['政策',r];})).slice(0,14);
         box.innerHTML = all.length ? all.map(function (x) {
           var r = x[1];
-          return '<div class="row" data-code="' + r.c + '"><div class="row-h"><div class="row-t">' + r.n + '</div>' +
+          return '<div class="row row-click" data-code="' + r.c + '"><div class="row-h"><div class="row-t">' + r.n + '</div>' +
             '<span class="tag ' + (x[0]==='政策'?'tag-yellow':'tag-blue') + '">' + x[0] + '</span></div>' +
             '<div class="row-m"><span>' + r.p + ' / ' + r.ct + '</span></div></div>';
         }).join('') : '<div class="note">未找到匹配县区</div>';

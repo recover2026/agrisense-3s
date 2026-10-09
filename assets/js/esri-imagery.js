@@ -135,21 +135,46 @@
           ② 把「瓦片地面边长」直接当成 res（又差 256 倍）。 */
     var sc = geo.scale;
     if (!(sc > 0)) return;
-    var zf = Math.log(156543.03392 * Math.cos(view.lat * Math.PI / 180) * sc) / Math.LN2;
-    var z = Math.max(2, Math.min(18, Math.round(zf)));
-    // 该层级一块瓦片在屏幕上实际应占的像素边长
-    var res = 156543.03392 * Math.cos(view.lat * Math.PI / 180) / Math.pow(2, z);
-    var px = Math.max(1, TILE * res * sc);
-    /* 瓦片是 256px 的图片，放得比 256 大只是模糊放大，不会有新细节。
-       层级已按 px≈256 选过一遍，这里再兜一层：若仍超过 256（例如
-       纬度较高时 cos 项让 px 变大），就升一级把图缩回 256 以内，
-       否则屏幕上会出现瓦片间黑缝（实测 414px 瓦片拼不满）。 */
+
+    /* ---------- 瓦片层级选择（清晰度的关键）----------
+       一块 256px 的瓦片，铺在屏幕上应该刚好占 256【设备】像素 —— 这样
+       一个瓦片源像素对应一个屏幕像素，既不浪费也不拉伸，是最清晰的。
+
+       屏幕上这块瓦片占多少【设备】像素：
+         devPx(cssPx) = 256 * res(z) * scale * dpr
+       要 devPx = 256，即 res(z)*scale*dpr = 1：
+         z = log2( 156543.03392 * cos(lat) * scale * dpr )
+
+       ⚠️ 此前有两个错误，叠加起来就是用户说的"地图不清晰"：
+         ① 漏乘 dpr —— 代码里没有 devicePixelRatio，隐含按 dpr=1 算。
+            Retina 屏（MacBook 实际 dpr=2）上真实需求是 512 设备像素，
+            按 256 选层级就等于把 256px 的图拉到 512px 显示，必然发糊。
+         ② "px 偏小就降级"的循环写反了 —— 像素密度不够时应该【升】层级
+            （取更小范围的瓦片 = 更细的地面分辨率），而不是降。
+            结果总览驾驶舱（湖北全省）选到 z7、每块显示 425 CSS px，
+            在 dpr=2 屏上就是 850 设备像素去撑 256px 的图 → 3.3 倍拉伸。
+       现在按公式直接定级，再用小步进微调落到 devPx≈256。*/
+    var DPR = (window.devicePixelRatio || 1);
+    DPR = Math.max(1, Math.min(2, DPR));   // 封顶 2：3x 屏按 2 取，避免瓦片量翻倍拖慢加载
+
+    var cosLat = Math.cos(view.lat * Math.PI / 180);
+    /* res(z) = 156543.03392 * cos(lat) / 2^z  （米/像素）*/
+    function resAt(zz) { return 156543.03392 * cosLat / Math.pow(2, zz); }
+    /* 该层级下一块瓦片在屏幕上占多少 CSS 像素 */
+    function cssPxAt(zz) { return Math.max(1, TILE * resAt(zz) * sc); }
+
+    var z = Math.max(2, Math.min(18,
+      Math.round(Math.log(156543.03392 * cosLat * sc * DPR) / Math.LN2)));
+    /* 微调：让 cssPx × dpr 尽量贴近 256。
+       带宽 [0.80, 1.12] —— 实测过宽（1.30）会停在 1.66 倍拉伸，
+       看起来仍偏糊；取窄一些换清晰度。滞回区间仍存在，
+       不会在缩放过程中反复跳层级。*/
     var guard = 0;
-    while (px > TILE && z < 18 && guard++ < 6) {
-      z++;
-      res = 156543.03392 * Math.cos(view.lat * Math.PI / 180) / Math.pow(2, z);
-      px = TILE * res * sc;
-    }
+    while (cssPxAt(z) * DPR > TILE * 1.12 && z < 18 && guard++ < 8) z++;
+    guard = 0;
+    while (cssPxAt(z) * DPR < TILE * 0.80 && z > 2 && guard++ < 8) z--;
+    var px = cssPxAt(z);
+    var res = resAt(z);
     var sig = [this.kind, view.lng.toFixed(4), view.lat.toFixed(4),
                z, Math.round(px), w, h].join('|');
     if (sig === this._sig) return;

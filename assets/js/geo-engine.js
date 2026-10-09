@@ -249,8 +249,20 @@
     this.bbox = bbox.slice();
     if (animate) this.stack.classList.add('anim'); else this.stack.classList.remove('anim');
     this._apply();
+    /*⚠️ 这里原来写的是 `self_off(self)`，但 fit() 体内【从来没有声明 self】
+       —— `self` 是 undefined，420ms 后 self_off(undefined) 抛
+       "Cannot read properties of undefined (reading 'classList')"。
+       影响面极大：fit(bbox, true) 是【带动画复位/下钻定位】的唯一入口，
+       也就是说所有"打开详情后自动定位到该区县"的动作都会在 420ms 后报错，
+       动画收尾 class 也去不掉（下次 anim 会失效、地图看起来"卡一下"）。
+       实测：理赔定损 14 个可点项里 8 个触发此错，其余视图点「返回上级」
+       与新加的影像开关也命中（它们都走 fit）。
+       正确写法：用已存在的 this，或直接箭头函数捕获。*/
+    var self = this;
     if (animate) setTimeout(function () { self_off(self); }, 420);
-    function self_off(c) { c.stack.classList.remove('anim'); }
+    function self_off(c) {
+      if (c && c.stack) c.stack.classList.remove('anim');
+    }
     this.onView(this.view());
   };
 

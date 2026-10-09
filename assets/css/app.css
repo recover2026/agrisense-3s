@@ -203,6 +203,25 @@ body{
 .row-m{display:flex;gap:12px;font-size:11px;color:var(--txt-3);flex-wrap:wrap}
 .row-m b{color:var(--txt-2);font-weight:600;font-variant-numeric:tabular-nums}
 
+/* ---------- 可点行的视觉标识 ----------
+   此前大量列表项虽然绑了事件，但外观与纯文本无差别，用户
+   不知道能不能点、点了会发生什么 —— 这是"功能无法使用"错觉的
+   主要来源（其实点了是好的，只是看不出来）。
+   .row-click 明确给出「可点」信号：手型光标 + 右侧 › 指示。 */
+.row-click{position:relative}
+.row-click::after{
+  content:'›';position:absolute;right:9px;top:50%;transform:translateY(-50%);
+  font-size:16px;line-height:1;color:var(--brand);opacity:.55;
+  transition:.16s;pointer-events:none;
+}
+.row-click:hover::after{opacity:1;transform:translateY(-50%) translateX(3px)}
+.row-click:hover{border-color:rgba(255,211,90,.35)}
+/* 表格里的可点行 */
+tr.row-click{cursor:pointer}
+tr.row-click::after{display:none}
+tr.row-click:hover{background:rgba(255,211,90,.09)}
+tr.row-click.on{background:rgba(255,211,90,.14)}
+
 .tag{padding:2px 8px;border-radius:20px;font-size:10.5px;font-weight:700;white-space:nowrap;flex:0 0 auto}
 .tag-red{background:rgba(248,113,113,.18);color:var(--red);border:1px solid rgba(248,113,113,.32)}
 .tag-orange{background:rgba(251,146,60,.16);color:var(--orange);border:1px solid rgba(251,146,60,.3)}

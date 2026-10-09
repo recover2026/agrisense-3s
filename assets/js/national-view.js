@@ -1174,13 +1174,24 @@
       showCountyHint(k);
       syncSatZoom();
 
-      // 异步叠加真实乡镇界（进入县后才有乡镇级地块）
+      /* 异步叠加真实乡镇界（进入县后才有乡镇级地块）
+         ⚠️ 「市即县」型行政区（甘肃兰州市 620100、西藏拉萨市 540100 等）
+           在乡镇数据里【没有本级条目】——源数据只收了辖区县
+           （实测 geo-town-62.js 共 86 键，无 620100）。
+           于是 townOf() 返回 null，地图停在"1 个面、点不动"，
+           用户表现为"这个省下钻到县就断了"（实测甘肃、西藏两省）。
+           修法：本级无乡镇时，把该市【所有辖区县的乡镇】直接画出来——
+           这些乡镇合起来正是本市的全部下辖乡镇，业务上等价，
+           且每个乡镇仍带真实边界、可继续下钻到村。*/
       loadTownOf(code, function (ok) {
         if (!ok || N.level !== 'county' || String(N.curCounty) !== String(code)) return;
         var tf = townOf(code, name, cityObj ? cityObj.n : '');
-        if (!tf || !tf.t || !tf.t.length) return;
-        absTown(tf);                 // 预还原世界坐标，供描边层复用
-        drawTownsInCounty(tf, k, pv, cityObj, code);
+        if (tf && tf.t && tf.t.length) {
+          absTown(tf);
+          drawTownsInCounty(tf, k, pv, cityObj, code);
+        } else {
+          drawTownsFromSiblings(code, k, pv, cityObj);
+        }
         // 乡镇界已就绪 → 重画描边层，让边界压在遥感影像之上
         if (RS && N.rasterOn && rasterFor(N.activeLayer)) {
           paintOverlay({ rings: kr });
@@ -1305,6 +1316,43 @@
       });
     }
     showTownHint(tf, k);
+  }
+
+  /* 「市即县」且本级无乡镇数据时的兜底：把辖区县的乡镇合成一个列表再画。
+     例：点兰州市（620100）→ 620102/620103/620105… 各县的乡镇，
+     合起来即兰州市全部下辖乡镇。拼出的对象结构与 drawTownsInCounty
+     期望的 tf 完全一致（{t:[{n,r}]}），复用同一条绘制路径，
+     不新增第二套渲染逻辑。*/
+  function drawTownsFromSiblings(code, k, pv, cityObj) {
+    var st = MI.svg; if (!st) return;
+    var p4 = String(code).slice(0, 4);
+    var merged = [];
+    Object.keys(T).forEach(function (key) {
+      if (key.slice(0, 4) !== p4) return;          // 只取同市辖区
+      var f = T[key];
+      if (!f || !f.t || !f.t.length) return;
+      var ab = absTown(f);
+      f.t.forEach(function (o, i) {
+        if (!ab[i] || !ab[i].length) return;
+        merged.push({ n: o.n, r: ab[i], _cc: key, _ti: i });
+      });
+    });
+    if (!merged.length) {
+      /* 连辖区县的乡镇也取不到（如源数据整省缺失）——
+         据实说明，不能让用户以为还能继续下钻。*/
+      var hint = $('#nat-hint');
+      if (hint) {
+        hint.className = 'hint on';
+        hint.innerHTML = '<b>' + (k && k.n ? k.n : code) + '</b>：该区域乡镇级边界数据暂缺，' +
+          '暂无法下钻到乡镇。<span style="opacity:.7">（数据缺口，非功能异常）</span>';
+        setTimeout(function () { if (hint) hint.className = 'hint'; }, 5200);
+      }
+      return;
+    }
+    var tf = { n: (k && k.n) || code, c: code, t: merged.map(function (m) { return { n: m.n, r: m.r }; }),
+               b: tbox(T[merged[0]._cc]), w: 0, h: 0 };
+    drawTownsInCounty(tf, k, pv, cityObj, code);
+    if (RS && N.rasterOn && rasterFor(N.activeLayer)) paintOverlay({ rings: countyRings(code) });
   }
 
   function showTownHint(tf, k) {
@@ -2504,7 +2552,25 @@
       $('#nat-title').textContent = pv.n + ' · 正在准备县级下钻…';
       drawProvinceOnly(pv);
       buildCountyFacesFromTown(pcode, function (ok) {
-        if (!ok) { showProvinceInfo(pv); return; }
+        if (!ok) {
+          /* ⚠️ 该省连乡镇数据也没有（实测台湾 71、香港 81、澳门 82
+             三个行政区均无乡镇边界数据源）→ 到此为止是真的没有下级。
+             此前静默停在省级、什么都不说，用户以为是功能坏了。
+             现在据实告知数据边界，并说明能做什么。*/
+          $('#nat-title').textContent = pv.n + ' · 该区域暂无下级行政边界数据';
+          $('#nat-scope').textContent = pv.n + ' / 暂仅省级视图';
+          var hint = $('#nat-hint');
+          if (hint) {
+            hint.className = 'hint on';
+            hint.innerHTML = '<b>' + pv.n + '</b>：该区域暂无市级/县级边界数据，' +
+              '因此无法继续下钻。<span style="opacity:.72">（属数据源覆盖范围，非功能异常；' +
+              '省级遥感专题与影像底图均正常）</span>';
+            clearTimeout(hint._t);
+            hint._t = setTimeout(function () { if (hint) hint.className = 'hint'; }, 6000);
+          }
+          showProvinceInfo(pv);
+          return;
+        }
         $('#nat-scope').textContent = pv.n + ' / 县级下钻（由乡镇边界聚合）';
       });
       showProvinceInfo(pv);
@@ -3407,16 +3473,64 @@
   }
 
   function buildDisasterList() {
-    $('#nat-disasters').innerHTML = NAT.DISASTERS.map(function (d) {
+    $('#nat-disasters').innerHTML = NAT.DISASTERS.map(function (d, i) {
       var cls = { '红色': 'tag-red', '橙色': 'tag-orange', '黄色': 'tag-yellow', '蓝色': 'tag-blue' }[d.level];
-      return '<div class="row"><div class="row-h"><div class="row-t">' + d.name + '</div>' +
+      return '<div class="row row-click" data-didx="' + i + '"><div class="row-h"><div class="row-t">' + d.name + '</div>' +
         '<span class="tag ' + cls + '">' + d.level + '</span></div>' +
         '<div class="row-m"><span>' + d.region + '</span></div>' +
         '<div class="row-m"><span>农户 <b>' + fmt(d.farmers, 0) + '</b></span>' +
         '<span>涉及 <b>' + wan(d.mu) + '万亩</b></span><span>损失 <b>' + d.loss + '亿</b></span></div></div>';
     }).join('');
+    /* ⚠️ 原来这 6 行完全没有绑定任何事件（审计：6 项全死链）。
+       用户看到"全国在监灾情"这一栏，以为能点进去看详情、或者点一下能
+       定位到灾区 —— 结果毫无反应。这是"各项功能无法使用"最直观的来源。
+       现在：点开给出灾情详情，并提供"定位到该灾情省份"的下钻入口。*/
+    $$('#nat-disasters .row').forEach(function (el) {
+      el.addEventListener('click', function () {
+        $$('#nat-disasters .row').forEach(function (r) { r.classList.toggle('on', r === el); });
+        disasterDetail(Number(el.dataset.didx));
+      });
+    });
   }
 
+  /* 在监灾情详情：交代灾情本身 + 与农险工作的关联 + 一键下钻定位 */
+  function disasterDetail(i) {
+    var d = (NAT.DISASTERS || [])[i];
+    if (!d) return;
+    /* 从灾情描述里解析出省份名，能匹配就给出"定位到该省"的下钻按钮。
+       不用 adcode → 名称映射表，直接按名称在省级数据里找，最省事也最稳。*/
+    var hit = null;
+    (GP.provinces || []).forEach(function (p) {
+      if (hit) return;
+      if (d.region && d.region.indexOf(p.n) >= 0) hit = p;
+    });
+    var html =
+      '<div class="kv"><span>灾情</span><b>' + d.name + '</b></div>' +
+      '<div class="kv"><span>预警等级</span><b>' + d.level + '</b></div>' +
+      '<div class="kv"><span>影响区域</span><b>' + d.region + '</b></div>' +
+      '<div class="kv"><span>受灾农户</span><b>' + fmt(d.farmers, 0) + ' 户</b></div>' +
+      '<div class="kv"><span>涉及面积</span><b>' + wan(d.mu) + ' 万亩</b></div>' +
+      '<div class="kv"><span>预估损失</span><b>' + d.loss + ' 亿元</b></div>' +
+      '<div class="dt-sub">农险端应做的工作</div>' +
+      '<div class="note"><b>① 报案响应</b>：核实承保范围内受灾面积与农户数，建立灾情台账<br>' +
+      '<b>② 查勘排班</b>：按损失量级与承保密度安排查勘力量，优先重灾区<br>' +
+      '<b>③ 遥感支撑</b>：调取灾区当期影像做初筛，圈定疑似受灾图斑<br>' +
+      '<b>④ 理赔时效</b>：预启动赔付流程，重大灾情开通绿色通道</div>' +
+      (hit ? '<button class="uw-btn primary" style="width:100%;margin-top:9px" id="nat-dis-go">定位到' +
+        hit.n + ' ›</button>' : '') +
+      '<div class="note warn" style="margin-top:8px"><b>数据说明</b>：灾情为平台在监模拟数据，' +
+      '用于说明预警—查勘—理赔的衔接流程，不代表真实灾情。</div>';
+    /* ⚠️ 必须走 window.__APP__.detail：详情弹层是 app.js 的 IIFE 私有函数，
+       national-view 与它不同作用域，直接调 detail() 会抛
+       "detail is not defined"（实测 6 处报错，正是这里）。
+       同文件内其他 show*Info 也是这么调的，保持一致。*/
+    window.__APP__.detail(d.name, '全国在监灾情 · ' + d.level + '预警', html);
+    var go = document.getElementById('nat-dis-go');
+    if (go) go.addEventListener('click', function () {
+      if (window.__APP__ && window.__APP__.closeDetail) window.__APP__.closeDetail();
+      try { pickProvince(hit.c); } catch (e) { }
+    });
+  }
   function setEngine(ok, text) {
     var e = $('#nat-engine'); if (!e) return;
     e.textContent = text; e.className = ok ? 'engine-ok' : 'engine-warn';
@@ -3442,20 +3556,39 @@
     loadSlow = setTimeout(function () { el.classList.add('slow'); }, 2500);
     /* 兜底自动收起：下钻的出口分散在 6 个 draw 系列函数里（各有 return），
        逐个插 loadingOff() 极易漏一处，漏了就是"一直转圈"——
-       正是用户报的"一直在加载"。改为轮询检测。
-       ⚠️ 判据不能用「面数 > 1」：乡镇级视图只有 1 个面（点它就是进村），
-         用 > 1 会永远等不到、指示器卡死（实测残留 'nat-loading on'）。
-       改为「层级已推进 且 至少 1 个可拾取面」——
-       进入某一级后画面上必然有可点的面，这才算数据到位。*/
-    var lv0 = N.level;
+       正是用户报的"一直在加载"。改为轮询检测画面是否真的到位。
+
+       ⚠️ 三轮实测踩到的判据坑，全部记在这里：
+         ① 不能用「面数 > 1」：乡镇级视图只有 1 个面（点它就是进村），
+            用 > 1 会永远等不到、指示器卡死（实测残留 'nat-loading on'）。
+         ② 不能用「N.level 变了」：直辖市（北京）省→市 时 level 由
+            province 变 city，看似成立；但省→省（renderCountry 重画）
+            level 不变，面已换 → 会误判为"还在加载"。
+         ③ 也不能只依赖 paintCrumb() 里的 loadingOff()：直辖市进市时
+            paintCrumb 先执行、面后绘制，此刻仍有旧面残留 → 判据成立、
+            提前收起，随后新面画完又被新的 loadingOn 打开 → 最终 on 残留。
+       正解：以【可拾取面集合】发生变化为唯一判据 —— 只要面的
+       id+kind 组合与进入加载态时不同，就说明数据已到位。
+       再加 9 秒硬上限，任何情况下都不会无限转圈。*/
+    var snap0 = faceSig();
     loadWatch = setInterval(function () {
       var n = document.querySelectorAll('#nat-map path.gs-area[data-pick]').length;
-      var scope = (document.getElementById('nat-scope') || {}).textContent || '';
-      var advanced = (N.level !== lv0) || !/加载中/.test(scope);
-      if (n >= 1 && advanced) loadingOff();
+      if (n >= 1 && faceSig() !== snap0) loadingOff();
     }, 120);
     /* 兜底上限：任何情况下 9 秒必须收起，绝不允许"一直转圈" */
     loadHard = setTimeout(function () { loadingOff(); }, 9000);
+  }
+  /* 当前画面上可拾取面的指纹（kind:id 排序后拼接）。
+     面集合一变 = 视图内容真的换了，比看 level/scope 文案可靠得多。*/
+  function faceSig() {
+    var out = [];
+    var ps = document.querySelectorAll('#nat-map path.gs-area[data-pick]');
+    for (var i = 0; i < ps.length; i++) {
+      var d = ps[i].dataset || {};
+      out.push((d.kind || '') + ':' + (d.id || ''));
+    }
+    out.sort();
+    return out.join(',');
   }
   function loadingOff() {
     var el = $('#nat-loading'); if (!el) return;
@@ -3471,6 +3604,11 @@
     renderCountry: renderCountry, renderProvince: renderProvince,
     renderCity: renderCity, renderCounty: renderCounty,
     pickProvince: pickProvince, pickCity: pickCity, pickCounty: pickCounty,
+    /* 乡镇级入口此前没有导出，导致外部（核验脚本、外部集成）
+       只能停在县级、无法验证第 5 级下钻是否真的可用。
+       一并导出 renderTown 与 pickVillage，供全链路核验使用。*/
+    pickTown: pickTown, pickVillage: pickVillage,
+    renderTown: renderTown, renderVillage: renderVillage,
     showProvinceInfo: showProvinceInfo,
     /* 补齐各级详情与真实S2 相关函数导出。
        此前只导出省级详情，导致县级/乡镇级详情无法被自动化核验

@@ -232,7 +232,7 @@
     // 县列表：整行可点，点击即在该县重绘地块并联动右栏
     // （原文案"点击下钻"是静态字样、无指引性，改为明确动作提示）
     $('#uw-counties').innerHTML = GEO.counties.map(function (c) {
-      return '<div class="row" data-cd="' + c.c + '" title="点击查看' + c.n + '地块风险统计">' +
+      return '<div class="row row-click" data-cd="' + c.c + '" title="点击查看' + c.n + '地块风险统计">' +
         '<div class="row-h">' +
         '<div class="row-t">' + c.n + '</div>' +
         '<span class="tag tag-blue">重点县</span></div>' +
@@ -240,7 +240,13 @@
         '<span style="color:var(--brand);font-weight:600">▸ 点击查看地块 ›</span></div></div>';
     }).join('');
     $$('#uw-counties .row').forEach(function (el) {
-      el.addEventListener('click', function () { renderUWParcels(el.dataset.cd); syncUW(el.dataset.cd); });
+      el.addEventListener('click', function () {
+        renderUWParcels(el.dataset.cd); syncUW(el.dataset.cd);
+        /*⚠️ 原来点了只换地图、右侧统计数字跟着变，但没有任何"为什么"
+          的说明 —— 审计里 3 个县行里 2 个被判无反应（数字变化幅度小）。
+          补上该县风险画像与验标动作建议，这才是承保员真正要看的。*/
+        countyRiskDetail(el.dataset.cd);
+      });
     });
 
     // 图例
@@ -318,6 +324,50 @@
       kv('可重复投保疑似', Math.max(1, Math.round(highN * 0.12)) + ' 块');
   }
 
+  /* 重点县风险画像：点县行后弹出。
+     回答承保员真正关心的三件事：这个县风险高在哪、
+     哪些地块要重点验标、按什么口径核验。 */
+  function countyRiskDetail(code) {
+    var cty = GEO.counties.filter(function (c) { return String(c.c) === code; })[0];
+    if (!cty) return;
+    var parcels = st.uwParcels || [];
+    if (!parcels.length) return;
+    var avgR = parcels.reduce(function (a, p) { return a + p.risk; }, 0) / parcels.length;
+    var high = parcels.filter(function (p) { return p.risk > 0.72; });
+    var mid = parcels.filter(function (p) { return p.risk > 0.55 && p.risk <= 0.72; });
+    var totalMu = parcels.reduce(function (a, p) { return a + p.area; }, 0);
+    var highMu = high.reduce(function (a, p) { return a + p.area; }, 0);
+    var col = riskColor(avgR);
+    var loss = D.LOSS_CASES[code];
+    var html =
+      '<div class="kv"><span>县区</span><b>' + cty.n + '</b></div>' +
+      '<div class="kv"><span>行政区划代码</span><b>' + code + '</b></div>' +
+      '<div class="kv"><span>在保地块</span><b>' + parcels.length + ' 块 / ' + fmt(totalMu, 0) + ' 亩</b></div>' +
+      '<div class="kv"><span>平均风险指数</span><b style="color:rgb(' + col[0] + ',' + col[1] + ',' + col[2] + ')">' +
+        (avgR * 100).toFixed(0) + ' / 100</b></div>' +
+      '<div class="kv"><span>高风险地块</span><b>' + high.length + ' 块 / ' + fmt(highMu, 0) + ' 亩</b></div>' +
+      '<div class="kv"><span>中风险地块</span><b>' + mid.length + ' 块</b></div>' +
+      '<div class="dt-sub">风险构成（五维加权）</div>' +
+      D.RISK_DIMS.map(function (d) {
+        return '<div class="hbar"><div class="hbar-n">' + d.n + '</div>' +
+          '<div class="hbar-t"><i style="width:' + (d.w * 300).toFixed(0) + '%;background:linear-gradient(90deg,#a78bfa,#3b82f6)"></i></div>' +
+          '<div class="hbar-v">' + (d.w * 100).toFixed(0) + '%</div></div>' +
+          '<div class="note" style="margin:-2px 0 6px"><span style="color:var(--txt-3)">' + d.d + '</span></div>';
+      }).join('') +
+      '<div class="dt-sub">承保验标建议</div>' +
+      '<div class="note"><b>① 优先核验</b>：' + (high.length
+        ? high.slice(0, 3).map(function (p) { return p.id; }).join('、') + ' 等 ' + high.length + ' 块高风险地块'
+        : '本县暂无高风险地块') + '<br>' +
+      '<b>② 重复投保核查</b>：将本县保单地块与历史承保台账空间比对，' +
+      '重叠面积超过阈值需人工复核<br>' +
+      '<b>③ 影像核验</b>：结合当期遥感影像确认实际种植情况与承保标的一致性' +
+      (loss ? '<br><b>④ 历史灾害关联</b>：本县在监灾点为「' + loss.disaster + '」，可结合该灾情复核承保合理性' : '') +
+      '</div>' +
+      '<div class="note warn" style="margin-top:8px"><b>合规提示</b>：风险指数为模拟测算演示数据，' +
+      '仅用于说明风控思路，不得作为定价或承保决策的唯一依据。</div>';
+    detail(cty.n + ' · 承保风险画像', '承保端 · 五维风险加权 · 模拟测算', html);
+  }
+
   function syncUW(code) {
     $$('#uw-counties .row').forEach(function (r) { r.classList.toggle('on', r.dataset.cd === code); });
   }
@@ -363,7 +413,7 @@
 
     $('#cl-counties').innerHTML = Object.keys(D.LOSS_CASES).map(function (code) {
       var c = D.LOSS_CASES[code];
-      return '<div class="row" data-cd="' + code + '"><div class="row-h">' +
+      return '<div class="row row-click" data-cd="' + code + '"><div class="row-h">' +
         '<div class="row-t">' + c.name + '</div>' +
         '<span class="tag ' + (c.level === '重灾' ? 'tag-red' : 'tag-orange') + '">' + c.level + '</span></div>' +
         '<div class="row-m"><span>' + c.crop + '</span><span>' + c.disaster + '</span></div>' +
@@ -463,7 +513,7 @@
     $('#cl-towns').innerHTML = towns.map(function (t) {
       var cls = t.st === '已定损' ? 'tag-green' : t.st === '核验中' ? 'tag-yellow' : t.st === '待查损' ? 'tag-orange' : 'tag-grey';
       var col = lossColor(t.loss);
-      return '<div class="row" data-town="' + t.n + '"><div class="row-h">' +
+      return '<div class="row row-click" data-town="' + t.n + '" data-cd="' + code + '"><div class="row-h">' +
         '<div class="row-t">' + t.n + '</div><span class="tag ' + cls + '">' + t.st + '</span></div>' +
         '<div class="row-m"><span>承保 <b>' + fmt(t.mu, 0) + ' 亩</b></span><span>出险 <b>' + fmt(t.claim, 0) + ' 亩</b></span>' +
         '<span style="color:rgb(' + col[0] + ',' + col[1] + ',' + col[2] + ')">损失率 <b>' + (t.loss * 100).toFixed(0) + '%</b></span></div>' +
@@ -478,12 +528,132 @@
         var b = [Math.min.apply(null, xs), Math.min.apply(null, ys), Math.max.apply(null, xs), Math.max.apply(null, ys)];
         st.clMap.fit([b[0] - 12000, b[1] - 12000, b[2] + 12000, b[3] + 12000], true);
         $$('#cl-towns .row').forEach(function (r) { r.classList.toggle('on', r === el); });
+        /*⚠️ 原来只切换地图视野，没有任何文字反馈 ——
+          审计实测 7 个乡镇行全部判为"无反应"（图元数没变）。
+          用户点完看不到"我选中了哪个乡镇"，只能靠自己看地图缩放。
+          这里补上该乡镇的定损详情，同时保留地图定位。*/
+        townProgressDetail(el.dataset.cd, tn);
       });
     });
   }
 
+  /* 乡镇定损进度详情：点乡镇行后弹出，交代这个乡镇定损到什么程度了 */
+  function townProgressDetail(code, townName) {
+    var c = D.LOSS_CASES[code];
+    if (!c) return;
+    var t = (c.towns || []).filter(function (x) { return x.n === townName; })[0];
+    if (!t) return;
+    var col = lossColor(t.loss);
+    var plots = (st.clPlots || []).filter(function (p) { return p.town === townName; });
+    var est = t.claim * c.avgLoss;
+    var html =
+      '<div class="kv"><span>乡镇</span><b>' + t.n + '</b></div>' +
+      '<div class="kv"><span>所属县区</span><b>' + c.name + '</b></div>' +
+      '<div class="kv"><span>主要作物</span><b>' + c.crop + '</b></div>' +
+      '<div class="kv"><span>灾害类型</span><b>' + c.disaster + '</b></div>' +
+      '<div class="kv"><span>承保面积</span><b>' + fmt(t.mu, 0) + ' 亩</b></div>' +
+      '<div class="kv"><span>出险面积</span><b>' + fmt(t.claim, 0) + ' 亩</b></div>' +
+      '<div class="kv"><span>损失率</span><b style="color:rgb(' + col[0] + ',' + col[1] + ',' + col[2] + ')">' +
+        (t.loss * 100).toFixed(0) + '%</b></div>' +
+      '<div class="kv"><span>损失初估</span><b>' + fmt(est, 0) + ' 元</b></div>' +
+      '<div class="kv"><span>当前状态</span><b>' + t.st + '</b></div>' +
+      '<div class="kv"><span>已解译图斑</span><b>' + plots.length + ' 个</b></div>' +
+      '<div class="note"><b>状态含义</b>：' +
+      ({ '已定损': '图斑已核定，可进入赔付流程',
+         '核验中': '图斑已出，正在人工抽核',
+         '待查损': '已报案，尚未完成图斑解译',
+         '待查勘': '已报案，待查勘员到场核实' }[t.st] || t.st) +
+      '</div>' +
+      '<div class="note warn" style="margin-top:8px"><b>合规提示</b>：地图已自动定位到该乡镇图斑位置；' +
+      '损失初估为模拟测算，不作为赔付依据。</div>';
+    detail(t.n, '乡镇定损进度 · ' + c.name, html);
+  }
+
   function syncCL(code) {
     $$('#cl-counties .row').forEach(function (r) { r.classList.toggle('on', r.dataset.cd === code); });
+  }
+
+  /* ---------- 行业公开精度指标解读 ----------
+     用户看到"勘灾定损精度 >90%"时，真正要判断的是三件事：
+     这个数怎么算的、样本多大、以及能不能拿来对我司定损做承诺。
+     所以每条给出：口径说明 → 数据边界 → 我司可用性判断。 */
+  var PRECISION_DETAIL = {
+    0: { cal: '查勘定损图斑与人工核实结果的吻合率，即 AI 解译范围中被人工确认属实的面积占比。',
+         bound: '样本为该公司自有业务数据，样本量、作物结构、地块类型未公开。',
+         use: '可作为技术可行性参考，不可直接对客承诺。' },
+    1: { cal: '承保阶段 AI 识别地块与实际承保地块的一致性，含错保、漏保、重复保的合并计量。',
+         bound: '该数值含其自有业务风控规则，非通用行业均值。',
+         use: '仅说明重复投保核验具备技术手段，我司需以本地数据重算。' },
+    2: { cal: '作物分类模型在指定区域与时相下的分类准确率（与人工标注比对）。',
+         bound: '单区域、单季节、特定传感器组合下的结果；跨区域与跨季会下降。',
+         use: '可用于选择合作方时的能力评估，不可跨场景直接引用。' },
+    3: { cal: '无人机航测影像对受灾地块的覆盖比例，反映"能否看全"而非"看得准不准"。',
+         bound: '覆盖率不等于精度，覆盖完整但识别错误仍会产生错误定损。',
+         use: '覆盖率可作为作业完整性参考，精度仍需单独评估。' },
+    4: { cal: '勾绘面积与实测面积之差占实测面积的比例，样本 9 户 223 亩。',
+         bound: '样本极小（9 户 223 亩），且为烟草作物，不具行业代表性。',
+         use: '仅说明"可量化误差"这一做法；该数值本身不可外推。' }
+  };
+
+  function precisionDetail(i) {
+    var p = (D.PRECISION.items || [])[i];
+    if (!p) return;
+    var d = PRECISION_DETAIL[i] || { cal: '—', bound: '—', use: '—' };
+    var html =
+      '<div class="kv"><span>指标</span><b>' + p.name + '</b></div>' +
+      '<div class="kv"><span>公开值</span><b>' + p.val + '</b></div>' +
+      '<div class="kv"><span>来源</span><b>' + p.src + '</b></div>' +
+      '<div class="kv"><span>主体</span><b>' + (p.by || '同业公开') + '</b></div>' +
+      '<div class="dt-sub">这个数怎么来的</div>' +
+      '<div class="note">' + d.cal + '</div>' +
+      '<div class="dt-sub">数据边界（不可忽略）</div>' +
+      '<div class="note warn">' + d.bound + '</div>' +
+      '<div class="dt-sub">我司可用性</div>' +
+      '<div class="note"><b>' + d.use + '</b></div>' +
+      '<div class="note warn" style="margin-top:8px"><b>合规红线</b>：' +
+      (D.PRECISION.compliance || []).join('；') + '。</div>';
+    detail(p.name, '行业公开精度 · 口径解读', html);
+  }
+
+  /* 灾情评估表：点某县一行 → 该县灾损全貌 + 一键跳到理赔定损地图。
+     原来这张表是纯展示，点不动，用户只能看到数字、看不到结构。*/
+  function assessCaseDetail(code) {
+    var c = D.LOSS_CASES[code];
+    if (!c) return;
+    var towns = (c.towns || []).slice().sort(function (a, b) { return b.loss - a.loss; });
+    var maxMu = towns.length ? Math.max.apply(null, towns.map(function (t) { return t.mu; })) : 1;
+    var col = lossColor(c.lossRate);
+    var html =
+      '<div class="kv"><span>县区</span><b>' + c.name + '</b></div>' +
+      '<div class="kv"><span>主要作物</span><b>' + c.crop + '</b></div>' +
+      '<div class="kv"><span>灾害类型</span><b>' + c.disaster + '</b></div>' +
+      '<div class="kv"><span>承保面积</span><b>' + fmt(c.areaMu, 0) + ' 亩</b></div>' +
+      '<div class="kv"><span>出险面积</span><b>' + fmt(c.claimMu, 0) + ' 亩</b></div>' +
+      '<div class="kv"><span>损失率</span><b style="color:rgb(' + col[0] + ',' + col[1] + ',' + col[2] + ')">' +
+        (c.lossRate * 100).toFixed(0) + '%</b></div>' +
+      '<div class="kv"><span>亩均损失</span><b>' + fmt(c.avgLoss, 0) + ' 元/亩</b></div>' +
+      '<div class="kv"><span>受灾农户</span><b>' + fmt(c.households, 0) + ' 户</b></div>' +
+      '<div class="kv"><span>定损进度</span><b>' + (c.done * 100).toFixed(0) + '%</b></div>' +
+      '<div class="kv"><span>影像来源</span><b>' + c.imagery + '</b></div>' +
+      '<div class="dt-sub">乡镇损失分布（按损失率排序）</div>' +
+      towns.map(function (t) {
+        var c2 = lossColor(t.loss);
+        return '<div class="hbar"><div class="hbar-n">' + t.n + '</div>' +
+          '<div class="hbar-t"><i style="width:' + (t.loss * 100).toFixed(0) + '%;background:rgb(' +
+          c2[0] + ',' + c2[1] + ',' + c2[2] + ')"></i></div>' +
+          '<div class="hbar-v">' + (t.loss * 100).toFixed(0) + '% · ' + fmt(t.mu, 0) + '亩</div></div>';
+      }).join('') +
+      '<div class="dt-sub">下一步</div>' +
+      '<button class="uw-btn primary" style="width:100%;margin-top:8px" id="as-go-claims">' +
+      '在理赔定损地图查看 ' + c.name + ' 图斑 ›</button>' +
+      '<div class="note warn" style="margin-top:8px"><b>合规提示</b>：本表为模拟测算演示数据，' +
+      '不代表本司真实经营数据，不作为赔付依据。</div>';
+    detail(c.name + ' · 灾损评估', '灾情损失评估 · 模拟测算', html);
+    var go = document.getElementById('as-go-claims');
+    if (go) go.addEventListener('click', function () {
+      closeDetail(); switchTab('claims');
+      setTimeout(function () { try { renderClaims(code); syncCL(code); } catch (e) { } }, 260);
+    });
   }
 
   function lossColor(t) {
@@ -491,6 +661,46 @@
     var i = Math.min(2, Math.floor(t * 3)), f = Math.max(0, Math.min(1, t * 3 - i));
     var a = stops[i], b = stops[i + 1];
     return [Math.round(a[0] + (b[0] - a[0]) * f), Math.round(a[1] + (b[1] - a[1]) * f), Math.round(a[2] + (b[2] - a[2]) * f)];
+  }
+
+  /* ---------- 各灾种的农险作业口径 ----------
+     用于「预警类型」点击后的详情：气象预警收到之后，农险端该做什么。
+     数据来源：《农业保险气象灾害预警与应急响应》通行做法 + 平台在监任务口径，
+     为演示测算，不代表公司正式内控文件。 */
+  var WARN_LEVEL_RULE = {
+    暴雨: { adv: '短时强降水落区 × 承保地块叠加', act: '排查低洼圩垸、圩田、在建险工，通知协保员前置转移', crop: '水稻、玉米、蔬菜易倒伏与渍害' },
+    洪水: { adv: '河道水位 + 蓄滞洪区 × 承保地块叠加', act: '启动应急预案，优先转移受淹风险区农户，预核定损准备金', crop: '水稻绝收风险最高，沿江渔业损失集中' },
+    高温: { adv: '高温日数与积温偏差 × 作物生育期匹配', act: '墒情补充灌溉指导，评估花期高温导致空壳率上升', crop: '中稻抽穗扬花期、玉米授粉期为关键窗口' },
+    雷电: { adv: '闪电落区密度 × 承保设施清单', act: '排查设施农业与配电设施，核查雷电灾害保险标的', crop: '大棚设施、农机具、仓储设施为主要标的' },
+    大风: { adv: '阵风等级 × 大棚与林果承保面积', act: '通知加固大棚压膜线、排查果树倒伏风险', crop: '设施蔬菜、果树为高敏感作物' },
+    冰雹: { adv: '雷达回波强度与路径 × 承保地块', act: '组织查勘定损，快速出险报案，核验_leaf 破损程度', crop: '棉花、柑橘、玉米叶片破损导致减产' },
+    寒潮: { adv: '降温幅度与日均温 × 越冬作物分布', act: '指导防寒措施落实，评估冻害与果树受冻风险', crop: '柑橘、茶叶越冬期冻害，直接影响翌年产量' },
+    霜冻: { adv: '地面最低温与霜期 × 越冬作物分布', act: '启动防霜预案，重点排查高海拔早发区域', crop: '柑橘、茶叶、蔬菜育苗期为高风险作物' }
+  };
+
+  function warnTypeDetail(code) {
+    var t = (D.WARN_TYPES || []).filter(function (x) { return x.code === code; })[0];
+    if (!t) return;
+    var r = WARN_LEVEL_RULE[code] || { adv: '关注气象部门发布', act: '按预案响应', crop: '—' };
+    /* 当前是否有该类型的在监任务：有则列出，用户可直接跳过去看 */
+    var live = (D.WARN_TASKS || []).filter(function (x) { return x.type === code; });
+    var html =
+      '<div class="kv"><span>预警类型</span><b>' + t.name + '</b></div>' +
+      '<div class="kv"><span>本次等级</span><b>' + t.level + '预警</b></div>' +
+      '<div class="kv"><span>发布口径</span><b>中国气象局预警分类</b></div>' +
+      '<div class="dt-sub">农险端作业口径</div>' +
+      '<div class="note"><b>① 落区匹配</b>：' + r.adv + '<br>' +
+      '<b>② 处置动作</b>：' + r.act + '<br>' +
+      '<b>③ 高敏感作物</b>：' + r.crop + '</div>' +
+      (live.length
+        ? '<div class="dt-sub">当前在监任务（' + live.length + ' 条）</div>' +
+          live.map(function (x) {
+            return '<div class="kv"><span>' + x.city + ' · ' + x.level + '</span><b>' + x.area + '</b></div>';
+          }).join('')
+        : '<div class="note" style="margin-top:8px">当前无该类型在监任务。</div>') +
+      '<div class="note warn" style="margin-top:8px"><b>合规提示</b>：预警落区匹配结果仅作快速排查线索，' +
+      '损失认定须以查勘定损证据链为准，不得直接作为赔付依据。</div>';
+    detail(t.name, '气象预警口径 · 农险响应', html);
   }
 
   function plotDetail(id) {
@@ -567,7 +777,7 @@
     $('#wn-list').innerHTML = D.WARN_TASKS.map(function (t) {
       var cls = { '红色': 'tag-red', '橙色': 'tag-orange', '黄色': 'tag-yellow', '蓝色': 'tag-blue' }[t.level];
       var sCls = t.status === '处置中' ? 'tag-orange' : t.status === '已响应' ? 'tag-blue' : 'tag-green';
-      return '<div class="row" data-wid="' + t.id + '"><div class="row-h">' +
+      return '<div class="row row-click" data-wid="' + t.id + '"><div class="row-h">' +
         '<div class="row-t">' + t.type + '预警 · ' + t.city + '</div>' +
         '<span class="tag ' + cls + '">' + t.level + '</span></div>' +
         '<div class="row-m"><span>' + t.area + '</span></div>' +
@@ -581,12 +791,24 @@
       });
     });
 
-    // 预警类型（对接中国气象局预警分类）
+    /* 预警类型（对接中国气象局预警分类）
+       ⚠️ 原来是 cursor:default 的纯展示行，点了毫无反应 ——
+         审计实测：预警视图 17 个可点项里 12 个是死链，其中 7 个正是这里。
+         用户视角就是"这一列能看不能点，整个功能是死的"。
+         现在改成可点：点开看该类型的等级口径、影响面与处置要求。*/
     $('#wn-types').innerHTML = D.WARN_TYPES.map(function (t) {
       var cls = { '红色': 'tag-red', '橙色': 'tag-orange', '黄色': 'tag-yellow', '蓝色': 'tag-blue' }[t.level];
-      return '<div class="row" style="cursor:default"><div class="row-h">' +
-        '<div class="row-t">' + t.name + '</div><span class="tag ' + cls + '">' + t.level + '</span></div></div>';
+      var wd = WARN_LEVEL_RULE[t.code] || { act: '按预案响应', adv: '关注气象部门发布' };
+      return '<div class="row row-click" data-wtype="' + t.code + '"><div class="row-h">' +
+        '<div class="row-t">' + t.name + '</div><span class="tag ' + cls + '">' + t.level + '</span></div>' +
+        '<div class="row-m"><span>' + wd.adv + '</span></div></div>';
     }).join('');
+    $$('#wn-types .row').forEach(function (el) {
+      el.addEventListener('click', function () {
+        $$('#wn-types .row').forEach(function (r) { r.classList.toggle('on', r === el); });
+        warnTypeDetail(el.dataset.wtype);
+      });
+    });
 
     $('#wn-flow').innerHTML = [
       { n: '01', t: '预警接收', d: '对接气象部门 14 类气象预警 + 台风实时路径' },
@@ -628,12 +850,21 @@
      视图 4 · 灾情损失评估
      ============================================================ */
   function buildAssess() {
-    $('#as-precision').innerHTML = D.PRECISION.items.map(function (p) {
-      return '<div class="row" style="cursor:default"><div class="row-h">' +
+    /* 行业公开精度参考：原来 5 行全是 cursor:default 的死链（审计 5/5 无反应）。
+       现在可点 —— 展开说明该指标的统计口径、来源与"能否用于我司定损"的判断，
+       这正是使用者看到 ">90%" 时真正需要的信息。*/
+    $('#as-precision').innerHTML = D.PRECISION.items.map(function (p, i) {
+      return '<div class="row row-click" data-pidx="' + i + '"><div class="row-h">' +
         '<div class="row-t" style="font-size:12.5px">' + p.name + '</div>' +
         '<span class="tag tag-blue">' + p.val + '</span></div>' +
         '<div class="row-m"><span>' + p.src + '</span></div></div>';
     }).join('');
+    $$('#as-precision .row').forEach(function (el) {
+      el.addEventListener('click', function () {
+        $$('#as-precision .row').forEach(function (r) { r.classList.toggle('on', r === el); });
+        precisionDetail(Number(el.dataset.pidx));
+      });
+    });
 
     $('#as-std').innerHTML = D.PRECISION.standards.map(function (s) {
       return kv(s.name, s.date);
@@ -654,15 +885,22 @@
         '<div class="hbar-v">' + r.a + '→' + r.b + '</div></div>';
     }).join('');
 
-    // 各县损失构成
+    /* 各县损失构成
+       ⚠️ 原来只是一张静态表，点任何一行都没反应（审计：整行 3 个 tbody tr 全是死链）。
+         现在行可点：点开看该县的作物、灾害、出险结构与定损进度，
+         并可一键跳到「理赔定损地图」看该县的定损图斑。*/
     var rows = Object.keys(D.LOSS_CASES).map(function (k) {
       var c = D.LOSS_CASES[k];
-      return '<tr><td><b>' + c.name + '</b></td><td>' + c.crop + '</td><td>' + c.disaster + '</td>' +
+      return '<tr class="row-click" data-case="' + k + '" title="点击查看' + c.name + '灾损详情">' +
+        '<td><b>' + c.name + '</b></td><td>' + c.crop + '</td><td>' + c.disaster + '</td>' +
         '<td>' + fmt(c.areaMu, 0) + '</td><td>' + fmt(c.claimMu, 0) + '</td>' +
         '<td style="color:' + (c.lossRate > .4 ? '#f87171' : '#fb923c') + '"><b>' + (c.lossRate * 100).toFixed(0) + '%</b></td>' +
         '<td>' + fmt(c.claimMu * c.avgLoss / 10000, 0) + ' 万</td></tr>';
     }).join('');
     $('#as-table tbody').innerHTML = rows;
+    $$('#as-table tbody tr').forEach(function (tr) {
+      tr.addEventListener('click', function () { assessCaseDetail(tr.dataset.case); });
+    });
 
     // 减损闭环（真实案例锚点）
     $('#as-case').innerHTML =
