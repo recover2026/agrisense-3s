@@ -159,24 +159,23 @@
       delete pointers[e.pointerId];
       if (Object.keys(pointers).length < 2) pinchD = 0;
       if (dragging && !moved) {
-        //用 down 时的命中元素（pointerup 的 target 已被指针捕获改写）
-        if (downTarget) {
-          var hit = downTarget.closest ? downTarget.closest('[data-pick]') : null;
-          if (hit) {
-            var pl = {};
-            if (hit.dataset.id) pl.id = hit.dataset.id;
-            if (hit.dataset.kind) pl.kind = hit.dataset.kind;
-            if (hit.dataset.ti != null) pl.ti = Number(hit.dataset.ti);
-            // 村级（第5级）：vi=村在乡镇桶内的下标，vk=桶键"<县码>-<乡镇下标>"
-            if (hit.dataset.vi != null) pl.vi = Number(hit.dataset.vi);
-            if (hit.dataset.vk) pl.vk = hit.dataset.vk;
-            self.onPick(pl, hit);
-            downTarget = null;
-            dragging = false;
-            return;
-          }
-        }
-        self._pick(e);
+        /* ⚠️ 这里原先有一条"捷径"：pointerdown 时若 closest('[data-pick]')
+           命中，就直接 onPick 并 return，不走 _pick。
+           后果是【拾取规则被绕过】：
+             · 同层重叠消歧（点 A 进 B 的纠正）不生效；
+             · 极小面补偿（港澳 1x1、7x5）不生效；
+             · 覆盖型消歧（海南/台湾被南海诸岛罩住）不生效；
+             · 就近吸附与"点空隙"的兜底提示也拿不到 cx/cy。
+           实测全国视图 35 个省真实鼠标点击只有 31 个能下钻，
+           内蒙古/海南/台湾/N海诸岛 一点反应没有。
+           现统一交给 _pick 处理（它内部已用 downTarget 的等价信息
+           ——elementsFromPoint ——做了全部消歧），只在 downTarget 缺失时
+           才回退到旧逻辑。*/
+        if (!downTarget && e.target) downTarget = e.target;
+        self._pick(e, downTarget);
+        downTarget = null;
+        dragging = false;
+        return;
       }
       downTarget = null;
       dragging = false;
@@ -465,7 +464,10 @@
      取第一个【kind 层级更细】的可拾取要素（即用户视觉上想点的那层），
      找不到再退回最上层命中。 */
   var PICK_ORDER = { vill: 0, town: 1, county: 2, city: 3, prov: 4 };
-  GeoCanvas.prototype._pick = function (e) {
+  /* downEl：pointerdown 时命中的元素。
+     setPointerCapture 之后 pointerup 的 e.target 会变成 host DIV，
+     所以必须靠它把"按下时命中的面"补进候选栈。*/
+  GeoCanvas.prototype._pick = function (e, downEl) {
     var self = this;
     var stack = [];
     /* els 需在同层消歧时复用，故提到外层并保证始终有值 */
@@ -475,16 +477,118 @@
       var t = els[i].closest ? els[i].closest('[data-pick]') : null;
       if (t && stack.indexOf(t) < 0) stack.push(t);   // 去重
     }
+    /* 按下时命中的面优先补入（指针捕获会改写 target，这里是唯一可靠来源） */
+    var downHit = downEl && downEl.closest ? downEl.closest('[data-pick]') : null;
+    if (downHit && stack.indexOf(downHit) < 0) stack.unshift(downHit);
     if (!stack.length) {
       var tgt = e.target.closest ? e.target.closest('[data-pick]') : null;
       if (tgt) stack.push(tgt);
     }
     if (stack.length) {
+      /* ---------- 极小面补偿：先给点不准的面补一个命中机会 ----------
+         全国视图缩得很大时，澳门只有 1x1 像素、香港 7x5 像素 ——
+         鼠标不可能点中，用户只能干瞪眼。
+         这里把【屏幕面积不足 12x12 像素】的同级可拾取面，
+         按 12px 的命中半径补进候选栈，让它们在容差范围内也能被点中。
+         只在同一拾取层级内补，不会把细层要素抢走。*/
+      var tinyStack = [];
+      var sels = document.querySelectorAll('[data-pick]');
+      for (var ti = 0; ti < sels.length; ti++) {
+        var el = sels[ti];
+        if (stack.indexOf(el) >= 0) continue;
+        if (el.getAttribute('data-tiny-pick') === '1') continue;
+        var br = el.getBoundingClientRect();
+        if (br.width > 13 && br.height > 13) continue;
+        if (e.clientX < br.left - 9 || e.clientX > br.right + 9) continue;
+        if (e.clientY < br.top - 9 || e.clientY > br.bottom + 9) continue;
+        /* 只补【与已命中项同级】的极小面，避免细层要素被省级小面抢走 */
+        var tinyRank = PICK_ORDER[el.dataset.kind];
+        var topRank = 99;
+        for (var tq = 0; tq < stack.length; tq++) {
+          var rq = PICK_ORDER[stack[tq].dataset.kind];
+          if (rq != null && rq < topRank) topRank = rq;
+        }
+        if (tinyRank !== topRank) continue;
+        /* 已在容差范围内 → 加入候选；标记后本次不再重复加入 */
+        el.setAttribute('data-tiny-pick', '1');
+        tinyStack.push(el);
+        (function (x) {
+          setTimeout(function () { x.removeAttribute('data-tiny-pick'); }, 800);
+        })(el);
+      }
+      for (var ts = 0; ts < tinyStack.length; ts++) {
+        if (stack.indexOf(tinyStack[ts]) < 0) stack.push(tinyStack[ts]);
+      }
       // 取层级最细的一个（vill > town > county > city > prov）
-      var best = stack[0], bestRank = 99;
+      /* ⚠️ 关键：stack 里可能混有【没有 data-kind】的元素
+         —— 四个业务视图（总览/承保/理赔/预警）的县面、地块面都是
+         `map.area('cover', cty, {...})` 画的，没设 data-kind，
+         但带 data-pick 与 data-id，靠 onPick 里的 p.id 分派。
+         原写法 `var best = stack[0], bestRank = 99;` 遇到它们时
+         所有 rank 都是 undefined、`rk < bestRank` 恒不成立，
+         best 就永久停在 stack[0] —— 常常正是那个"无 kind 的底框"，
+         于是 payload 里没有 kind，上层 `p.kind === 'parcel'` 全部失配：
+         实测承保/理赔/预警三个视图点地块"完全没反应"。
+         正解：只在【有 kind 的候选】里比 rank；
+         若一个都没有，则按绘制顺序取最上层（stack[0]），
+         保留它的 data-id，让上层按 id 分派。*/
+      var best = null, bestRank = 99;
       for (var j = 0; j < stack.length; j++) {
         var rk = PICK_ORDER[stack[j].dataset.kind];
         if (rk != null && rk < bestRank) { bestRank = rk; best = stack[j]; }
+      }
+      if (!best) {
+        /* 无任何带 kind 的候选 → 取最上层的可拾取元素 */
+        for (var k2 = 0; k2 < stack.length; k2++) {
+          if (stack[k2].dataset.id || stack[k2].dataset.kind) { best = stack[k2]; break; }
+        }
+        if (!best) best = stack[0];
+      }
+      /* ---------- 无 kind 的底框要让位 ----------
+         四个业务视图的县界/省界底框（map.area('cover', cty, ...)）带 data-pick
+         与 data-id、但没有 data-kind；地块/图斑/预警圈则是带 kind 的细层要素，
+         且视觉上就画在底框上面。
+         ⚠️ 坑点：底框一旦进入 elementsFromPoint 栈首，下面的 parcel 就再也进不来
+            （elementsFromPoint 只返回命中该点、且未被遮挡的元素 ——
+            而"被遮挡"是浏览器按绘制顺序算的，底框虽然先画，
+            SVG 的命中测试却会返回最上面那个……但只要底框的 path 是
+            覆盖大片区域的封闭图形，parcel 完全落在它内部时，
+            浏览器认为底框"在最上"（后画的在上面，而底框常常画在最后
+            覆盖到 cover 层）→ stack 里就只有底框，parcel 根本没进候选。
+         正解：不依赖 elementsFromPoint 的遮挡结果，直接按几何判定 ——
+         在本容器内遍历所有带 data-kind 的可拾取元素，
+         用 isPointInFill 检查点击点是否落在其实心区域内，取层级最细的一个。
+         这样无论绘制顺序如何，用户点在地块/图斑/预警圈上都能命中它。*/
+      var host = this.host;
+      var withKind = host.querySelectorAll('[data-pick][data-kind]');
+      if (withKind.length) {
+        var geoBest = null, geoRank = 99;
+        /* ⚠️ isPointInFill 的入参必须是 DOMPointInit 对象，
+           传两个数字会抛 TypeError（实测）。
+           这里统一用 DOMPoint 构造，并再包一层 try —— 老浏览器
+           不支持时退回"按屏幕矩形粗判"（对同一视图内层要素足够）。*/
+        var probe = null;
+        try { probe = new DOMPoint(e.clientX, e.clientY); } catch (e0) { probe = null; }
+        for (var g1 = 0; g1 < withKind.length; g1++) {
+          var ge = withKind[g1];
+          var gr = PICK_ORDER[ge.dataset.kind];
+          if (gr == null || gr >= geoRank) continue;      // 只关心更细的层级
+          var inside = true;
+          if (ge.isPointInFill && probe) {
+            try { inside = ge.isPointInFill(probe); } catch (e2) {
+              var gb = ge.getBoundingClientRect();
+              inside = e.clientX >= gb.left && e.clientX <= gb.right &&
+                       e.clientY >= gb.top && e.clientY <= gb.bottom;
+            }
+          }
+          if (!inside) continue;
+          geoBest = ge; geoRank = gr;
+        }
+        if (geoBest) { best = geoBest; bestRank = geoRank; }
+      } else if (best && best.dataset.kind == null) {
+        for (var k3 = 0; k3 < stack.length; k3++) {
+          if (stack[k3].dataset.kind != null) { best = stack[k3]; bestRank = PICK_ORDER[best.dataset.kind]; break; }
+        }
       }
       /* 同层重叠消歧：CF 聚合的县面彼此可能重叠
          （实测阿勒泰市/布尔津县、昌吉市/呼图壁县、洛龙区/老城区、
@@ -522,20 +626,89 @@
         }
         best = win;
       }
+      /* ---------- 同层"盖住型"重叠的二次消歧 ----------
+         上面解决的是「点 A 却命中 B」这种绘制顺序错位（两个面都露在外面）。
+         这里解决的是另一种，实测在全国视图下造成 4/35 的省点不动：
+           · 南海诸岛是 181x273 的示意大面，把海南(115x208)、台湾(64x55)
+             整个罩在里面 —— 用户看到的是"海南省"，点下去命中的是南海诸岛；
+           · 澳门(1x1)、香港(7x5) 面积过小，几乎点不到。
+         特征：被选中的面 screen 面积远大于同层其他面，且点击位置并不在它
+         自己的 path 内部（说明点在它"填不满"的位置，实际想点的是被它
+         盖住的小省）。
+         判据：① 同层存在更小的候选；② 点击点不在 best 的 path 实心区域内
+              （用 isPointInFill 判断）；③ best 的屏幕面积是次大者的 3 倍以上。
+         满足则改判为「被盖住的那一个」——也就是用户视觉上想点的目标。*/
+      if (sameRank.length) {
+        var areaOf = function (t) {
+          var b = t.getBoundingClientRect();
+          return b.width * b.height;
+        };
+        /* isPointInFill 需要 DOMPointInit 对象，传两个数字会抛 TypeError。
+           传不出对象时退回"恒真"，等价于不做覆盖型改判（保守，不会点错）。*/
+        var solid = true;
+        try {
+          solid = (best.isPointInFill && e.target && e.target.ownerSVGElement)
+            ? best.isPointInFill(new DOMPoint(e.clientX, e.clientY))
+            : true;
+        } catch (err) { solid = true; }
+        var aBest = areaOf(best);
+        var sorted = cand.slice().sort(function (x, y) { return areaOf(x) - areaOf(y); });
+        var aSmall = areaOf(sorted[0]);
+        /* 覆盖型：点不在大面实心区，且大面远大于同层最小面 → 改判为被盖住的小面 */
+        if (!solid && aBest > aSmall * 3 && aSmall > 0) {
+          best = sorted[0];
+        } else if (aBest > 400) {
+          /* 点确实落在大面内部（大面没被"穿透"）：此时若同层存在
+             紧贴点击点的极小面（香港 7x5、澳门 1x1 这类肉眼几乎点不到的），
+             且它的中心离点击点更近，按"就近优先"判给它 ——
+             否则用户永远进不去这两个地方。*/
+          var near = null, nd = 1e9;
+          for (var nI = 0; nI < cand.length; nI++) {
+            var c2 = cand[nI];
+            if (c2 === best) continue;
+            if (areaOf(c2) > 400) continue;
+            var cb = c2.getBoundingClientRect();
+            var d2 = Math.hypot((cb.x + cb.width / 2) - e.clientX, (cb.y + cb.height / 2) - e.clientY);
+            if (d2 < nd) { nd = d2; near = c2; }
+          }
+          if (near && nd < 18) best = near;
+        }
+      }
       var payload = {};
       if (best.dataset.id) payload.id = best.dataset.id;
       if (best.dataset.kind) payload.kind = best.dataset.kind;
       if (best.dataset.ti != null) payload.ti = Number(best.dataset.ti);
       if (best.dataset.vi != null) payload.vi = Number(best.dataset.vi);
       if (best.dataset.vk) payload.vk = best.dataset.vk;
+      /* 一并带上点击屏幕坐标：命中了面但下钻失败时，上层可据此就近吸附 */
+      payload.cx = e.clientX;
+      payload.cy = e.clientY;
       this.onPick(payload, best);
       return;
     }
-    // 兜底：按世界坐标找要素
+    /* 兜底：点到要素之间的空隙，或 pointerdown 命中了背景矩形。
+       ⚠️ 原来这里判 `if (this._hitTest)` —— 而 _hitTest 从未被赋值，
+          整个分支是死代码，点击被静默丢弃：
+          用户点内蒙古/海南/台湾（凹形，bbox 中心是空白）毫无反应，
+          全国 35 个省实测只有 31 个能点得动。
+       现在无条件把点击交出去（含屏幕坐标 cx/cy），
+       由上层 nearestPick 做"就近吸附"、pickNoop 给明确提示。*/
     var r = this.host.getBoundingClientRect();
     var px = e.clientX - r.left, py = e.clientY - r.top;
-    var gx = (px - this.tx) / this.scale, gy = (this.ty - py) / this.scale;
-    if (this._hitTest) this.onPick(this._hitTest(gx, gy) || {}, null);
+    var out = {};
+    if (this._hitTest) {
+      var hit = this._hitTest((px - this.tx) / this.scale, (this.ty - py) / this.scale);
+      if (hit) {
+        if (hit.id) out.id = hit.id;
+        if (hit.kind) out.kind = hit.kind;
+        if (hit.ti != null) out.ti = hit.ti;
+        if (hit.vi != null) out.vi = hit.vi;
+        if (hit.vk) out.vk = hit.vk;
+      }
+    }
+    out.cx = e.clientX;
+    out.cy = e.clientY;
+    this.onPick(out, null);
   };
 
   /* ---------- 屏幕像素标记 ----------
@@ -714,6 +887,64 @@
     this._avoidOut = { x: x, y: finalY,
       dropped: Math.abs(x - this._avoidInX) > maxShift };
     return finalY;
+  };
+
+  /* ---------- 标注终检去重（全站共用）----------
+     为什么需要：pxLabel 的 _avoidLabels 是"逐个画、边画边让"，
+     只能保证"新画的让开已画的"。但让位有距离上限、也受视口边界约束，
+     密集区里仍有少量标签最终落在同一处 ——
+     实测河北「117/1」与天津「11/1」实体重叠 31x10px、
+     黄冈市的红色与橙色预警标签重叠 71x11px、北京与天津擦边 9x2px。
+     任何基于"请求坐标"的事前判据都拦不住（引擎让位结果事先不可知），
+     唯一可靠的判据是画完之后量真实矩形。
+     这里用引擎已算好的 _pxBox（不依赖布局时机，getBoundingClientRect
+     在刚入 DOM 时会返回 0）做一次全局扫描，保留面积大的、
+     移除与已保留者相交的那些 —— 宁可少一个名字，也不两个叠在一起。*/
+  GeoCanvas.prototype.dedupLabels = function (layerName) {
+    var L = this.layers[layerName];
+    if (!L || !L.g) return { total: 0, removed: 0 };
+    var host = this.host.getBoundingClientRect();
+    var items = [];
+    /* ⚠️ 扫描范围不能只限 L.g：栅格开启时，业务标签会被【克隆】一份到
+       描边层（overlayLabels），好让名字压在栅格之上可见 ——
+       于是同一个名字在两棵 <g> 里各有一份实体。
+       全国视图的省名就属于这种情况，只扫 lab 层会漏掉描边层那一份，
+       实测「北京」「天津」的重叠正是在描边层上（removed 始终为 0）。
+       这里按 id/class 找出该容器内所有标注实体一起判重叠。*/
+    var sel = 'text.gs-label, text.gs-overlay-label, text[class*="label"]';
+    var nodes = [];
+    if (L.g) nodes = nodes.concat(Array.prototype.slice.call(L.g.querySelectorAll(sel)));
+    var host2 = this.host;
+    if (host2 && host2.querySelectorAll) {
+      var extra = Array.prototype.slice.call(host2.querySelectorAll(sel));
+      for (var q = 0; q < extra.length; q++) {
+        if (nodes.indexOf(extra[q]) < 0 &&
+            extra[q].closest('svg') && extra[q].closest('svg') === this.svg.svg) nodes.push(extra[q]);
+      }
+    }
+    for (var i = 0; i < nodes.length; i++) {
+      var r = nodes[i].getBoundingClientRect();
+      if (!(r.width > 1) || !(r.height > 1)) continue;
+      items.push({ el: nodes[i], x: r.left, y: r.top, w: r.width, h: r.height });
+    }
+    /* 面积大的优先占位：小县名让位给带数值的长标签 */
+    items.sort(function (a, b) { return b.w * b.h - a.w * a.h; });
+    var keep = [], removed = 0;
+    for (var j = 0; j < items.length; j++) {
+      var o = items[j], bad = false;
+      for (var k = 0; k < keep.length; k++) {
+        var z = keep[k];
+        if (o.x < z.x + z.w && o.x + o.w > z.x && o.y < z.y + z.h && o.y + o.h > z.y) {
+          bad = true; break;
+        }
+      }
+      if (bad) {
+        try { o.el.remove(); } catch (e) { }
+        removed++;
+      } else keep.push(o);
+    }
+    if (L.pxItems) L.pxItems = L.pxItems.filter(function (t) { return t.parentNode; });
+    return { total: keep.length, removed: removed };
   };
 
   /* 标签底衬方案（第四次返工 · 定稿）

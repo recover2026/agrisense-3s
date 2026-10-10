@@ -128,7 +128,11 @@
       <div class="mapwrap">
         <div id="nat-map"></div>
         <div class="gs-ctl" id="nat-ctl"></div>
-        <div class="gs-scale"><span class="gs-scale-bar" id="nat-scale-bar" style="display:none"></span><span class="gs-scale-txt" id="nat-scale-txt"></span></div>
+        <!-- 比例尺与坐标由 GeoCanvas 引擎自建（gs-scale / gs-coord）并随视图更新。
+             ⚠️ 这里原来还手写了一份 #nat-scale-bar / #nat-scale-txt，
+               但全站 JS 从不更新它们 —— 结果是全国视图左下角出现【两个比例尺】：
+               引擎那个正常显示「1000 km」，这个永远是「空条 + 空文字」，
+               白占一块位置（目检可见）。已删除，全站统一由引擎提供。 -->
         <div class="gs-coord" id="nat-coord">—</div>
         <div class="nat-hud">
           <button class="nat-back" id="nat-back" title="返回上一级">‹ 返回上级</button>
@@ -144,7 +148,7 @@
 
         <!-- 点选入口：香港/澳门/厦门/济源/苏州 等面积极小的区域不显示文字，
              但仍需能进入。点此按钮从列表直接下钻。 -->
-        <button class="nat-jump" id="nat-jump-btn"
+        <button class="nat-jump" id="nat-jump-btn" type="button"
                 title="按名称直接下钻到指定区域"
                 aria-haspopup="listbox" aria-expanded="false">
           <i>⌖</i><span>点选</span>

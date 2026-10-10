@@ -1017,6 +1017,16 @@ var N = {
     /* 下钻已画完（所有 render / draw 系列函数的出口都会走到这里）→ 收起加载指示。
        双保险：即便某个分支漏调，loadingOn 里的面数轮询也会兜住。*/
     loadingOff();
+    /* 标注终检去重（全层级统一在这里做一次）。
+       ⚠️ 为什么必须放在 paintCrumb：它是【所有】render / draw 函数的
+          共同出口（全国、省、市、县、乡镇、村 13 处调用），
+          挂在这里一次覆盖全部层级，不必逐个函数去补。
+       为什么要终检：前两轮避让都基于"请求坐标"，而引擎 pxLabel 自带
+          横向让位（_avoidLabels），会把标签推离请求点，推到哪里事先不可知 ——
+          实测全国视图「北京」与「天津」最终实体重叠 9x2px。
+       为什么用 setTimeout(60) 而非 rAF：rAF 排在本帧重绘之前，
+          扫到的是旧落点，什么也删不掉（实测 rAF 版本 removed=0）。*/
+    if (MI) setTimeout(function () { try { DM.dedupLabels(MI, 'lab'); } catch (e) { } }, 60);
     var pv = N.curProvince ? GP.provinces.filter(function (x) { return String(x.c) === String(N.curProvince); })[0] : null;
     var cityObj = null;
     if (N.level === 'city' || N.level === 'county' || N.level === 'town' || N.level === 'village') {
@@ -2285,11 +2295,29 @@ var N = {
     MI = DM.init(host, {
       center: { lat: 35.0, lng: 106.0 }, zoom: 4,
       onPick: function (p) {
-        if (p.kind === 'prov') pickProvince(p.id);
-        else if (p.kind === 'city') pickCity(p.id);
-        else if (p.kind === 'vill') pickVillage(p.id, p.ti, p.vi, p.vk);
-        else if (p.kind === 'town') pickTown(p.id, p.ti);
-        else if (p.kind === 'county') pickCounty(p.id);
+        /* 拾取落空时（点到要素之间的空隙、或极小面），
+           先尝试"就近吸附"到最近的可下级要素；确实无处可去才给提示。
+           ⚠️ 实测全国视图 35 个省级面，真实鼠标点击只有 31 个能下钻：
+              内蒙古、海南、台湾三省的 bbox 中心落在 rect.gs-bg 背景上
+              （形状凹凸，框中心是空的），南海诸岛则是九段线示意面、
+              本就没有下级数据 —— 表现是一律"点了没反应"。
+           现在：能吸附就吸附（用户点哪都能进），不能吸附也给明确指引。*/
+        p = p || {};
+        if (!p.kind) p = nearestPick(p) || p;
+        var go = function () {
+          if (p.kind === 'prov') return pickProvince(p.id);
+          if (p.kind === 'city') return pickCity(p.id);
+          if (p.kind === 'vill') return pickVillage(p.id, p.ti, p.vi, p.vk);
+          if (p.kind === 'town') return pickTown(p.id, p.ti);
+          if (p.kind === 'county') return pickCounty(p.id);
+        };
+        if (!p.kind) { pickNoop(p); return; }
+        var before = N.level + '|' + N.curProvince + '|' + N.curCity + '|' + N.curCounty;
+        go();
+        setTimeout(function () {
+          var after = N.level + '|' + N.curProvince + '|' + N.curCity + '|' + N.curCounty;
+          if (after === before) pickNoop(p);
+        }, 1400);
       },
       onEngine: function (e) {
         N.engine = e.label;
@@ -2579,10 +2607,16 @@ var N = {
            · 登记占用必须用标签画完后的【真实矩形】_pxBox，
              否则 placed 里是请求坐标、与实际落点不一致，后续标签会判错；
            · 引擎让位距离超限时它返回 null（不是拉回原位），
-             这类交给第二轮的"贴面边缘 + 引线"处理。*/
+             这类交给第二轮的"贴面边缘 + 引线"处理。
+
+         ⚠️ 这里原先漏了 showLabel 判断：其他层级（市 3112 行、乡镇 1904 行等）
+            都包在 `if (N.showLabel)` 里，唯独全国省名这一段没有 ——
+            于是用户在图层面板关掉「地名标注」，全国视图的 32 个省名
+            一个都没消失，开关成了假动作（实测 on 样式翻转、标签数恒为 32）。
+            现统一按 showLabel 判断，与其他层级口径一致。*/
       var crowded = [];
       var hostBox = MI.host.getBoundingClientRect();
-      queue.forEach(function (o) {
+      (N.showLabel ? queue : []).forEach(function (o) {
         if (hitRect(o.px.x, o.px.y, o.half, estHH)) { crowded.push(o); return; }
         var el = DM.pxLabel(MI, 'lab', o.px.x, o.px.y, o.nm,
           { fill: '#fff', size: 11, halo: '#1c1408' });
@@ -2678,6 +2712,17 @@ var N = {
     }
 
     paintCrumb();;
+
+    /* 省名标注终检去重。
+       ⚠️ 前面的两轮避让都基于"请求坐标"，而引擎 pxLabel 自带横向让位
+          （_avoidLabels），会把标签推离请求点 —— 推到哪里事先不可知。
+          实测「北京」与「天津」最终实体重叠 9x2px。
+       画完后用真实屏幕矩形扫一遍，移出相交的那个。
+       用 setTimeout(60) 而非 rAF：rAF 排在本帧重绘之前，
+       扫到的是旧落点，什么也删不掉。*/
+    setTimeout(function () {
+      try { DM.dedupLabels(MI, 'lab'); } catch (e) { }
+    }, 60);
   }
 
   /* 灾点影响圈（红/橙色虚线圆）。
@@ -3462,6 +3507,98 @@ var N = {
       '<div class="note warn" style="margin-top:8px"><b>数据口径</b>：业务指标为模拟测算演示数据，不代表阳光财险真实经营数据。</div>');
   }
 
+  /* 拾取落空时的反馈 —— 绝不静默吞掉用户的点击。
+     实测问题：全国视图下海南、台湾两省的 bbox 中心被"南海诸岛"示意面
+     （181x273，比两省都大）盖住，内蒙古狭长形体的 bbox 中心落在框外，
+     真实鼠标点这 4 个省一点反应都没有。改为：
+       ① 明确说明"该区域无下级边界数据"
+       ② 给出两条替代路径：放大后重试 / 用右上角「点选」按名称直接下钻
+       ③ 仍然展示该省概况，至少让这次点击有产出。*/
+  /* 拾取落空 → 就近吸附到最近的可下级要素。
+     做法：按当前层级筛出候选面，采样每个面的顶点与中点，
+     取屏幕距离最小且在 70px 内的那个。
+     ⚠️ 只用 bbox 中心做距离是不对的 —— 凹形行政区（内蒙古、海南）
+        的 bbox 中心是空白，中心点不代表该面的位置。*/
+  function nearestPick(p) {
+    var host = document.querySelector('#nat-map');
+    if (!host) return null;
+    var wantKind = N.level === 'country' ? 'prov'
+      : N.level === 'province' ? 'city'
+        : N.level === 'city' ? 'county'
+          : N.level === 'county' ? 'town' : null;
+    if (!wantKind) return null;
+    var list = document.querySelectorAll('#nat-map [data-pick][data-kind="' + wantKind + '"]');
+    if (!list.length) return null;
+    var cx = (p && p.cx != null) ? p.cx : null, cy = (p && p.cy != null) ? p.cy : null;
+    if (cx == null) return null;
+    var best = null, bestD = 70;
+    for (var i = 0; i < list.length; i++) {
+      var el = list[i];
+      var b = el.getBoundingClientRect();
+      var cand = [[b.x + b.width / 2, b.y + b.height / 2]];
+      /* 再补几个沿边取样点，提高命中凹形面的概率 */
+      cand.push([b.x + b.width * 0.25, b.y + b.height * 0.3]);
+      cand.push([b.x + b.width * 0.75, b.y + b.height * 0.7]);
+      cand.push([b.x + b.width * 0.5, b.y + b.height * 0.15]);
+      cand.push([b.x + b.width * 0.5, b.y + b.height * 0.85]);
+      for (var k = 0; k < cand.length; k++) {
+        var d = Math.hypot(cand[k][0] - cx, cand[k][1] - cy);
+        if (d < bestD) { bestD = d; best = el; }
+      }
+    }
+    if (!best) return null;
+    var out = { id: best.dataset.id, kind: best.dataset.kind };
+    if (best.dataset.ti != null) out.ti = Number(best.dataset.ti);
+    if (best.dataset.vi != null) out.vi = Number(best.dataset.vi);
+    if (best.dataset.vk) out.vk = best.dataset.vk;
+    return out;
+  }
+
+  function pickNoop(p) {
+    if (!p) return;
+    var name = null, pv = null;
+    if (p.kind === 'prov' && p.id) {
+      pv = GP.provinces.filter(function (x) { return String(x.c) === String(p.id); })[0];
+      name = pv && pv.n;
+    } else if (p.id) {
+      var c = KB[String(p.id)];
+      name = c && c.n;
+    }
+    /* 点在空白处、就近吸附也没找到任何面：给最直接的指引 */
+    if (!p.kind) {
+      var lv = N.level === 'country' ? '省' : N.level === 'province' ? '市'
+        : N.level === 'city' ? '县' : N.level === 'county' ? '乡镇' : '区域';
+      window.__APP__.detail('此处没有可下钻的区域',
+        '点击落点提示 · 当前层级：' + lv + '级',
+        '<div class="note warn">你点的位置在' + lv + '级边界之外（' + lv +
+        '级边界之间存在空隙，或该面被相邻大面覆盖）。</div>' +
+        '<div class="dt-sub" style="margin-top:10px">可以这样继续</div>' +
+        '<div class="note" style="padding:8px 10px">① 用鼠标<b>滚轮放大</b>后，在色块上重新点击。</div>' +
+        '<div class="note" style="padding:8px 10px">② 点地图右上角的 <b>⌖ 点选</b> 按钮，' +
+        '按名称直接下钻，无需在地图上找位置。</div>');
+      return;
+    }
+    if (!name) name = '该区域';
+    /* 若只是"已在这一级"（重复点当前层），那属于正常行为：
+       上面已经把该省的详情给出来了，这里不再打扰。*/
+    if (pv && String(N.curProvince) === String(p.id) && N.level === 'province') {
+      showProvinceInfo(pv);
+      return;
+    }
+    var scopeTxt = p.kind === 'prov' ? '省级' : p.kind === 'city' ? '市级' :
+      p.kind === 'county' ? '县级' : p.kind === 'town' ? '乡镇级' : '该级';
+    window.__APP__.detail(name, scopeTxt + '下钻 · 未进入下一级',
+      '<div class="note warn"><b>' + name + '</b> 暂无可下钻的' + scopeTxt + '边界数据。</div>' +
+      '<div class="dt-sub" style="margin-top:10px">可以这样继续</div>' +
+      '<div class="note" style="padding:8px 10px">① 用鼠标<b>滚轮放大</b>到该区域后重新点击（当前视野下它被' +
+      '更大的示意面或相邻面覆盖，中心点不在它身上）。</div>' +
+      '<div class="note" style="padding:8px 10px">② 点地图右上角的 <b>⌖ 点选</b> 按钮，' +
+      '按名称直接进入，无需在地图上找位置。</div>' +
+      (pv ? '<div class="note" style="padding:8px 10px">③ 点左侧<b>省域排名</b>里的 ' + name +
+        '，也可直接下钻。</div>' : ''));
+    if (pv) showProvinceInfo(pv);
+  }
+
   function showCityInfo(c, pcode) {
     var pv = GP.provinces.filter(function (p) { return p.c == pcode; })[0];
     var v = NAT.topicValue(N.activeLayer, c.c);
@@ -3601,8 +3738,26 @@ var N = {
         if (lay === 'base') { N.showBase = !N.showBase; applyBaseVisibility(); return; }
         if (lay === 'edge') { N.showEdge = !N.showEdge; el.classList.toggle('on', N.showEdge);
           el.setAttribute('aria-checked', String(N.showEdge)); redrawCurrent(); return; }
-        if (lay === 'label') { N.showLabel = !N.showLabel; el.classList.toggle('on', N.showLabel);
-          el.setAttribute('aria-checked', String(N.showLabel)); redrawCurrent(); return; }
+        if (lay === 'label') {
+          N.showLabel = !N.showLabel;
+          el.classList.toggle('on', N.showLabel);
+          el.setAttribute('aria-checked', String(N.showLabel));
+          /* ⚠️ 实测 bug：关掉"地名标注"后状态确实翻转了
+             （layrow 的 on 去掉、N.showLabel=false），
+             但地图上 32 个省名一个都没消失 —— 关掉是"假动作"。
+             原因：renderCountry 等绘制函数里的 clearLayer('lab') 排在
+             画标签之前，重画时又按 N.showLabel 补画了标签；
+             而 redrawCurrent 在部分层级下不会重建 lab 层，
+             上一帧的标签元素就原地留了下来。
+             正解：关标注时先把 lab 层与描边层克隆标签一起清掉，
+             交给下一次重画决定要不要再画。*/
+          if (!N.showLabel) {
+            if (MI) { try { DM.clearLayer(MI, 'lab'); } catch (e) { } }
+            if (RS && MI && MI.host) { try { RS.clearOverlayLabels(MI.host); } catch (e2) { } }
+          }
+          redrawCurrent();
+          return;
+        }
         toggleLayer(el);
       });
       el.addEventListener('keydown', function (e) {
@@ -3807,7 +3962,7 @@ var N = {
         }
         var mark = (k === 'cor' || k === 'risk')
           ? '<span style="font-size:9px;opacity:.6;margin-left:4px">模拟测算</span>' : '';
-        return '<div class="hbar" data-code="' + x.c + '" style="cursor:pointer"' + tip + '>' +
+        return '<div class="hbar hbar-click" data-code="' + x.c + '"' + tip + '>' +
           '<div class="hbar-n">' + x.n + '</div>' +
           '<div class="hbar-t"><i style="width:' + w + '%;background:' + col + '"></i></div>' +
           '<div class="hbar-v">' + v + mark + '</div></div>';
@@ -3823,8 +3978,17 @@ var N = {
           '<b>绿色为增长、红色为负增长</b>——负增长省份市场收缩，需重点关注。' +
           '注：增速为相对值，与下方「保费规模」（绝对值）口径不同，不可直接相加比较。</div>';
       }
+      /* 省域排名条：下钻 + 同时给出该省详情。
+         ⚠️ 原来只调 pickProvince（下钻），详情浮层不打开、标题还留着
+            上一次的残留文字。用户点完只看到地图变了，
+            不知道这个省的保费/增速/成本率究竟是多少 —— 排名条本身是"查数"的入口，
+            却只能下钻、查不到数。现改为下钻与详情同时给出。*/
       $$('#nat-rank .hbar').forEach(function (el) {
-        el.addEventListener('click', function () { pickProvince(el.dataset.code); });
+        el.addEventListener('click', function () {
+          pickProvince(el.dataset.code);
+          var p = GP.provinces.filter(function (x) { return String(x.c) === String(el.dataset.code); })[0];
+          if (p) setTimeout(function () { showProvinceInfo(p); }, 260);
+        });
       });
     }
     paint('prem');

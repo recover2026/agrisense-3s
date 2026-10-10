@@ -527,7 +527,7 @@
     arr.sort(function (a, b) { return b.prem - a.prem; });
     var mx = arr.length ? arr[0].prem : 1;
     $('#uw-rank').innerHTML = arr.slice(0, 30).map(function (a) {
-      return '<div class="hbar"><div class="hbar-n">' + esc(a.n) + '<i>' + esc(a.p) + '</i></div>' +
+      return '<div class="hbar hbar-vonly"><div class="hbar-n">' + esc(a.n) + '<i>' + esc(a.p) + '</i></div>' +
         '<div class="hbar-t"><i style="width:' + (a.prem / mx * 100).toFixed(1) + '%;background:linear-gradient(90deg,#34d399,#22d3ee)"></i></div>' +
         '<div class="hbar-v">' + (a.prem / 1e4).toFixed(1) + '万</div></div>';
     }).join('') || '<div class="uw-empty-tip">无数据</div>';
@@ -537,7 +537,7 @@
       .sort(function (a, b) { return b[1] - a[1]; });
     var cs = cropArr.reduce(function (a, b) { return a + b[1]; }, 0) || 1;
     $('#uw-crop').innerHTML = cropArr.map(function (c) {
-      return '<div class="hbar"><div class="hbar-n">' + esc(c[0]) + '</div>' +
+      return '<div class="hbar hbar-vonly"><div class="hbar-n">' + esc(c[0]) + '</div>' +
         '<div class="hbar-t"><i style="width:' + (c[1] / cs * 100).toFixed(1) + '%;background:linear-gradient(90deg,#a78bfa,#3b82f6)"></i></div>' +
         '<div class="hbar-v">' + c[1] + '</div></div>';
     }).join('') || '<div class="uw-empty-tip">无数据</div>';
@@ -983,7 +983,7 @@
         top.map(function (c) { return '<div class="row-m" style="padding:3px 0"><span>' + esc(c) + '</span><b>' + a.crops[c] + ' 笔</b></div>'; }).join('') + '</div>' : '') +
       (towns.length ? '<div class="sec" style="padding:0;border:none"><div class="sec-h"><div class="sec-t">乡镇分布 Top 10</div></div>' +
         towns.map(function (t) {
-          return '<div class="hbar"><div class="hbar-n">' + esc(t) + '</div>' +
+          return '<div class="hbar hbar-vonly"><div class="hbar-n">' + esc(t) + '</div>' +
             '<div class="hbar-t"><i style="width:' + (a.towns[t] / a.towns[towns[0]] * 100).toFixed(0) +
             '%;background:linear-gradient(90deg,#34d399,#22d3ee)"></i></div>' +
             '<div class="hbar-v">' + a.towns[t] + '</div></div>';

@@ -257,12 +257,18 @@
       // 大省优先占内圈，小省用引线推到外圈
       queue.sort(function (a, b) { return b.area - a.area; });
 
-      function clash(px, py, x, y, w) {
-        // 与已放置标签的矩形相交检测（含水平半宽）
+      /* ⚠️ 此处原为 clash(px, py, x, y, w) 五个形参，但调用处传的是
+         (x, y, w, h) 四个实参 —— 参数错位导致 w 恒为 undefined；
+         且函数体读 o[4]，而 reserve 推入的只有 4 个元素 [px,py,w,h]。
+         两者叠加使判据恒为 NaN，重叠检测形同虚设。
+         现统一为 clash(px, py, w, h) + placed 存 [px, py, w, h]。*/
+      function clash(px, py, w, h) {
+        // 与已放置标签的矩形相交检测（含描边余量）
+        var hw = w / 2 + 3, hh = h / 2 + 2;
         for (var i = 0; i < placed.length; i++) {
           var o = placed[i];
-          if (Math.abs(o[0] - px) < (w + o[2]) / 2 + 4 &&
-              Math.abs(o[1] - py) < (o[4] + 15) / 2 + 3) return true;
+          var ow = (o[2] || 0) / 2 + 3, oh = (o[3] || 0) / 2 + 2;
+          if (Math.abs(o[0] - px) < hw + ow && Math.abs(o[1] - py) < hh + oh) return true;
         }
         return false;
       }
@@ -311,6 +317,22 @@
     }
 
     DM.fit(MI, bbox);
+
+    /* 标注终检去重。
+       ⚠️ 前面所有判据都基于"请求坐标"，但引擎的 pxLabel 自带横向避让
+          （_avoidLabels），会把标签推离请求点，推到哪里事先不可知。
+          实测「河北 117/1」与「天津 11/1」请求点仅相距 15px（判为不重叠），
+          引擎却把河北推到了天津身上，实体重叠 31x10px，屏幕上两行数字糊死。
+       画完后用引擎的 _pxBox 量真实矩形，保留面积大的、移出相交的那些 ——
+       宁可少一个省名，也不能两个叠在一起（侧栏「省域排名」列表里数据完整）。
+       延后两帧：此刻视图刚切为可见，标签可能还没落位。*/
+    /* 用 setTimeout(0) 而非 rAF：rAF 会在本帧的重绘之前触发，
+       此刻标签还没被引擎的 _avoidLabels 重新定位，去重扫的是旧落点，
+       什么也删不掉（实测手动调用 removed=2、自动调用 removed=0）。
+       setTimeout 排在本轮所有同步绘制与 rAF 之后，才是最终画面。*/
+    setTimeout(function () {
+      try { DM.dedupLabels(MI, 'lab'); } catch (e) { }
+    }, 60);
   }
   function bb2(x) { return x; }
 
@@ -581,7 +603,7 @@
       $('#qual-rank').innerHTML = rows.slice(0, 14).map(function (r) {
         var w = (r[k]/mx*100).toFixed(0);
         var col = k==='g' ? 'linear-gradient(90deg,#ffd35a,#fb923c)' : 'linear-gradient(90deg,#3b82f6,#22d3ee)';
-        return '<div class="hbar" data-p="' + r.p + '" style="cursor:pointer">' +
+        return '<div class="hbar hbar-click" data-p="' + r.p + '">' +
           '<div class="hbar-n">' + r.p.replace(/省|市|壮族|回族|维吾尔|自治区/g,'') + '</div>' +
           '<div class="hbar-t"><i style="width:' + w + '%;background:' + col + '"></i></div>' +
           '<div class="hbar-v">' + r[k] + '</div></div>';
@@ -607,9 +629,9 @@
     var t = s.types || {};
     var I = t.I||0, J = t.J||0, B = t.both||0;
     $('#qual-types').innerHTML =
-      '<div class="hbar"><div class="hbar-n">统一遴选</div><div class="hbar-t"><i style="width:' + (I/271*100).toFixed(0) + '%;background:linear-gradient(90deg,#facc15,#fb923c)"></i></div><div class="hbar-v">' + I + '</div></div>' +
-      '<div class="hbar"><div class="hbar-n">森林/特色</div><div class="hbar-t"><i style="width:' + (J/271*100).toFixed(0) + '%;background:linear-gradient(90deg,#22d3ee,#3b82f6)"></i></div><div class="hbar-v">' + J + '</div></div>' +
-      '<div class="hbar"><div class="hbar-n">两者兼具</div><div class="hbar-t"><i style="width:' + (B/271*100).toFixed(0) + '%;background:linear-gradient(90deg,#a78bfa,#ffd35a)"></i></div><div class="hbar-v">' + B + '</div></div>' +
+      '<div class="hbar hbar-vonly"><div class="hbar-n">统一遴选</div><div class="hbar-t"><i style="width:' + (I/271*100).toFixed(0) + '%;background:linear-gradient(90deg,#facc15,#fb923c)"></i></div><div class="hbar-v">' + I + '</div></div>' +
+      '<div class="hbar hbar-vonly"><div class="hbar-n">森林/特色</div><div class="hbar-t"><i style="width:' + (J/271*100).toFixed(0) + '%;background:linear-gradient(90deg,#22d3ee,#3b82f6)"></i></div><div class="hbar-v">' + J + '</div></div>' +
+      '<div class="hbar hbar-vonly"><div class="hbar-n">两者兼具</div><div class="hbar-t"><i style="width:' + (B/271*100).toFixed(0) + '%;background:linear-gradient(90deg,#a78bfa,#ffd35a)"></i></div><div class="hbar-v">' + B + '</div></div>' +
       '<div class="note" style="margin-top:9px;font-size:10.5px">政策性资格县区<b>全部同时具备</b>农险经营资质（资格逻辑自洽）。其中「两者兼具」指既入围统一遴选、又具地方特色/中央森林险资格。</div>';
   }
 
@@ -620,7 +642,7 @@
       .sort(function (a,b){return b.v-a.v;});
     var top = arr.slice(0, 10);
     $('#qual-insurers').innerHTML = top.length ? top.map(function (r) {
-      return '<div class="hbar"><div class="hbar-n" title="' + r.k + '">' + r.k + '</div>' +
+      return '<div class="hbar hbar-vonly"><div class="hbar-n" title="' + r.k + '">' + r.k + '</div>' +
         '<div class="hbar-t"><i style="width:' + (r.v/top[0].v*100).toFixed(0) + '%;background:linear-gradient(90deg,#34d399,#22d3ee)"></i></div>' +
         '<div class="hbar-v">' + r.v + '</div></div>';
     }).join('') + '<div class="note" style="margin-top:8px;font-size:10.5px">共 ' + arr.length + ' 种具体落地险种有明确记载，其余县区按 J 列资格类型开展相应险种。</div>'

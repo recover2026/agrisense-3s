@@ -4,3 +4,5 @@
 
 # 测试生成的承保台账（由 tools/make_test_uw_xlsx.py 生成，不入库）
 承保台账_测试.xlsx
+docs/stress/
+# 压力测试/目检截图（本地生成，不入库）

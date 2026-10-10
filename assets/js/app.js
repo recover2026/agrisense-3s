@@ -176,7 +176,11 @@
       card('在保农户', '12.8', '万户', '模拟测算', '#ffd35a')
     ].join('');
 
-    // 市州保费排名条
+    /* 市州保费排名条 —— 整行可点，弹出该市州风险画像。
+       ⚠️ 此前这里只输出一排纯 div：没有 data-*、没有 click 绑定、没有手型光标，
+         而同一份数据在右侧地图上却是可点的（onPick → cityDetail）。
+         同一个市，地图上点得开、左栏排名条点了没反应 —— 用户视角就是"这块功能坏了"。
+         现把排名条接到与地图完全相同的 cityDetail，两处口径一致。*/
     var rank = cities.slice().sort(function (a, b) {
       return (D.CITY_BIZ[b.n] || {}).insure - (D.CITY_BIZ[a.n] || {}).insure;
     }).slice(0, 9);
@@ -184,22 +188,84 @@
     $('#ov-rank').innerHTML = rank.map(function (c) {
       var b = D.CITY_BIZ[c.n] || {};
       var w = (b.insure / maxI * 100).toFixed(1);
-      return '<div class="hbar"><div class="hbar-n">' + c.n + '</div>' +
+      return '<div class="hbar hbar-click" data-city="' + c.c + '" role="button" tabindex="0"' +
+        ' title="点击查看' + c.n + '承保风险画像">' +
+        '<div class="hbar-n">' + c.n + '</div>' +
         '<div class="hbar-t"><i style="width:' + w + '%;background:linear-gradient(90deg,#3b82f6,#22d3ee)"></i></div>' +
         '<div class="hbar-v">' + (b.insure || 0).toFixed(1) + '亿</div></div>';
     }).join('');
+    $$('#ov-rank .hbar').forEach(function (el) {
+      var open = function () {
+        var c = cities.filter(function (x) { return String(x.c) === String(el.dataset.city); })[0];
+        if (c) cityDetail(c);
+      };
+      el.addEventListener('click', open);
+      el.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+      });
+    });
 
-    // 灾种分布
+    /* 灾种风险构成 —— 整行可点，展开该灾种的监测口径与农险端作业动作。
+       与上面排名条同样的问题：此前是纯展示 div，点了没有任何反馈。*/
     $('#ov-hazard').innerHTML = Object.keys(D.HAZARD).map(function (k) {
       var h = D.HAZARD[k];
       var w = (h.w * 100 / 0.30 * 26).toFixed(0);
-      return '<div class="hbar"><div class="hbar-n">' + k + '</div>' +
+      return '<div class="hbar hbar-click" data-hz="' + k + '" role="button" tabindex="0"' +
+        ' title="点击查看' + k + '监测口径与作业动作">' +
+        '<div class="hbar-n">' + k + '</div>' +
         '<div class="hbar-t"><i style="width:' + Math.min(100, w) + '%;background:' + h.color + '"></i></div>' +
         '<div class="hbar-v">' + (h.w * 100).toFixed(0) + '%</div></div>';
     }).join('');
+    $$('#ov-hazard .hbar').forEach(function (el) {
+      var open = function () { hazardDetail(el.dataset.hz); };
+      el.addEventListener('click', open);
+      el.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+      });
+    });
 
     $('#ov-total-area').textContent = fmt(sum.area, 0);
     $('#ov-total-premium').textContent = fmt(sum.insure, 1);
+  }
+
+  /* 灾种口径详情：权重 + 监测指标 + 农险端实际要做什么 */
+  var HAZARD_PLAYBOOK = {
+    暴雨洪涝: { idx: '日降雨量 / 积水深度 / 淹没面积', src: '气象部门暴雨预警信号、应急管理、水利部门水情',
+      act: ['承保端：暴雨橙色及以上区域提前调度查勘力量、预置查勘车',
+            '理赔端：高水位淹没区用雷达+光学双源比对，快速勾定受灾范围',
+            '减损：通知待报险农户提前转移低洼地块财产'] },
+    高温热害: { idx: '最高气温 / 日照时数 / 积温偏差', src: '气象部门高温预警、农业气象旬报',
+      act: ['承保端：高温连续 5 天以上触发积温偏差预警，核对承保作物耐热性',
+            '理赔端：抽穗期高温直接影响结实率，按积温偏差定损',
+            '减损：建议错峰灌溉、喷施抗逆制剂'] },
+    干旱: { idx: '降雨距平 / 土壤墒情 / 相对湿度', src: '水利、气象与农业农村部门墒情监测',
+      act: ['承保端：连续无有效降水启动旱情跟踪，优先锁定在保大户',
+            '理赔端：土壤墒情遥感反演与实测点校准，出险面积按县统一核定',
+            '减损：协调水利部门优先保障承保高价值作物灌溉'] },
+    '冰雹大风': { idx: '雷达回波强度 / 阵风等级 / 作物倒伏面积', src: '气象部门强对流雷达产品',
+      act: ['承保端：强对流橙色预警提前 6 小时通知承保农户做好防风加固',
+            '理赔端：雷达回波走径直接圈定冰雹影响带，逐带核定损失',
+            '减损：提醒大棚加固压膜线、果园立支柱防折断'] },
+    霜冻低温: { idx: '最低气温 / 霜冻日 / 越冬作物物候期', src: '气象部门霜冻蓝色及以上预警',
+      act: ['承保端：霜冻预警期间冻结新增种植险出单节奏',
+            '理赔端：结合物候期判断受灾程度，幼苗期与拔节期损失率差异大',
+            '减损：提前熏烟、灌水防冻，覆盖薄膜育秧与越冬柑橘'] },
+    病虫害: { idx: '虫口密度 / 病斑率 / 气象诱因条件', src: '农业农村部门植保站测报',
+      act: ['承保端：虫口密度超阈值区域暂缓承保，防止带病承保',
+            '理赔端：高分影像识别病斑比例，抽样复核后定损',
+            '减损：统防统治，投保后提供植保技术指引'] }
+  };
+  function hazardDetail(k) {
+    var h = D.HAZARD[k] || {}, pb = HAZARD_PLAYBOOK[k] || { idx: '—', src: '—', act: [] };
+    var html =
+      '<div class="kv"><span>灾种</span><b>' + k + '</b></div>' +
+      '<div class="kv"><span>风险权重</span><b>' + (h.w * 100).toFixed(0) + '%</b></div>' +
+      '<div class="kv"><span>监测指标</span><b>' + pb.idx + '</b></div>' +
+      '<div class="kv"><span>数据来源</span><b>' + pb.src + '</b></div>' +
+      '<div class="dt-sub">农险端作业动作</div>' +
+      pb.act.map(function (a) { return '<div class="note" style="padding:7px 9px;margin-top:6px">' + a + '</div>'; }).join('') +
+      '<div class="note" style="margin-top:11px"><b>数据口径</b>：灾种权重为模拟测算，用于演示五维风险指数构成，不代表真实精算结果。</div>';
+    detail(k, '灾种风险构成 · 监测口径与作业动作 · 模拟测算', html);
   }
 
   function card(l, v, u, d, c) {
@@ -235,7 +301,7 @@
       '<div class="dt-sub">综合风险指数（五维加权）</div>' +
       D.RISK_DIMS.map(function (d) {
         var v = (b.risk || 3) / 5 * (0.6 + (d.w * 1.4));
-        return '<div class="hbar"><div class="hbar-n">' + d.n + '</div>' +
+        return '<div class="hbar hbar-vonly"><div class="hbar-n">' + d.n + '</div>' +
           '<div class="hbar-t"><i style="width:' + (v * 100).toFixed(0) + '%;background:linear-gradient(90deg,#fb923c,#f87171)"></i></div>' +
           '<div class="hbar-v">' + (v * 100).toFixed(0) + '</div></div>';
       }).join('') +
@@ -335,17 +401,25 @@
       }
     });
     if (towns.length && st.uwParcels.length) {
+      /* 乡镇标注：收集后交给 placeLabels 统一避让。
+         ⚠️ 原来在 fit 之前就按 toPx 画，且无碰撞检测 ——
+         实测 7 个乡镇标签有 1 对实体重叠（目检截图 zoom_uw_map.png）。*/
+      var uwPending = [];
       towns.forEach(function (t, i) {
         var idx = Math.min(st.uwParcels.length - 1,
                            Math.floor((i + .5) / towns.length * st.uwParcels.length));
         var pp = st.uwParcels[idx];
         if (!pp) return;
-        var sp = map.toPx(pp.xy[0], pp.xy[1]);
-        var lt = map.pxLabel('lab', sp.x, sp.y, t.n, { fill: '#ffffff', size: 11, halo: '#1c1408', haloW: 4, weight: 700 });
-        map.anchor(lt, pp.xy[0], pp.xy[1], 0, null, true, 620);
+        uwPending.push({ cx: pp.xy[0], cy: pp.xy[1], pri: 0, txt: t.n, col: [255, 255, 255] });
       });
+      map.fit(cty.b);
+      placeLabels(map, uwPending, {
+        fill: function () { return '#ffffff'; },
+        size: 11, halo: '#1c1408', haloW: 4
+      });
+    } else {
+      map.fit(cty.b);
     }
-    map.fit(cty.b);
     $('#uw-title').textContent = cty.n + ' · 承保地块风险分布';
     var avgR = st.uwParcels.reduce(function (a, p) { return a + p.risk; }, 0) / (st.uwParcels.length || 1);
     var highN = st.uwParcels.filter(function (p) { return p.risk > 0.72; }).length;
@@ -381,7 +455,7 @@
       '<div class="kv"><span>中风险地块</span><b>' + mid.length + ' 块</b></div>' +
       '<div class="dt-sub">风险构成（五维加权）</div>' +
       D.RISK_DIMS.map(function (d) {
-        return '<div class="hbar"><div class="hbar-n">' + d.n + '</div>' +
+        return '<div class="hbar hbar-vonly"><div class="hbar-n">' + d.n + '</div>' +
           '<div class="hbar-t"><i style="width:' + (d.w * 300).toFixed(0) + '%;background:linear-gradient(90deg,#a78bfa,#3b82f6)"></i></div>' +
           '<div class="hbar-v">' + (d.w * 100).toFixed(0) + '%</div></div>' +
           '<div class="note" style="margin:-2px 0 6px"><span style="color:var(--txt-3)">' + d.d + '</span></div>';
@@ -520,22 +594,31 @@
       }
     });
 
-    // 乡镇标注（屏幕像素）——窄屏时跳过，避免标注堆叠重叠
+    // 乡镇标注（屏幕像素）——先收集质心，fit 之后再统一避让绘制
+    // ⚠️ 收集阶段不能用 map.toPx：fit 之后视图变换会变，
+    //    提前算的屏幕坐标全部失效。改为只存世界坐标，落位时再取。
+    var pending = [];
     towns.forEach(function (t) {
       var group = st.clPlots.filter(function (p) { return p.town === t.n; });
       if (!group.length) return;
       var cx = group.reduce(function (a, p) { return a + p.xy[0]; }, 0) / group.length;
       var cy = group.reduce(function (a, p) { return a + p.xy[1]; }, 0) / group.length;
-      var col = lossColor(t.loss);
-      var sp = map.toPx(cx, cy);
-      var lt2 = map.pxLabel('lab', sp.x, sp.y - 13, t.n + ' ' + (t.loss * 100).toFixed(0) + '%', {
-        fill: 'rgb(' + col[0] + ',' + col[1] + ',' + col[2] + ')', size: 11.5, halo: '#1c1408', haloW: 4.2
-      });
-      // 标记为可选标注：由引擎按当前容器宽度统一显隐
-      map.anchor(lt2, cx, cy, -13, null, true);
+      pending.push({ cx: cx, cy: cy, col: lossColor(t.loss), pri: t.loss,
+        txt: t.n + ' ' + (t.loss * 100).toFixed(0) + '%' });
     });
 
     map.fit(cty.b);
+
+    /* 乡镇标注统一做碰撞避让后再画。
+       ⚠️ 原来直接按质心画、毫无避让：7 个乡镇的标注全挤在县中部
+       「黄梅县城区 44%」与「五祖镇 18%」实体重叠 52x15px，
+       放大看就是一团糊字（目检截图 zoom_claims_map.png）。
+       现在：fit 之后按世界坐标取屏幕点 → 逐个量真实矩形 →
+       相撞就上下左右找空位 → 实在放不下就跳过（少一个名字好过两个叠成一团）。*/
+    placeLabels(map, pending, {
+      fill: function (c) { return 'rgb(' + c[0] + ',' + c[1] + ',' + c[2] + ')'; },
+      size: 11.5, halo: '#1c1408', haloW: 4.2
+    });
 
     $('#cl-title').textContent = c.name + ' · ' + c.crop + c.disaster + '定损图斑';
     $('#cl-stats').innerHTML =
@@ -727,7 +810,7 @@
       '<div class="dt-sub">乡镇损失分布（按损失率排序）</div>' +
       towns.map(function (t) {
         var c2 = lossColor(t.loss);
-        return '<div class="hbar"><div class="hbar-n">' + t.n + '</div>' +
+        return '<div class="hbar hbar-vonly"><div class="hbar-n">' + t.n + '</div>' +
           '<div class="hbar-t"><i style="width:' + (t.loss * 100).toFixed(0) + '%;background:rgb(' +
           c2[0] + ',' + c2[1] + ',' + c2[2] + ')"></i></div>' +
           '<div class="hbar-v">' + (t.loss * 100).toFixed(0) + '% · ' + fmt(t.mu, 0) + '亩</div></div>';
@@ -792,6 +875,96 @@
     detail(t.name, '气象预警口径 · 农险响应', html);
   }
 
+  /* ---------- 地图标注统一避让（三个业务视图共用）----------
+     ⚠️ 此前承保/理赔/预警三个视图的乡镇标注都是"按质心直接画"，
+     毫无碰撞检测：7 个乡镇的标注全挤在县中部，
+     实测「黄梅县城区 44%」与「五祖镇 18%」实体重叠 52x15px，
+     目检就是一团糊字（截图 zoom_claims_map.png）。
+     现在统一走这里：
+       ① 先按"损失率从高到低"排序 —— 重要的地名优先占位；
+       ② 逐个量出标签真实矩形（引擎 pxLabel 会回写 _pxBox）；
+       ③ 与已放置的标签相交时，依次向下 / 向上 / 左右各试 6 个候选位；
+       ④ 都放不下就跳过这一个（少一个名字，好过两个叠成一团）。
+     注意：地图 fit 之后 px 坐标才准确，所以调用方必须在 fit 之后调用；
+     这里传入的 x/y 是 fit 之前的 toPx 结果，因此调用点放在 fit 前后
+     都有偏差 —— 故内部再取一次 map.toPx。 */
+  function placeLabels(map, list, opt) {
+    if (!list || !list.length) return;
+    /* ⚠️ 必须等容器真正可见之后再落笔。
+       视图首次构建时（buildClaims / buildUnderwrite 由 switchTab 触发），
+       此刻 .view 刚从 display:none 切回来，容器还没完成布局；
+       fit() 用的 _vw/_vh 与屏幕实际尺寸可能不同步，
+       导致 toPx 拿到的屏幕点与真实位置差一截 —— 候选位全被判"出界"而跳过。
+       实测：首屏进理赔/承保视图 text 节点为 0（一个地名都不显示），
+             点一次左侧列表行才出现 7 个 —— 用户会以为"标注坏了"。
+       正解：等两帧（第二帧布局才稳定）再画，且画完检查"一个都没画上"时
+             再重试一次，覆盖极端时序。*/
+    var tries = 0;
+    function attempt() {
+      var n = paintLabels(map, list, opt);
+      if (n === 0 && ++tries < 3) { requestAnimationFrame(function () { requestAnimationFrame(attempt); }); }
+    }
+    requestAnimationFrame(function () { requestAnimationFrame(attempt); });
+  }
+
+  function paintLabels(map, list, opt) {
+    var drawn = 0;
+    var ord = list.slice().sort(function (a, b) {
+      return (b.pri == null ? 0 : b.pri) - (a.pri == null ? 0 : a.pri);
+    });
+    var placed = [];                 // 已占用的容器内矩形
+    var host = map.host.getBoundingClientRect();
+    var vw = map._vw || host.width, vh = map._vh || host.height;
+    function hit(b) {
+      for (var i = 0; i < placed.length; i++) {
+        var o = placed[i];
+        if (b.x < o.x + o.w && b.x + b.w > o.x && b.y < o.y + o.h && b.y + b.h > o.y) return true;
+      }
+      return false;
+    }
+    ord.forEach(function (o) {
+      /* 落位时才取屏幕坐标：调用方在 fit 之后调用，视图变换此时才最终确定 */
+      var sp = map.toPx(o.cx, o.cy);
+      var baseX = sp.x, baseY = sp.y - 13;
+      var cands = [[baseX, baseY], [baseX, baseY + 15], [baseX, baseY - 15],
+                   [baseX, baseY + 30], [baseX, baseY - 30],
+                   [baseX + 58, baseY], [baseX - 58, baseY]];
+      var done = false;
+      for (var ci = 0; ci < cands.length && !done; ci++) {
+        var el = map.pxLabel('lab', cands[ci][0], cands[ci][1], o.txt, {
+          fill: opt.fill(o.col), size: opt.size, halo: opt.halo, haloW: opt.haloW
+        });
+        if (!el) continue;
+        /* ⚠️ _pxBox 是【视口坐标】（实测：pxLabel 传 632,481 → _pxBox.left=975，
+           差值 343 恰为 host.getBoundingClientRect().left）。
+           而 toPx 返回的是【容器内】坐标 —— 两者差一个 host 原点，
+           越界判定必须统一到视口，否则会把正常标签误判成"出界"而全部跳过
+           （曾因此理赔/承保两个视图一个地名都不剩）。
+           这里把 toPx 的容器坐标加上 host 原点再与 _pxBox 对齐。*/
+        var bb = el._pxBox;
+        var box = bb
+          ? { x: bb.left - host.left, y: bb.top - host.top,
+              w: bb.right - bb.left, h: bb.bottom - bb.top }
+          : { x: cands[ci][0] - 26, y: cands[ci][1] - 8, w: 52, h: 16 };
+        /* 超出地图边界就放弃这个候选位（宁可少一个，也不放到图外） */
+        if (vw && vh && (box.x < 2 || box.y < 2 ||
+            box.x + box.w > vw - 2 || box.y + box.h > vh - 2)) {
+          try { el.remove(); } catch (e) { }
+          continue;
+        }
+        if (hit(box)) { try { el.remove(); } catch (e2) { } continue; }
+        placed.push(box);
+        /* 锚回世界坐标：横向偏移 0（候选位都在正上方/下方/左右），
+           纵向按实际落位回填，视图缩放时标签跟着乡镇走。*/
+        map.anchor(el, o.cx, o.cy, cands[ci][1] - sp.y, null, true);
+        done = true; drawn++;
+      }
+    });
+    /* 终检去重：引擎的横向让位结果事先不可知，画完再量一次真实矩形 */
+    try { if (map.dedupLabels) map.dedupLabels('lab'); } catch (e) { }
+    return drawn;
+  }
+
   function plotDetail(id) {
     var p = st.clPlots.filter(function (x) { return x.id === id; })[0];
     if (!p) return;
@@ -842,6 +1015,13 @@
     GEO.cities.forEach(function (c) { cityCent[c.n] = G.polyCentroid(c.r); });
 
     st.warnTasks = [];
+    /* 预警标签避让：先按"预警圆心 + 半径 + 标签半宽"算出各自的候选行，
+       逐个检查是否与已放置的标签相交；相交则换个方位角重试。
+       ⚠️ 原来直接画在圆环正上方，5 个预警标签里有 1 对实体重叠
+       （目检截图 zoom_wn_map.png）。这里做两件事：
+         ① 圆环与圆点照旧（它们是视觉主体，位置不能动）；
+         ② 标签单独挑一个不撞人的方位。*/
+    var wLabels = [];
     D.WARN_TASKS.forEach(function (t) {
       var cc = cityCent[t.city]; if (!cc) return;
       var colorMap = { '红色': '#f87171', '橙色': '#fb923c', '黄色': '#facc15', '蓝色': '#60a5fa' };
@@ -854,13 +1034,66 @@
       var a3 = map.pxDot('warn', p.x, p.y, 6.5, { fill: col, stroke: 'rgba(7,13,24,.9)', sw: 1.5 },
         { id: t.id, kind: 'task', title: t.type + t.level + '预警 · ' + t.city });
       var a4 = map.pxRing('warn', p.x, p.y, 13, { stroke: col, sw: 1.2, opacity: .55 });
-      var a5 = map.pxLabel('lab', p.x, p.y - R0 - 9, t.city + ' · ' + t.level, { fill: col, size: 11.5, halo: '#1c1408', haloW: 4.2 });
       map.anchor(a3, cc[0], cc[1], 0, [a1, a2, a4]);
-      map.anchor(a5, cc[0], cc[1], -(R0 + 9), null, true, 620);
+      /* 标签只登记不落笔，等 fit 之后统一避让（见下方 placeWarnLabels） */
+      wLabels.push({ cx: cc[0], cy: cc[1], r: R0, fill: col,
+        txt: t.city + ' · ' + t.level, pri: t.level === '红色' ? 2 : (t.level === '橙色' ? 1 : 0) });
       st.warnTasks.push(t);
     });
 
     map.fit(hbB);
+
+    /* 预警标签落位（fit 之后，屏幕坐标才准确）：
+       按等级排序（红→橙→黄→蓝，重要预警先占位），
+       依次尝试"正上方 / 正下方 / 右上 / 左上 / 右下 / 左下"六个方位，
+       与已放置标签相交就换下一个；六个都撞就跳过这一个。*/
+    var wPlaced = [];
+    /* 同一城市的多条预警：按城市累计圈数，标签依次往外挪整圈 */
+    var wRingN = {};
+    function wHit(b) {
+      for (var i = 0; i < wPlaced.length; i++) {
+        var o = wPlaced[i];
+        if (b.x < o.x + o.w && b.x + b.w > o.x && b.y < o.y + o.h && b.y + b.h > o.y) return true;
+      }
+      return false;
+    }
+    wLabels.sort(function (a, b) { return b.pri - a.pri; }).forEach(function (o) {
+      var sp = map.toPx(o.cx, o.cy);
+      var off = o.r + 9;
+      /* ⚠️ 同一座城市可能同时挂多条预警（实测黄冈市同时有红色洪水与橙色冰雹，
+         两个标签的圆心完全相同，默认方位也相同 → 71x11px 完全重叠，
+         屏幕上就是同一句话出现两次、糊在一起）。
+         对每个标签按"已用过的圈数"递增错开半径，
+         同一座城的第 2、3 条依次往外挪一整圈（r+58 / r+116），
+         这样既保持"标签贴着圆环"的视觉关系，又保证同城多条互不压盖。*/
+      var cityKey = o.txt.split(' · ')[0];
+      var ring = wRingN[cityKey] || 0;
+      wRingN[cityKey] = ring + 1;
+      var off2 = off + ring * 58;
+      var cands = [[sp.x, sp.y - off2, 0, -off2], [sp.x, sp.y + off2, 0, off2],
+                   [sp.x + off2 + 34, sp.y - off2, off2 + 34, -off2],
+                   [sp.x - off2 - 34, sp.y - off2, -(off2 + 34), -off2],
+                   [sp.x + off2 + 34, sp.y + off2, off2 + 34, off2],
+                   [sp.x - off2 - 34, sp.y + off2, -(off2 + 34), off2]];
+      for (var ci = 0; ci < cands.length; ci++) {
+        var c = cands[ci];
+        var el = map.pxLabel('lab', c[0], c[1], o.txt,
+          { fill: o.fill, size: 11.5, halo: '#1c1408', haloW: 4.2 });
+        if (!el) break;
+        /* _pxBox 是视口坐标，toPx 是容器坐标 —— 减掉 host 原点对齐，见 placeLabels 内注 */
+        var bb = el._pxBox;
+        var wr = map.host.getBoundingClientRect();
+        var box = bb
+          ? { x: bb.left - wr.left, y: bb.top - wr.top, w: bb.right - bb.left, h: bb.bottom - bb.top }
+          : { x: c[0] - 34, y: c[1] - 8, w: 68, h: 16 };
+        if (wHit(box)) { try { el.remove(); } catch (e) { } continue; }
+        wPlaced.push(box);
+        map.anchor(el, o.cx, o.cy, c[3], null, true, 620);
+        break;
+      }
+    });
+    /* 终检去重：同城多条预警的标签在引擎让位后仍可能叠在一起 */
+    try { if (map.dedupLabels) map.dedupLabels('lab'); } catch (e) { }
 
     // 预警卡片
     $('#wn-list').innerHTML = D.WARN_TASKS.map(function (t) {
@@ -969,7 +1202,7 @@
       { n: '查勘人力', a: '100%', b: '60%', p: 40 },
       { n: '单亩定损成本', a: '100%', b: '65%', p: 35 }
     ].map(function (r) {
-      return '<div class="hbar"><div class="hbar-n">' + r.n + '</div>' +
+      return '<div class="hbar hbar-vonly"><div class="hbar-n">' + r.n + '</div>' +
         '<div class="hbar-t"><i style="width:' + r.p + '%;background:linear-gradient(90deg,#34d399,#22d3ee)"></i></div>' +
         '<div class="hbar-v">' + r.a + '→' + r.b + '</div></div>';
     }).join('');
@@ -998,7 +1231,7 @@
       '<span style="color:var(--txt-3)">（此为阳光财险公开报道口径，用于说明风险减量业务价值）</span></div>';
 
     $('#as-dims').innerHTML = D.RISK_DIMS.map(function (d) {
-      return '<div class="hbar"><div class="hbar-n">' + d.n + '</div>' +
+      return '<div class="hbar hbar-vonly"><div class="hbar-n">' + d.n + '</div>' +
         '<div class="hbar-t"><i style="width:' + (d.w * 300).toFixed(0) + '%;background:linear-gradient(90deg,#a78bfa,#3b82f6)"></i></div>' +
         '<div class="hbar-v">' + (d.w * 100).toFixed(0) + '%</div></div>';
     }).join('') +

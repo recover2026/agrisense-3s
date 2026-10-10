@@ -484,6 +484,14 @@
   }
 function pxRing(I, l, x, y, r, st) { return I && I.svg && I.svg.pxRing(l, x, y, r, st); }
   function pxLabel(I, l, x, y, t, st, m) { return I && I.svg && I.svg.pxLabel(l, x, y, t, st, m); }
+  /* 标注终检去重（见 geo-engine 的 dedupLabels）。
+     各视图画完标注后调一次：引擎的 _avoidLabels 是"边画边让"，
+     让位有距离上限、也受视口约束，密集区仍会有少量标签最终叠在一起。
+     画完后用真实屏幕矩形扫一遍，移出相交的那些 ——
+     宁可少一个名字，也不能两个叠在一起。
+     ⚠️ 必须延后调用（setTimeout），此刻元素才完成布局、
+        getBoundingClientRect 才是真值。*/
+  function dedupLabels(I, l) { return I && I.svg ? I.svg.dedupLabels(l) : null; }
   function anchor(I, el, wx, wy, dy, sib, opt, minW) { return I && I.svg && I.svg.anchor(el, wx, wy, dy, sib, opt, minW); }
   function clearBIZ(I) { if (I && I.svg) I.svg.clear('biz'); }
   function clearLayer(I, n) { if (I && I.svg) I.svg.clear(n); }
@@ -589,6 +597,7 @@ function pxRing(I, l, x, y, r, st) { return I && I.svg && I.svg.pxRing(l, x, y, 
 
   window.DualMap = {
     init: init, area: area, pxDot: pxDot, pxRing: pxRing, leader: pxLeader, pxLabel: pxLabel,
+    dedupLabels: dedupLabels,
     anchor: anchor, clearBIZ: clearBIZ, clearLayer: clearLayer,
     fit: fit, fitLL: fitLL, resize: resize, toPx: toPx, toggleBase: toggleBase,
     syncToSat: svgToSat,
