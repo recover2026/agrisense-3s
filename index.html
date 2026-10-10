@@ -136,7 +136,11 @@
           <div class="nat-meta"><span class="nat-scope" id="nat-scope">全国</span> · <span class="engine-ok" id="nat-engine">加载中…</span></div>
           <div class="nat-crumb" id="nat-crumb"></div>
         </div>
-        <button class="nat-raster-toggle" id="nat-raster-toggle" title="切换遥感影像 / 纯矢量"><i>◐</i><span>影像</span></button>
+        <!--底图切换已移入左侧「遥感专题图层面板」→ 底图与地理要素 → 卫星影像底图。
+             原来这里有个独立的「◐ 影像」单选按钮，与新面板的开关功能重复
+             且各自改不同的状态变量（它改 N.rasterOn，面板改 N.showBase），
+             点一个另一个不知道 —— 用户反馈"地理图和影像只有一个能选"。
+             现统一由图层面板一处控制，底图与专题都能独立开关、可叠加。-->
 
         <!-- 点选入口：香港/澳门/厦门/济源/苏州 等面积极小的区域不显示文字，
              但仍需能进入。点此按钮从列表直接下钻。 -->

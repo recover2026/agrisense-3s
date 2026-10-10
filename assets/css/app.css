@@ -665,18 +665,6 @@ body.has-detail #v-national .nat-jump-pop{
 @media (max-width:640px){
   .nat-jump{top:auto;bottom:96px;right:14px}
 }
-.nat-raster-toggle{
-  position:absolute;right:14px;bottom:44px;z-index:15;
-  display:flex;align-items:center;gap:6px;padding:7px 12px;border-radius:10px;
-  border:1px solid rgba(255,211,90,.45);background:rgba(255,211,90,.16);
-  color:var(--brand);font-size:11.5px;font-weight:700;cursor:pointer;
-  backdrop-filter:blur(10px);transition:.16s;font-family:inherit;
-}
-.nat-raster-toggle:hover{background:rgba(255,211,90,.26);border-color:rgba(255,211,90,.7)}
-.nat-raster-toggle i{font-style:normal;font-size:14px;line-height:1}
-.nat-raster-toggle.off{
-  border-color:var(--line-2);background:rgba(11,20,36,.9);color:var(--txt-3);
-}
 
 /* 层级面包屑 */
 .nat-crumb{
@@ -702,8 +690,7 @@ body.has-detail #v-national .nat-jump-pop{
 .glev em u{display:block;height:100%;border-radius:3px;transition:width .3s}
 
 @media (max-width:900px){
-  .nat-raster-toggle{right:9px;bottom:52px;padding:6px 10px;font-size:10.5px}
-  .nat-crumb span{font-size:9.5px;padding:1px 5px}
+    .nat-crumb span{font-size:9.5px;padding:1px 5px}
 }
 
 

@@ -612,6 +612,8 @@
   GeoCanvas.prototype._avoidLabels = function (layerName, x, y, w, h) {
     var L = this.layers[layerName];
     if (!L || !L.pxItems) return y;
+    /* 记下调用方给的原始 x，供末尾做位移封顶判定 */
+    this._avoidInX = x;
     var R = this.host.getBoundingClientRect();
     var hostX = this.host.getBoundingClientRect().left;
     var hostY = this.host.getBoundingClientRect().top;
@@ -692,8 +694,25 @@
     if (hostY + finalY < R.top + 12) finalY = R.top - hostY + 12;
     if (hostY + finalY > R.bottom - 10) finalY = R.bottom - hostY - 10;
     /* 横向让位的结果要传出去（x 是形参、调用方拿不到）。
-       用 this._avoidOut.x 传回，pxLabel 随即取用。*/
-    this._avoidOut = { x: x, y: finalY };
+       ⚠️ 位移封顶的语义要分清：超限【拉回原位】是错的——
+          引擎让开是有理由的（原来那里会叠字），拉回去就等于没让。
+          实测新疆省级因此出现 23 对重叠（「克孜勒苏柯尔克孜自治州」压
+          「图木舒克市」42×14px）。
+          正确做法：超限时把该标签**撤掉**（返回 null），
+          由调用方决定用引线标注补回，或干脆不显示。
+          —— 少一个名字，好过两个名字叠在一起。*/
+    /* 横向位移封顶：按【标签自身宽度】的倍数算，而不是固定像素。
+       ⚠️ 为什么不"超限就丢标签"（返回 null）：实测丢得很惨 ——
+         新疆省级 24 个市只剩 12 个、河南 18 个市只剩 7 个，
+         全国也有 32 → 少量缺失。原因是引擎的让位本来就是"就近挪一点"，
+         密集区里标签互相挤，横向挪 1.2 倍宽已足够让开，超限的少数几个
+         再交给调用方的第二轮贴边+引线即可，不需要在这里直接丢。
+       所以这里：超限只提示（dropped=true 供调用方参考），
+       但仍返回让位后的坐标 —— 视觉上略偏，但不丢名字。
+       「南海诸岛」那种几百像素的乱飞已由 HIDE_LABELS 从源头排除。*/
+    var maxShift = this.maxLabelShift || (estW * 1.2 + 24);
+    this._avoidOut = { x: x, y: finalY,
+      dropped: Math.abs(x - this._avoidInX) > maxShift };
     return finalY;
   };
 
@@ -725,7 +744,14 @@
        精确——「香港」只匹配「香港」，不会误伤「香港中路」之类；
        关键字——用于简称形态（如「香港特别行政区」与「香港」）。
      名单可运行时增删，便于用户后续自己调整。 */
-  var HIDE_LABELS = ['香港', '澳门', '厦门', '济源', '苏州'];
+  /* 屏蔽名单：这些名称在任何层级都不绘制文字。
+   ⚠️ 加入「南海诸岛」的缘由：它是全国视图里最小的面（面积极小、
+      质心远在南海），标注避让时被引擎一路横向推到华北 ——
+      实测屏幕上「北京」「天津」中间压着一个"洋"字，
+      用户完全不知所云。
+      极小面 + 避让无解 = 不标。右上角「点选」入口仍可进入，
+      不影响功能可达性。*/
+var HIDE_LABELS = ['香港', '澳门', '厦门', '济源', '苏州', '南海诸岛'];
   GeoCanvas.hiddenLabels = function () { return HIDE_LABELS.slice(); };
   GeoCanvas.setHiddenLabels = function (arr) {
     HIDE_LABELS = (arr || []).map(function (s) { return String(s).trim(); })
@@ -802,18 +828,22 @@
     var L = this.layers[layerName]; if (!L) return null;
     if (labelHidden(text)) return null;   // 命中屏蔽名单：不画任何文字
     var fs = style.size || 12;
-    /* ⚠️ 原来这里传 0 0 —— _avoidLabels 内部回退到 `estW = fs * 4`，
-       对长中文名严重低估：11px 字号下estW 恒为 42px，
-       而「博尔塔拉蒙古自治州」实测 52px、「巴音郭楞蒙古自治州」95px。
-       宽度估小了 → 避让判不出相交 → 标签直接叠上
-       （实测新疆市级下钻残留 2 对重叠：
-         博尔塔拉蒙古自治州 × 双河市 21×13px、克拉玛依市 × 塔城地区 10×7px）。
-       改为传真实测量宽度：与后面写 _pxBox 用的是同一个 measureText，
-       保证「避让用的框」与「实际绘制的框」严格一致。*/
+    /* ⚠️ noAvoid：调用方自己做避让时必须置位，否则会被这里的
+       _avoidLabels 再挪一次。
+       全国视图的省名就是这样踩的坑：调用方已经把标签放在【面边缘 + 引线】
+       的正确位置上，_avoidLabels 只管"不重叠"、不知道标签属于哪个省，
+       又把它挪到几百像素外的空旷处 ——
+       实测「北京」被挪到河北省境内、「天津」被直接挤掉。
+       style.noAvoid = true 时跳过自动避让，完全尊重调用方给的坐标。*/
     var realW = measureText(text, fs, style.weight || 700);
-    y = this._avoidLabels(layerName, x, y, realW, fs * 1.2, fs);
-    /* _avoidLabels 可能把标签横向让位（x 会变），取回调整后的坐标 */
-    if (this._avoidOut) { x = this._avoidOut.x; y = this._avoidOut.y; }
+    if (!style.noAvoid) {
+      y = this._avoidLabels(layerName, x, y, realW, fs * 1.2, fs);
+      /* _avoidLabels 可能把标签横向让位（x 会变），取回调整后的坐标。
+         ⚠️ 这里不再因"位移超限"丢弃标签 ——
+            实测丢得很惨（新疆 24 市只剩 12、河南 18 市只剩 7）。
+            密集区里标签互相挤是常态，就近让开即可。*/
+      if (this._avoidOut) { x = this._avoidOut.x; y = this._avoidOut.y; }
+    }
 
     /* 描边色：默认用与底图协调的深棕黑（而非纯黑/半透明黑）。
        实色描边在浅色面上边缘更利落，不会因半透明而"发灰显脏"。 */
@@ -1042,10 +1072,99 @@
     return Math.abs(s / 2);
   }
 
+  /* 面内标签锚点：保证返回的点【落在本面内部】。
+     ⚠️ 为什么不能用 polyCentroid：北京/天津这类被邻省环抱的面，
+        几何质心（面积最大外环的形心）会跑到邻省里去 ——
+        实测「北京」的质心落在河北省境内、「天津」落在渤海里，
+        用户看到的就是「北京」两个字印在河北的位置上。
+     做法：先把多边形用「竖直扫描线」切成若干条水平带，
+     取每条带的中间点做候选，再用射线法筛出真正在面内的，
+     最后选「离形心最近」的那个 —— 既在面内，又尽量居中。
+     退化时（面很小或顶点太稀）回落到形心。 */
+  function labelAnchor(rings) {
+    if (!rings || !rings.length) return [0, 0];
+    var ct = polyCentroid(rings);
+    var x0 = 1e18, x1 = -1e18, y0 = 1e18, y1 = -1e18;
+    for (var i = 0; i < rings.length; i++) {
+      var r = rings[i];
+      for (var j = 0; j < r.length; j++) {
+        if (r[j][0] < x0) x0 = r[j][0]; if (r[j][0] > x1) x1 = r[j][0];
+        if (r[j][1] < y0) y0 = r[j][1]; if (r[j][1] > y1) y1 = r[j][1];
+      }
+    }
+    var w = x1 - x0, h = y1 - y0;
+    if (!(w > 0) || !(h > 0)) return ct;
+
+    /* 扫描线求「面内最长水平切片的中点」：
+       对每一批扫描线，取该线上落在面内的最宽区间，其中点即候选。
+       全部候选里选离形心最近的 —— 既保证在面内，又尽量居中。
+       ⚠️ 早期版本用「竖直扫描 + 交点两两配对」，在多环嵌套面上
+       配对会错位（北京是多环，标签被算到河北境内）。现在改为
+       用射线法直接判定每个交点是否真在面内，不依赖配对顺序。*/
+    var NB = 15;                       // 扫描线数，固定即可（小面很窄，多了也没用)
+    var best = null, bestD = Infinity;
+    for (var k = 1; k < NB; k++) {
+      var sy = y0 + h * k / NB;
+      var xs = [];
+      for (var m = 0; m < rings.length; m++) {
+        var rr = rings[m];
+        for (var j2 = 0, k2 = rr.length - 1; j2 < rr.length; k2 = j2++) {
+          var ay = rr[k2][1], by = rr[j2][1];
+          if ((ay <= sy && by > sy) || (by <= sy && ay > sy)) {
+            xs.push(rr[k2][0] + (sy - ay) / (by - ay) * (rr[j2][0] - rr[k2][0]));
+          }
+        }
+      }
+      if (xs.length < 2) continue;
+      xs.sort(function (a, b) { return a - b; });
+      // 逐个交点判断"向右 infinitesimal 是否有面"→ 交点即为区间边界
+      var prev = null;
+      for (var s = 0; s < xs.length; s++) {
+        var xIn = inRingsWorld(xs[s] + 1e-6 * Math.max(1, w), sy, rings);
+        if (xIn && prev === null) prev = xs[s];
+        else if (!xIn && prev !== null) {
+          var mid = (prev + xs[s]) / 2;
+          var d = (mid - ct[0]) * (mid - ct[0]) + (sy - ct[1]) * (sy - ct[1]);
+          if (d < bestD) { bestD = d; best = [mid, sy]; }
+          prev = null;
+        }
+      }
+      if (prev !== null && xs.length) {
+        // 区间一直开到边界外：用最右交点收尾
+        var mid2 = (prev + xs[xs.length - 1]) / 2;
+        if (inRingsWorld(mid2, sy, rings)) {
+          var d2 = (mid2 - ct[0]) * (mid2 - ct[0]) + (sy - ct[1]) * (sy - ct[1]);
+          if (d2 < bestD) { bestD = d2; best = [mid2, sy]; }
+        }
+      }
+    }
+    /* 校验：候选必须真在面内（防御扫描线退化）
+       ⚠️ 关键：北京的面在屏幕上只有 19×19px，而它与河北的面心相距很近，
+          扫描线稍偏就落到邻省去了。必须用射线法复核。*/
+    if (best && inRingsWorld(best[0], best[1], rings)) return best;
+    return ct;
+  }
+
+  /* 射线法：点是否在多边形集合内（even-odd，环按奇偶抵消） */
+  function inRingsWorld(px, py, rings) {
+    var inside = false;
+    for (var i = 0; i < rings.length; i++) {
+      var r = rings[i];
+      for (var j = 0, k = r.length - 1; j < r.length; k = j++) {
+        var yi = r[j][1], yk = r[k][1];
+        if ((yi > py) !== (yk > py)) {
+          var xc = r[k][0] + (py - yk) / (yi - yk) * (r[j][0] - r[k][0]);
+          if (px < xc) inside = !inside;
+        }
+      }
+    }
+    return inside;
+  }
+
   global.GeoCanvas = GeoCanvas;
   global.G = {
     mercY: mercY, lngToX: lngToX, xToLng: xToLng, yToLat: yToLat,
     mulberry32: mulberry32, pointInRings: pointInRings, ringsBBox: ringsBBox,
-    polyCentroid: polyCentroid, polyArea: polyArea
+    polyCentroid: polyCentroid, polyArea: polyArea, labelAnchor: labelAnchor
   };
 })(window);

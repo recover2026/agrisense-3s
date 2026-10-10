@@ -1229,7 +1229,7 @@ var N = {
       setTitle(name + ' · ' + ((NAT.LAYERS[N.activeLayer] || {}).name || '遥感专题'));
       $('#nat-scope').textContent = (pv ? pv.n + ' / ' : '') + (cityObj ? cityObj.n + ' / ' : '') + name;
 
-      var kct = G.polyCentroid(kr);
+      var kct = G.labelAnchor(kr);
       // 标注放在县域偏上 30% 处，避开底部比例尺/提示条（实测踩过）
       var kh = kb2[3] - kb2[1];
       var ly = kb2[1] + kh * 0.3;
@@ -1374,7 +1374,7 @@ var N = {
       var GAP = st._vw > 1200 ? 58 : 48;
       tf.t.forEach(function (o, i) {
         var rings = tw[i]; if (!rings || !rings.length) return;
-        var ct = G.polyCentroid(rings);
+        var ct = G.labelAnchor(rings);
         var px = st.toPx(ct[0], ct[1]);
         if (px.x < 30 || px.x > st._vw - 30 || px.y < 24 || px.y > st._vh - 24) return;
         /* ⚠️ 原先用「质心附近有标签就整项丢弃」的避让（GAP/48/46 px），
@@ -1460,7 +1460,7 @@ var N = {
     setTitle(o.n + ' · ' + ((NAT.LAYERS[N.activeLayer] || {}).name || '遥感专题'));
     $('#nat-scope').textContent = (pv ? pv.n + ' / ' : '') + (cityObj ? cityObj.n + ' / ' : '') + k.n + ' / ' + o.n;
 
-    var ct = G.polyCentroid(rings);
+    var ct = G.labelAnchor(rings);
     var th = bx[3] - bx[1];
     renderRaster({
       layer: N.activeLayer, rings: rings, code: cc + '-' + o.n,
@@ -1563,7 +1563,7 @@ var N = {
     $('#nat-scope').textContent = (pv ? pv.n + ' / ' : '') + (cityObj ? cityObj.n + ' / ' : '')
       + k.n + ' / ' + townName + ' / ' + vo.n;
 
-    var ct = G.polyCentroid(rings);
+    var ct = G.labelAnchor(rings);
     var vh = bx[3] - bx[1];
     renderRaster({
       layer: N.activeLayer, rings: rings, code: cc + '-' + vo.c,
@@ -1592,7 +1592,7 @@ var N = {
     // 县面可能来自 CF（乡镇数据聚合），此时 k 没有 r/b，必须走 countyRings 统一入口
     var rings = countyRings(k.c != null ? k.c : N.curCounty);
     if (!rings) return;
-    var ct = G.polyCentroid(rings);
+    var ct = G.labelAnchor(rings);
     var px = st.toPx(ct[0], ct[1]);
     var el = DM.pxLabel(MI, 'lab', px.x, px.y - 22, k.n,
       { fill: '#fff', size: 16, halo: '#1c1408', weight: 800 });
@@ -1622,7 +1622,7 @@ var N = {
     var b = abox(cityObj);
     if (b) DM.fit(MI, b);
     if (st && st._vw > 620) {
-      var ct = G.polyCentroid(rings);
+      var ct = G.labelAnchor(rings);
       var px = st.toPx(ct[0], ct[1]);
       var el = DM.pxLabel(MI, 'lab', px.x, px.y, cityObj.n + ' · 加载中',
         { fill: '#fff', size: 13, halo: '#1c1408', weight: 800 });
@@ -1795,7 +1795,7 @@ var N = {
         stroke: EDGE.town.c, strokeWidth: 1.2
       });
       if (st && st._vw > 620) {
-        var ct = G.polyCentroid(rings);
+        var ct = G.labelAnchor(rings);
         var px = st.toPx(ct[0], ct[1]);
         /* ⚠️ 原先用「质心附近有标签就整项丢弃」的避让（GAP/48/46 px），
          密集区会成片丢名字（实测河南县级 19 面只标 4 个、重叠 5 对）。
@@ -1858,7 +1858,7 @@ var N = {
         fill: 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',.62)',
         stroke: EDGE.vill.c, strokeWidth: 1.05
       });
-      var ct = G.polyCentroid(f.rings);
+      var ct = G.labelAnchor(f.rings);
       if (st && st._vw > 620) {
         var px = st.toPx(ct[0], ct[1]);
         /* ⚠️ 原先用「质心附近有标签就整项丢弃」的避让（GAP/48/46 px），
@@ -1904,7 +1904,7 @@ var N = {
       fill: 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',.62)',
       stroke: EDGE.county.c, strokeWidth: 1.4
     });
-    var ct = G.polyCentroid(abs(cityObj));
+    var ct = G.labelAnchor(abs(cityObj));
     var px = st.toPx(ct[0], ct[1]);
     var el = DM.pxLabel(MI, 'lab', px.x, px.y, cityObj.n, { fill: '#fff', size: 14, halo: '#1c1408', weight: 800 });
     if (el) DM.anchor(MI, el, ct[0], ct[1]);
@@ -1944,7 +1944,7 @@ var N = {
         stroke: EDGE.town.c, strokeWidth: 1.2
       });
       if (st && st._vw > 620) {
-        var ct = G.polyCentroid(absKB(k));
+        var ct = G.labelAnchor(absKB(k));
         var px = st.toPx(ct[0], ct[1]);
         /* ⚠️ 原先用「质心附近有标签就整项丢弃」的避让（GAP/48/46 px），
          密集区会成片丢名字（实测河南县级 19 面只标 4 个、重叠 5 对）。
@@ -1960,13 +1960,13 @@ var N = {
       bbox = bbox ? [Math.min(bbox[0], b[0]), Math.min(bbox[1], b[1]), Math.max(bbox[2], b[2]), Math.max(bbox[3], b[3])] : b;
     });
 
-    var ct2 = G.polyCentroid(abs(cityObj));
+    var ct2 = G.labelAnchor(abs(cityObj));
     setTitle(pv.n + ' / ' + cityObj.n + ' · ' + codes.length + ' 个县区遥感分布');
     var ovLabels = [];
     codes.forEach(function (c) {
       var k = KB[c]; if (!k) return;
       var kr = absKB(k);
-      var ctr = G.polyCentroid(kr);
+      var ctr = G.labelAnchor(kr);
       var yb = 1e12, yt = -1e12;
       kr.forEach(function (rg) {
         rg.forEach(function (q) { if (q[1] < yb) yb = q[1]; if (q[1] > yt) yt = q[1]; });
@@ -2522,53 +2522,158 @@ var N = {
        现改为【矩形真实相交】判定；重叠时把标签拉到旁边并画引线，
        这是地图标注的标准做法（callout label）。 */
     if (st && st._vw > 620) {
+      /* 省名标注：面积优先 +【矩形真实相交】避让 + 引线标注。
+         ⚠️ 三轮迭代才对，记录踩过的坑：
+         ① 最初用固定 56px 圆距：北京与河北质心仅 10px、香港与澳门 8px，
+            固定阈值根本挡不住。
+         ② 改矩形相交后仍漏：判据写成
+            `Math.abs(o[0]-px.x) < half + o[2] && Math.abs(o[1]-px.y) < ht*2+3`
+            —— 只比【水平距离】就短路了。竖直方向相邻的两个标签
+            （水平差 39px、垂直差 30px）会直接绕过判定叠上，
+            实测「北京」@731,249 与「天津」@780,219 中心距 49px 但字形粘连，
+            「河北」更惨——挤在中间两个都放不下，第二轮又找不到空位，
+            最终回落到原质心，于是三个标签糊成一团（用户截图实况）。
+         ③ 第二轮找不到位时的兜底 `ok = {原质心}` 是错的：
+            找不到位置就不该画，硬画必然重叠。
+            现在改为：放宽搜索半径；仍找不到就让位给引擎的横向避让；
+            实在无处可放才放弃该标签（一个省名不显示，好过三个叠成一团）。
+         判据统一用 pxLabel 自己算的 _pxBox（屏幕矩形，含描边余量），
+         不再用字数估算 —— 估算偏小是②的直接原因。*/
       var placed = [];
-      var shortList = GP.provinces.slice().sort(function (a, b) { return (b.w * b.h) - (a.w * a.h); });
-      /* 第一轮：正常标注，重叠的记下来 */
-      var crowded = [];
-      shortList.forEach(function (p) {
-        var nm = shortName(p.n);
-        var estW = nm.length * 11 + 2;
-        var ct = G.polyCentroid(abs(p));
-        var px = st.toPx(ct[0], ct[1]);
-        var half = estW / 2 + 2, ht = 9;
-        var hit = false;
+      /* 碰撞判定：两个标签的真实矩形（含描边）是否相交 */
+      function hitRect(x, y, halfW, hh) {
         for (var i = 0; i < placed.length; i++) {
           var o = placed[i];
-          if (Math.abs(o[0] - px.x) < half + o[2] && Math.abs(o[1] - px.y) < ht * 2 + 3) { hit = true; break; }
+          if (Math.abs(o[0] - x) < halfW + o[2] &&
+              Math.abs(o[1] - y) < hh + o[3]) return true;
         }
-        if (hit) { crowded.push({ p: p, ct: ct, px: px, w: estW }); return; }
-        placed.push([px.x, px.y, half]);
-        var el = DM.pxLabel(MI, 'lab', px.x, px.y, nm, { fill: '#fff', size: 11, halo: '#1c1408' });
-        if (el) DM.anchor(MI, el, ct[0], ct[1], 0, null, true, 620);
-      });
-      /* 第二轮：拥挤者按上下左右四个方向找空位，用引线连回原质心 */
-      var DIRS = [[0, -1], [0, 1], [1, 0], [-1, 0], [1, -1], [-1, 1], [1, 1], [-1, -1]];
-      crowded.forEach(function (c) {
-        var half2 = c.w / 2 + 2, ok = null;
-        for (var ring = 1; ring <= 5 && !ok; ring++) {
-          for (var di = 0; di < DIRS.length && !ok; di++) {
-            var nx = c.px.x + DIRS[di][0] * (26 + ring * 15);
-            var ny = c.px.y + DIRS[di][1] * (26 + ring * 15);
-            if (nx < 30 || nx > st._vw - 30 || ny < 16 || ny > st._vh - 16) continue;
-            var bad = false;
-            for (var j = 0; j < placed.length; j++) {
-              var o2 = placed[j];
-              if (Math.abs(o2[0] - nx) < o2[2] + half2 && Math.abs(o2[1] - ny) < 21) { bad = true; break; }
-            }
-            if (!bad) ok = { x: nx, y: ny };
+        return false;
+      }
+      /* 引线不许穿过已有标签 */
+      function segHit(x1, y1, x2, y2) {
+        for (var i = 0; i < placed.length; i++) {
+          var o = placed[i];
+          var ox1 = o[0] - o[2], ox2 = o[0] + o[2];
+          var oy1 = o[1] - o[3], oy2 = o[1] + o[3];
+          for (var t = 0; t <= 6; t++) {
+            var px = x1 + (x2 - x1) * t / 6, py = y1 + (y2 - y1) * t / 6;
+            if (px >= ox1 && px <= ox2 && py >= oy1 && py <= oy2) return true;
           }
         }
-        if (!ok) ok = { x: c.px.x, y: c.px.y };
-        placed.push([ok.x, ok.y, half2]);
-        /* 引线：从标签位置回到该省质心 */
-        try {
-          DM.leader(MI, 'lab', ok.x, ok.y, c.px.x, c.px.y,
-            { stroke: 'rgba(255,255,255,.5)', sw: 1 });
-        } catch (e) { }
-        var el2 = DM.pxLabel(MI, 'lab', ok.x, ok.y, shortName(c.p.n),
+        return false;
+      }
+      /* 先算出所有标签的真实矩形（pxLabel 之前就要知道有多宽） */
+      var estHH = 8;                     // 11px 字号的半高 + 描边余量
+      var shortList = GP.provinces.slice().sort(function (a, b) { return (b.w * b.h) - (a.w * a.h); });
+      var queue = shortList.map(function (p) {
+        var nm = shortName(p.n);
+        var ct = G.labelAnchor(abs(p));
+        var px = st.toPx(ct[0], ct[1]);
+        // 用引擎的 measureText 同源逻辑估算：11px 中文约 11px/字
+        return { p: p, nm: nm, ct: ct, px: px, half: nm.length * 5.5 + 4 };   /* 11px 中文字宽≈11px，+描边余量 */
+      });
+
+      /* 第一轮：面内锚点直接标，撞的或引擎让不开的进第二轮。
+         引擎的 _avoidLabels 仍然生效（它按真实文字宽度做横+纵让位），
+         但它【只管不重叠、不知道标签属于哪个省】，所以：
+           · 登记占用必须用标签画完后的【真实矩形】_pxBox，
+             否则 placed 里是请求坐标、与实际落点不一致，后续标签会判错；
+           · 引擎让位距离超限时它返回 null（不是拉回原位），
+             这类交给第二轮的"贴面边缘 + 引线"处理。*/
+      var crowded = [];
+      var hostBox = MI.host.getBoundingClientRect();
+      queue.forEach(function (o) {
+        if (hitRect(o.px.x, o.px.y, o.half, estHH)) { crowded.push(o); return; }
+        var el = DM.pxLabel(MI, 'lab', o.px.x, o.px.y, o.nm,
           { fill: '#fff', size: 11, halo: '#1c1408' });
-        if (el2) DM.anchor(MI, el2, c.ct[0], c.ct[1], 0, null, true, 620);
+        if (el) {
+          /* 用标签的【真实矩形】登记占用（引擎可能做了横向/纵向让位），
+             否则 placed 里存的是请求坐标，与实际落点不一致 ——
+             后续标签会拿一个错的占用去避让，判不出相交就叠上。*/
+          var eb = el._pxBox;
+          var ex = eb ? (eb.left + eb.right) / 2 - hostBox.left : o.px.x;
+          var ey = eb ? (eb.top + eb.bottom) / 2 - hostBox.top : o.px.y;
+          var ew = eb ? (eb.right - eb.left) / 2 + 3 : o.half;
+          placed.push([ex, ey, ew, estHH]);
+          DM.anchor(MI, el, o.ct[0], o.ct[1], 0, null, true, 620);
+        } else {
+          /* 引擎判定"无处可去"（让位距离超限）→ 交给第二轮的引线标注。
+             引擎返回 null 而不是拉回原位，因为拉回去必然叠字。*/
+          crowded.push(o);
+        }
+      });
+
+      /* 第二轮：拥挤者往四周找空位，找不到就不画（宁可少一个名字，不可叠成一团） */
+      var DIRS = [[0, -1], [0, 1], [1, 0], [-1, 0], [1, -1], [-1, 1], [1, 1], [-1, -1]];
+      crowded.forEach(function (c) {
+        var ok = null;
+        for (var ring = 1; ring <= 9 && !ok; ring++) {
+          for (var di = 0; di < DIRS.length && !ok; di++) {
+            var nx = c.px.x + DIRS[di][0] * (24 + ring * 14);
+            var ny = c.px.y + DIRS[di][1] * (24 + ring * 14);
+            if (nx < 34 || nx > st._vw - 34 || ny < 18 || ny > st._vh - 18) continue;
+            if (hitRect(nx, ny, c.half, estHH)) continue;
+            if (segHit(c.px.x, c.px.y, nx, ny)) continue;
+            ok = { x: nx, y: ny };
+          }
+        }
+        /*⚠️ 原来这里兜底 `if (!ok) ok = {原质心}` —— 找不到位置还硬画，
+          正是「北京/天津/河北」三个标签糊成一团的直接原因。
+          现在找不到就跳过该省名；同时把它交给引擎的横向避让再试一次，
+          引擎会把它推到真正空旷的位置。*/
+        /*⚠️ 三级降级策略，优先级从高到低：
+             ① 引擎横向避让（引擎会挪到真正空旷处）
+             ② 挪不动 → 用引线标注拉到质心正上方/正下方等8 个方位，
+                允许标签【轻微出框】（地图标注的标准做法：callout）
+             ③ 真的找不到 → 放弃该省名
+          之前只有 ①③ 两级，中间那级缺失 ——
+          北京/天津/河北三面质心彼此仅 30~40px，引擎一让就超68px 上限，
+          于是直接放弃，「北京」这个重要地名就消失了。
+          加了 ② 之后既能显示、又不会叠字。*/
+        if (!ok) {
+          /*───────────────────────────────────────────────────────
+             ② 贴面边缘 + 引线（本级真正的正解）
+             ⚠️ 关键约束（实测得出）：全国视图里直辖市/小省的面在屏幕上
+                极小 —— 北京 19×19px、天津 12×20px、上海 11×13px，
+                而「北京」两个字本身就有 22px 宽。**标签比要标注的面还大**，
+                物理上不可能塞进面内。
+                所以「往空旷处躲」的方向本身就是错的：空旷处往往在
+                几百像素外，标签飘那么远等于指错地方
+                （实测「南海诸岛」被推到华北、「北京」被推到河北境内）。
+             正解：标签放在【面边缘外侧一点】、引线连回面中心 ——
+                地图制图的标准做法（callout）。距离封顶 64px，
+                再远读者就认不出对应关系了。
+             ────────────────────────────────────────────────────────*/
+          var moved = false;
+          for (var r2 = 1; r2 <= 12 && !moved; r2++) {
+            var step2 = 11 + r2 * 5;          // 16,21,26,...71
+            if (step2 > 64) break;
+            for (var d2 = 0; d2 < DIRS.length && !moved; d2++) {
+              var tx2 = c.px.x + DIRS[d2][0] * step2;
+              var ty2 = c.px.y + DIRS[d2][1] * step2;
+              if (tx2 < 30 || tx2 > st._vw - 30 || ty2 < 16 || ty2 > st._vh - 16) continue;
+              if (hitRect(tx2, ty2, c.half, estHH)) continue;
+              /* 引线穿过其他标签只是"视觉上有点乱"，
+                 远不如"标签压在别的省名上"严重 —— 放宽为不阻断：
+                 只在引线起点附近（1/3 处）检查一次。*/
+              if (segHit(c.px.x, c.px.y,
+                  c.px.x + (tx2 - c.px.x) / 3, c.px.y + (ty2 - c.px.y) / 3)) continue;
+              ok = { x: tx2, y: ty2 }; moved = true;
+            }
+          }
+        }
+        if (ok) {
+          placed.push([ok.x, ok.y, c.half, estHH]);
+          var el2 = DM.pxLabel(MI, 'lab', ok.x, ok.y, c.nm,
+            { fill: '#fff', size: 11, halo: '#1c1408' });
+          /* anchor 会自动画引线（引擎在 _syncPx 里处理，缩放同步重算） */
+          if (el2) DM.anchor(MI, el2, c.ct[0], c.ct[1], 0, null, true, 620);
+          return;
+        }
+        /* 真的无处可放：撤掉该标签，宁可少一个名字，不可叠成一团。
+           原先的兜底是 `ok = {原质心}` 硬画，正是「北京/天津/河北」
+           三个标签糊成一团的直接原因。*/
+        return;
       });
     }
 
@@ -2855,7 +2960,7 @@ var N = {
         stroke: EDGE.city.c, strokeWidth: 1.1
       });
       if (st && st._vw > 620) {
-        var ct = G.polyCentroid(f.rings);
+        var ct = G.labelAnchor(f.rings);
         var px = st.toPx(ct[0], ct[1]);
         /* ⚠️ 原先用「质心附近有标签就整项丢弃」的避让（46px），
            密集区会成片丢名字。现改为【一个都不丢】——
@@ -2911,7 +3016,7 @@ var N = {
       fill: 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',.58)',
       stroke: EDGE.prov.c, strokeWidth: 1.8
     });
-    var ct = G.polyCentroid(abs(pv));
+    var ct = G.labelAnchor(abs(pv));
     if (st && st._vw > 620) {
       var px = st.toPx(ct[0], ct[1]);
       var el = DM.pxLabel(MI, 'lab', px.x, px.y, shortName(pv.n), { fill: '#fff', size: 13, halo: '#1c1408' });
@@ -2920,7 +3025,7 @@ var N = {
     // 灾点圈已挪到 DM.fit 之后绘制（toPx 需要新变换）
     DM.fit(MI, abox(pv));
     drawDisasterCircles();   // 必须在 fit 之后：否则 toPx 用的还是上一级变换
-    var pct2 = G.polyCentroid(abs(pv));
+    var pct2 = G.labelAnchor(abs(pv));
     renderRaster({
       layer: N.activeLayer, rings: abs(pv), code: pv.c, pixelM: 700, alpha: .46,
       onStats: paintGrowthPanel,
@@ -2950,7 +3055,7 @@ var N = {
          长名优先拿到内圈最好的位置，短名（小市）自然被推到外圈，
          再放不下的才用引线 —— 这样重叠与漏标能同时压到最低。*/
     var labQueue = (st && st._vw > 620) ? list.map(function (c) {
-      var ct = G.polyCentroid(abs(c));
+      var ct = G.labelAnchor(abs(c));
       return { name: c.n, ct: ct, cpx: st.toPx(ct[0], ct[1]) };
     }).filter(function (o) {
       return o.cpx.x > -60 && o.cpx.x < st._vw + 60 &&
@@ -2976,7 +3081,7 @@ var N = {
           measureText 宽度，并补上【横向让位】（原来只调 Y，
           同高相邻的标签怎么纵向让都躲不开）。*/
     var labQueue = (st && st._vw > 620) ? list.map(function (c) {
-      var ct = G.polyCentroid(abs(c));
+      var ct = G.labelAnchor(abs(c));
       return { name: c.n, ct: ct, px: st.toPx(ct[0], ct[1]) };
     }).filter(function (o) {
       return o.px.x > -60 && o.px.x < st._vw + 60 &&
@@ -3362,7 +3467,7 @@ var N = {
     var v = NAT.topicValue(N.activeLayer, c.c);
     var L = NAT.LAYERS[N.activeLayer];
     var d = NAT.disasterField(pcode);
-    var ct = G.polyCentroid(abs(c));
+    var ct = G.labelAnchor(abs(c));
     var html =
       '<div class="kv"><span>城市</span><b>' + c.n + '</b></div>' +
       '<div class="kv"><span>所属省份</span><b>' + (pv ? pv.n : pcode) + '</b></div>' +
