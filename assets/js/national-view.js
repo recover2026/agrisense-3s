@@ -2233,12 +2233,17 @@
         else if (p.kind === 'county') pickCounty(p.id);
       },
       onEngine: function (e) {
-        N.engine = e.label; setEngine(e.ok, e.label);
-        /* 只在【国家级】才重绘。
-           ⚠️ 底图引擎就绪回调是异步的，用户可能已经下钻到省/市/县/乡；
-           此时若无条件 renderCountry() 会把视图猛地打回全国（实测点县后 2 秒被弹回）。
-           这在加 defer（引擎就绪更快）后暴露得更频繁。*/
-        if (N.level === 'country') renderCountry();
+        N.engine = e.label;
+        /* 只更新状态文案，不重绘。
+           ⚠️ 原来此处有 `if (N.level === 'country') renderCountry();`，
+           看着合理，实际造成**拖动完全失效**：
+           拖动 → _apply → onImageryRefresh → 影像瓦片重建 →
+           第一块出图即回报 onStatus → onEngine → renderCountry() → fit()
+           → 视图瞬间弹回原位（实测一次拖动 renderCountry 被调 38 次，
+           tx 在 -666→-640→-614 之间反复，最终仍回到 -666）。
+           而资质/业务视图没有栅格层、瓦片层少，onStatus 触发稀疏，所以看不出来。
+           正确分工：onEngine 只管状态文案，地图重绘由各自的渲染函数负责。*/
+        setEngine(e.ok, e.label);
       },
       onHome: function () { renderCountry(); },
       onTilesFail: function (reason) {

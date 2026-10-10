@@ -64,18 +64,28 @@
     // 这些记录保留在总数口径里（与台账一致），但不参与地图着色与搜索。
     var qMappable = qAll.filter(function (r) { return !!r.c; });
     var pMappable = pAll.filter(function (r) { return !!r.c; });
+    /* 省级聚合必须按【adcode 前两位】归省，不能只靠台账里的 p 字段做字符串归一化。
+       台账中宁波/青岛/大连三条计划单列市的 p 写的是市名而非省名
+       （实测「宁波」独立成 key，7 条；「青岛」10 条；「大连」7 条），
+       结果这 24 条在地图上完全看不到 ——
+       山东显示 129（实为 139）、浙江 69（实为 76）、辽宁 45（实为 52），
+       且这些省的总和与 KPI 卡片里的「1422 条」对不上，用户无法核对。
+       adcode 前两位就是省级代码，天然正确且不受台账写法影响。*/
+    function provKey(r) {
+      var c = String(r.c || '');
+      if (c.length >= 2) return c.slice(0, 2);
+      return pk(r.p);
+    }
     qMappable.forEach(function (r) {
       if (!qualByCode[r.c]) qualByCode[r.c] = [];
       qualByCode[r.c].push(r);
-      // 只用归一化名做 key：同时写入原名与归一化名会让 Object.keys 长度翻倍
-      // （实测导致「覆盖 62 个省级行政区」，实际 32 省）
-      var k = pk(r.p);
+      var k = provKey(r);
       provQual[k] = (provQual[k] || 0) + 1;
     });
     pMappable.forEach(function (r) {
       if (!polByCode[r.c]) polByCode[r.c] = { t: r.t, k: r.k, list: [] };
       polByCode[r.c].list.push(r);
-      var k = pk(r.p);
+      var k = provKey(r);
       provPol[k] = (provPol[k] || 0) + 1;
     });
     return {
@@ -94,6 +104,20 @@
 
   function hasQual(c) { return !!IDX.qualByCode[c]; }
   function hasPol(c) { return !!IDX.polByCode[c]; }
+
+  /* 取某省的资质 / 政策资格数量。
+     buildIdx() 的 key 已改为 adcode 前两位（两位数字码），
+     这里统一按省界要素的 c 取前两位查，避免各处再拼字符串名 ——
+     拼字符串会漏掉计划单列市，且省名写法一变就错（实测已踩）。*/
+  function provCnt(p, which) {
+    if (!p) return 0;
+    var src = which === 'pol' ? IDX.provPol : IDX.provQual;
+    var code = String(p.c || '');
+    if (code.length >= 2 && src[code.slice(0, 2)] != null) return src[code.slice(0, 2)];
+    // 兜底：极少数无 adcode 的省按名称查（历史数据兼容）
+    var k = shortProv(p.n);
+    return src[k] || 0;
+  }
 
   // 省级 code 反查（台账省名 → adcode）
   var PROV_CODE = (function () {
@@ -162,7 +186,13 @@
         if (p.kind === 'prov') { renderProvince(p.id); }
         else if (p.kind === 'county') { countyDetail(p.id); }
       },
-      onEngine: function (e) { setEngine(e.ok, e.label); renderCountry(); },
+      /* 只更新状态文案，不重绘。
+         ⚠️ 原来这里是 `setEngine(...); renderCountry();` ——
+         影像瓦片重建时回报状态 → 触发 renderCountry → fit() → 视图弹回，
+         用户表现为"这个视图地图拖不动"。
+         （national-view 有同样的 bug，已一并修掉。）
+         onStatus 在拖动中会被高频触发，重绘必须是用户行为驱动，不是底图事件驱动。*/
+      onEngine: function (e) { setEngine(e.ok, e.label); },
       onHome: function () { renderCountry(); },
       /* 底图来源据实标注。腾讯需 KEY，而主力底图早已换成免 KEY 的
          Esri World Imagery —— 原文案「待配置 KEY」是过时且误导的
@@ -195,9 +225,8 @@
 
     var bbox = null, placed = [];
     (GP.provinces || []).forEach(function (p) {
-      var pk = p.n.replace(/省|市|自治区|特别行政区|维吾尔|壮族|回族/g, '');
-      var q = IDX.provQual[shortProv(p.n)] || IDX.provQual[pk] || 0;
-      var g = IDX.provPol[shortProv(p.n)]  || IDX.provPol[pk]  || 0;
+      var q = provCnt(p, 'qual');
+      var g = provCnt(p, 'pol');
       var col = provColor(q, g);
       var rgb = col.match(/\d+/g);
       var has = q > 0 || g > 0;
@@ -212,28 +241,72 @@
 
     // 省名 + 数量标注
     if (st && st._vw > 620) {
-      (GP.provinces || []).slice().sort(function (a, b) {
-        var ab = (aboxOf(b)[2]-aboxOf(b)[0]) * (aboxOf(b)[3]-aboxOf(b)[1]);
-        var aa = (aboxOf(a)[2]-aboxOf(a)[0]) * (aboxOf(a)[3]-aboxOf(a)[1]);
-        return bb2(ab) - bb2(aa);
-      }).forEach(function (p) {
-        var pk = p.n.replace(/省|市|自治区|特别行政区|维吾尔|壮族|回族/g, '');
-        var q = IDX.provQual[shortProv(p.n)] || IDX.provQual[pk] || 0;
-        var g = IDX.provPol[shortProv(p.n)]  || IDX.provPol[pk]  || 0;
-        if (!q && !g) return;
-        var ct = G.polyCentroid(absOf(p));
-        var px = st.toPx(ct[0], ct[1]);
-        var hit = false;
+      /* 标注策略：先在省质心附近直接标，重叠的省改用【引线标注】——
+         标签沿水平方向推到质心旁边空白处，再用细线连回质心。
+         ⚠️ 此前只有"质心避让"一条路：78px 内已有标签就整省丢弃
+         （实测 31 个有数据的省只标出 13 个，华东/华中/华南密集区
+          几乎全军覆没 —— 用户看到的就是"只显示部分省的资质数量"）。
+         数据是这个视图的主信息，一个省都不能少；引线是成熟制图做法。*/
+      var queue = (GP.provinces || []).map(function (p) {
+        var q = provCnt(p, 'qual');
+        var g = provCnt(p, 'pol');
+        var b = aboxOf(p);
+        return { p: p, q: q, g: g,
+          area: (b[2]-b[0]) * (b[3]-b[1]) };
+      }).filter(function (o) { return o.q > 0 || o.g > 0; });
+      // 大省优先占内圈，小省用引线推到外圈
+      queue.sort(function (a, b) { return b.area - a.area; });
+
+      function clash(px, py, x, y, w) {
+        // 与已放置标签的矩形相交检测（含水平半宽）
         for (var i = 0; i < placed.length; i++) {
-          var dx = placed[i][0] - px.x, dy = placed[i][1] - px.y;
-          if (dx*dx + dy*dy < 78*78) { hit = true; break; }
+          var o = placed[i];
+          if (Math.abs(o[0] - px) < (w + o[2]) / 2 + 4 &&
+              Math.abs(o[1] - py) < (o[4] + 15) / 2 + 3) return true;
         }
-        if (hit) return;
-        placed.push([px.x, px.y]);
+        return false;
+      }
+      function reserve(px, py, w, h) {
+        placed.push([px, py, w, h]);
+      }
+
+      queue.forEach(function (o) {
+        var p = o.p, q = o.q, g = o.g;
+        var ct = G.polyCentroid(absOf(p));
+        var cpx = st.toPx(ct[0], ct[1]);
         var short = p.n.replace(/维吾尔|壮族|回族|自治区|特别行政区|省|市/g, '');
-        var txt = q >= 100 ? short : short + ' ' + q + (g ? '/' + g : '');
-        var el = DM.pxLabel(MI, 'lab', px.x, px.y, txt, { fill:'#fff', size:10.5, halo: '#1c1408' });
-        if (el) DM.anchor(MI, el, ct[0], ct[1], 0, null, true, 620);
+        var txt = short + ' ' + q + (g ? '/' + g : '');
+        var wEst = txt.length * 6.6 + 6;
+        var placedOK = false;
+        /* ① 直接标在质心（不与已有标签相交） */
+        if (!clash(cpx.x, cpx.y, wEst, 15)) {
+          var el = DM.pxLabel(MI, 'lab', cpx.x, cpx.y, txt,
+            { fill:'#fff', size:10.5, halo:'#1c1408' });
+          if (el) { DM.anchor(MI, el, ct[0], ct[1], 0, null, true, 620);
+                    reserve(cpx.x, cpx.y, wEst, 15); placedOK = true; }
+        }
+        if (placedOK) return;
+        /* ② 质心附近冲突 → 引线标注：先试右移，再试左移、上下四个方向 */
+        var dirs = [[1,0],[0,-1],[0,1],[-1,0],[1,-1],[1,1],[-1,-1],[-1,1]];
+        for (var d = 0; d < dirs.length; d++) {
+          var dx = dirs[d][0], dy = dirs[d][1];
+          for (var step = 34; step <= 108; step += 34) {
+            var tx = cpx.x + dx * step, ty = cpx.y + dy * step * 0.75;
+            if (tx < 54 || tx > st._vw - 54 || ty < 26 || ty > st._vh - 20) continue;
+            if (clash(tx, ty, wEst, 15)) continue;
+            var el2 = DM.pxLabel(MI, 'lab', tx, ty, txt,
+              { fill:'#fff', size:10.5, halo:'#1c1408' });
+            if (!el2) continue;
+            // 引线从标签中心连回质心
+            if (MI.svg && MI.svg.pxLeader) {
+              MI.svg.pxLeader('lab', tx, ty, cpx.x, cpx.y,
+                { stroke:'rgba(255,255,255,.5)', width:.8 });
+            }
+            reserve(tx, ty, wEst, 15);
+            placedOK = true; break;
+          }
+          if (placedOK) break;
+        }
       });
     }
 
@@ -294,9 +367,8 @@
     N.level = 'province'; N.curProvince = pcode;
     var pv = (GP.provinces || []).filter(function (p) { return String(p.c) === String(pcode); })[0];
     if (!pv) return;
-    var sk = shortProv(pv.n);
-    var q = IDX.provQual[shortProv(pv.n)] || IDX.provQual[sk] || 0;
-    var g = IDX.provPol[shortProv(pv.n)]  || IDX.provPol[sk]  || 0;
+    var q = provCnt(pv, 'qual');
+    var g = provCnt(pv, 'pol');
     $('#qual-title').textContent = pv.n + ' · 资质县区分布';
     $('#qual-scope').textContent = '农险资质 ' + q + ' 县区 / 政策性资格 ' + g + ' 县区 · 加载县界…';
     // 先画出省界 + 散点（秒出），县界加载完再重绘
@@ -374,8 +446,8 @@
     }
 
     DM.fit(MI, bbox);
-    $('#qual-scope').textContent = '农险资质 ' + (IDX.provQual[shortProv(pv.n)]||IDX.provQual[shortProv(pv.n)]||0) +
-      ' / 政策性 ' + (IDX.provPol[shortProv(pv.n)]||IDX.provPol[shortProv(pv.n)]||0) +
+    $('#qual-scope').textContent = '农险资质 ' + provCnt(pv, 'qual') +
+      ' / 政策性 ' + provCnt(pv, 'pol') +
       ' · 已绘县界 ' + drawn + (miss.length ? ' · 点位 ' + miss.length : '');
   }
 
