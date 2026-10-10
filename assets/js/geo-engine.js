@@ -184,7 +184,22 @@
     h.addEventListener('pointerup', up);
     h.addEventListener('pointercancel', function (e) { delete pointers[e.pointerId]; dragging = false; pinchD = 0; });
 
-    h.addEventListener('pointerleave', function (e) { delete pointers[e.pointerId]; });
+    /* ⚠️ pointerleave 不能删 pointers —— 它在【正常拖动中】就会大量触发
+       （实测一次拖动收到 4 次 pointerleave，原因是浏览器把指针捕获期间的
+       移动也派发 leave 给原元素）。
+       后果链条：leave 删掉 pointers[id] → 下一次 pointermove 里
+       `pointers[e.pointerId]` 为空、ids.length 变 1 → if (ids.length===2 && pinchD)
+       不成立但 dragging 仍为 true，看似还能拖；然而真正致命的是
+       某些机型/浏览器上 leave 后不再补 pointermove，拖动中途"卡住"，
+       松手时 moved 判定失效 → 被当成点击 → 触发下钻 → renderProvince
+       重新 fit() → 视图瞬间弹回原位。
+       实测症状完全吻合：tx 一路走到 -510，松手后被重置回 -666。
+       正确做法：leave 只在【没有按键】时清理（鼠标已离开窗口），
+       按住拖动过程中一律保留。 */
+    h.addEventListener('pointerleave', function (e) {
+      // 只有"按住拖出窗口"才清理；正常拖动中的 leave 一律忽略
+      if (e.buttons === 0) { delete pointers[e.pointerId]; dragging = false; }
+    });
 
     // 键盘
     h.tabIndex = 0;
@@ -913,14 +928,37 @@
     if (!bb || !this._vw || !this.scale) return;
     var bw = bb[2] - bb[0], bh = bb[3] - bb[1];
     if (bw <= 0 || bh <= 0) return;
-    // 允许的中心区间：数据框内缩 5%（即 5%–95%）
-    var padX = bw * 0.05, padY = bh * 0.05;
-    var vx = (this._vw / 2 - this.tx) / this.scale;
-    var vy = (this.ty - this._vh / 2) / this.scale;   // Y 轴已翻转
-    var nvx = Math.min(bb[2] - padX, Math.max(bb[0] + padX, vx));
-    var nvy = Math.min(bb[3] - padY, Math.max(bb[1] + padY, vy));
-    if (nvx !== vx) this.tx = this._vw / 2 - nvx * this.scale;
-    if (nvy !== vy) this.ty = this._vh / 2 + nvy * this.scale;
+    /* ⚠️ 原来固定"数据框内缩 5%"作为可拖动范围，实测导致【全国视图完全拖不动】：
+       全国视图 fit() 之后，视口恰好等于全国外接框，
+       中心点被死死钳在 [bb+5%, bb-5%] 这一条几乎长度为 0 的区间里 ——
+       横向拖 176px 之后 tx 竟完全没变（实测 -666 → -666）。
+       用户报障："地图移动或变大变小，底层地理图片也要跟着变化啊，不能不动"，
+       实际是第一步【业务面本身就动不了】。
+
+       正确做法：按视口尺寸动态计算可拖动余量 ——
+       当数据框比视口还小（即全国这类"一屏装下"的情形）时，
+       允许中心在数据框外继续移动，最多让数据框移出视口一半。
+       这样既能自由平移，又不会把地图拖丢（仍能看到主体）。
+       语义：可拖动半宽 = max(0, 数据框半宽 - 视口半宽) + 视口半宽 × 0.5。*/
+    var halfVw = this._vw / 2, halfVh = this._vh / 2;
+    /* 允许中心越出数据框的范围：视口半宽的一半（留一半数据在视野内） */
+    var slackX = halfVw * 0.5, slackY = halfVh * 0.5;
+    var loX = bb[0] - slackX, hiX = bb[2] + slackX;
+    var loY = bb[1] - slackY, hiY = bb[3] + slackY;
+    /* 视口比数据框大（全国视图）时，中心至少要保证数据框有一部分可见：
+       把范围收紧到"数据框中心 ± (数据框半宽 + 视口半宽×0.5)"，
+       效果等价于允许拖到数据框边缘再往外半个视口。*/
+    var dataCx = (bb[0] + bb[2]) / 2, dataCy = (bb[1] + bb[3]) / 2;
+    var limX = bw / 2 + halfVw * 0.5, limY = bh / 2 + halfVh * 0.5;
+    loX = dataCx - limX; hiX = dataCx + limX;
+    loY = dataCy - limY; hiY = dataCy + limY;
+
+    var vx = (halfVw - this.tx) / this.scale;
+    var vy = (this.ty - halfVh) / this.scale;   // Y 轴已翻转
+    var nvx = Math.min(hiX, Math.max(loX, vx));
+    var nvy = Math.min(hiY, Math.max(loY, vy));
+    if (nvx !== vx) this.tx = halfVw - nvx * this.scale;
+    if (nvy !== vy) this.ty = halfVh + nvy * this.scale;
   };
 
   /* ---------- 屏幕坐标互转 ---------- */

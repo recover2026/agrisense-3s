@@ -1152,7 +1152,7 @@
         fill: 'rgba(255,255,255,.04)', stroke: EDGE.county.c, strokeWidth: 1.7
       });
       DM.fit(MI, kb2);
-      $('#nat-title').textContent = name + ' · ' + ((NAT.LAYERS[N.activeLayer] || {}).name || '遥感专题');
+      setTitle(name + ' · ' + ((NAT.LAYERS[N.activeLayer] || {}).name || '遥感专题'));
       $('#nat-scope').textContent = (pv ? pv.n + ' / ' : '') + (cityObj ? cityObj.n + ' / ' : '') + name;
 
       var kct = G.polyCentroid(kr);
@@ -1204,7 +1204,7 @@
         fill: 'rgba(255,255,255,.04)', stroke: EDGE.city.c, strokeWidth: 1.5
       });
       DM.fit(MI, b);
-      $('#nat-title').textContent = name + ' · 遥感专题';
+      setTitle(name + ' · 遥感专题');
       $('#nat-scope').textContent = '该区域暂无县级精细边界';
       renderRaster({ layer: N.activeLayer, rings: cityObj ? abs(cityObj) : abs(pv), code: code, pixelM: 400, alpha: RASTER_ALPHA, onStats: paintGrowthPanel });
       syncSatZoom();
@@ -1386,7 +1386,7 @@
     DM.area(MI, { n: o.n, c: cc, kind: 'town', r: rings },
       { fill: 'rgba(255,255,255,.05)', stroke: EDGE.county.c, strokeWidth: 1.5 });
     DM.fit(MI, bx);
-    $('#nat-title').textContent = o.n + ' · ' + ((NAT.LAYERS[N.activeLayer] || {}).name || '遥感专题');
+    setTitle(o.n + ' · ' + ((NAT.LAYERS[N.activeLayer] || {}).name || '遥感专题'));
     $('#nat-scope').textContent = (pv ? pv.n + ' / ' : '') + (cityObj ? cityObj.n + ' / ' : '') + k.n + ' / ' + o.n;
 
     var ct = G.polyCentroid(rings);
@@ -1488,7 +1488,7 @@
     DM.area(MI, { n: vo.n, c: cc, kind: 'vill', r: rings },
       { fill: 'rgba(255,255,255,.05)', stroke: EDGE.county.c, strokeWidth: 1.4 });
     DM.fit(MI, bx);
-    $('#nat-title').textContent = vo.n + ' · ' + ((NAT.LAYERS[N.activeLayer] || {}).name || '遥感专题');
+    setTitle(vo.n + ' · ' + ((NAT.LAYERS[N.activeLayer] || {}).name || '遥感专题'));
     $('#nat-scope').textContent = (pv ? pv.n + ' / ' : '') + (cityObj ? cityObj.n + ' / ' : '')
       + k.n + ' / ' + townName + ' / ' + vo.n;
 
@@ -1568,7 +1568,7 @@
     DM.clearLayer(MI, 'risk');
     N.level = 'city'; N.curCity = cityObj.c; N.curCounty = null; N.curTown = null;
     N.curVillage = null; N.curVillageKey = null;
-    $('#nat-title').textContent = pv.n + ' / ' + cityObj.n + ' · 加载县级边界…';
+    setTitle(pv.n + ' / ' + cityObj.n + ' · 加载县级边界…');
     $('#nat-scope').textContent = pv.n + ' / ' + cityObj.n;
     loadingOn('正在加载' + cityObj.n + '县区与乡镇边界…');
 
@@ -1756,8 +1756,8 @@
       paint(f.n, f.c || Number(c), f.rings, 'cf');
     });
 
-    $('#nat-title').textContent = pv.n + ' / ' + cityObj.n + ' · ' +
-      (kbCodes.length + cfCodes.length) + ' 个县区遥感分布';
+    setTitle(pv.n + ' / ' + cityObj.n + ' · ' +
+      (kbCodes.length + cfCodes.length) + ' 个县区遥感分布');
     renderRaster({ layer: N.activeLayer, rings: abs(cityObj), code: cityObj.c, pixelM: 320, alpha: .82, onStats: paintGrowthPanel });
     paintCrumb();
     if (bbox) DM.fit(MI, bbox);
@@ -1813,7 +1813,7 @@
 
 
     DM.fit(MI, bbox || abox(cityObj));
-    $('#nat-title').textContent = pv.n + ' / ' + cityObj.n + ' · ' + codes.length + ' 个县区遥感分布';
+    setTitle(pv.n + ' / ' + cityObj.n + ' · ' + codes.length + ' 个县区遥感分布');
     var prings = abs(cityObj);
     renderRaster({
       layer: N.activeLayer, rings: prings, code: cityObj.c, pixelM: 340, alpha: .82,
@@ -1847,7 +1847,7 @@
     if (el) DM.anchor(MI, el, ct[0], ct[1]);
 
     /* 据实标注：县界未取到，不能让标题看起来像已下钻成功 */
-    $('#nat-title').textContent = pv.n + ' / ' + cityObj.n + ' · 县级边界未取到（仅市级）';
+    setTitle(pv.n + ' / ' + cityObj.n + ' · 县级边界未取到（仅市级）');
     renderRaster({ layer: N.activeLayer, rings: abs(cityObj), code: cityObj.c, pixelM: 320, alpha: .82, onStats: paintGrowthPanel });
     paintCrumb();
     DM.fit(MI, abox(cityObj));
@@ -1902,7 +1902,7 @@
     });
 
     var ct2 = G.polyCentroid(abs(cityObj));
-    $('#nat-title').textContent = pv.n + ' / ' + cityObj.n + ' · ' + codes.length + ' 个县区遥感分布';
+    setTitle(pv.n + ' / ' + cityObj.n + ' · ' + codes.length + ' 个县区遥感分布');
     var ovLabels = [];
     codes.forEach(function (c) {
       var k = KB[c]; if (!k) return;
@@ -2373,7 +2373,7 @@
     if (MI) DM.clearLayer(MI, 'risk');
     N.level = 'country'; N.curProvince = null; N.curCounty = null; N.curTown = null;
     N.curVillage = null; N.curVillageKey = null; N.ready = true;
-    $('#nat-title').textContent = '全国农业遥感总览 · 35 省';
+    setTitle('全国农业遥感总览 · 35 省');
     $('#nat-scope').textContent = '全国';
 
     DM.clearLayer(MI, 'base'); DM.clearBIZ(MI); DM.clearLayer(MI, 'lab'); DM.clearLayer(MI, 'risk');
@@ -2549,7 +2549,7 @@
       // 该省无市级边界数据（15 个省含新疆/青海/甘肃/云南…）
       // 但【乡镇边界数据覆盖全国 31 省】，其中已带县级归属与 adcode，
       // 因此不必停在省级：直接用乡镇数据聚合出县级面，实现 省 → 县 → 乡镇 下钻。
-      $('#nat-title').textContent = pv.n + ' · 正在准备县级下钻…';
+      setTitle(pv.n + ' · 正在准备县级下钻…');
       drawProvinceOnly(pv);
       buildCountyFacesFromTown(pcode, function (ok) {
         if (!ok) {
@@ -2557,7 +2557,7 @@
              三个行政区均无乡镇边界数据源）→ 到此为止是真的没有下级。
              此前静默停在省级、什么都不说，用户以为是功能坏了。
              现在据实告知数据边界，并说明能做什么。*/
-          $('#nat-title').textContent = pv.n + ' · 该区域暂无下级行政边界数据';
+          setTitle(pv.n + ' · 该区域暂无下级行政边界数据');
           $('#nat-scope').textContent = pv.n + ' / 暂仅省级视图';
           var hint = $('#nat-hint');
           if (hint) {
@@ -2576,7 +2576,7 @@
       showProvinceInfo(pv);
       return;
     }
-    $('#nat-title').textContent = pv.n + ' · 加载中…';
+    setTitle(pv.n + ' · 加载中…');
     /* 下钻期间给进度条反馈：市界文件最大 2MB+，弱网下可能十几秒
        （实测 GitHub Pages 首次取 0.3MB 需 27.9s）。
        此前只有标题文字变化，地图区域空白，用户无从判断是否卡死。 */
@@ -2591,11 +2591,11 @@
            用户看到的是「标题写着市级下钻、地图却一片空白」，
            长达 9 秒且无任何说明 → 以为坏了。
            现在标题据实说明，并给出可操作的下一步。 */
-        $('#nat-title').textContent = pv.n + ' · 市界数据未取到，已切至省级视图';
+        setTitle(pv.n + ' · 市界数据未取到，已切至省级视图');
         $('#nat-scope').textContent = pv.n + ' / 市级下钻数据缺失';
         drawProvinceOnly(pv); showProvinceInfo(pv); return;
       }
-      $('#nat-title').textContent = pv.n + ' · 市级遥感下钻';
+      setTitle(pv.n + ' · 市级遥感下钻');
       drawCities(pv, list);
     });
   }
@@ -2810,7 +2810,7 @@
       onStats: paintGrowthPanel,
       overlay: { rings: prings }
     });
-    $('#nat-title').textContent = pv.n + ' · 县级遥感下钻';
+    setTitle(pv.n + ' · 县级遥感下钻');
     showCountyListHint(pv, list.length);
   }
 
@@ -3556,6 +3556,15 @@
   function setEngine(ok, text) {
     var e = $('#nat-engine'); if (!e) return;
     e.textContent = text; e.className = ok ? 'engine-ok' : 'engine-warn';
+  }
+
+  /* 统一设置地图标题。
+     CSS 里 .nat-title 用了 text-overflow:ellipsis（窄窗口下标题过长会被省略，
+     否则会把 HUD 撑出容器、被裁掉左侧 —— 用户截图就是这个现象），
+     所以必须同步写 title 属性，让完整名称可悬停查看。*/
+  function setTitle(t) {
+    var e = $('#nat-title'); if (!e) return;
+    e.textContent = t; e.title = t;
   }
 
   /* ---------- 下钻加载指示 ----------

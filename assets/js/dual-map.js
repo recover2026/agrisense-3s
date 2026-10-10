@@ -52,7 +52,13 @@
       satOk: false,
       _tries: 0
     };
-    INSTANCES[key] = D;
+    /* ⚠️ 必须用局部变量锁住本实例，不能让后续逻辑去读模块级的 D：
+       D 是"当前操作实例"，每次 init() 都会被覆盖成最后初始化的那个。
+       先建 national、后建 qual 时，national 上注册的钩子若闭包捕获 D，
+       实际指向的就是 qual 实例 —— 表现为「只有 national 的影像不动」。
+       这正是本次的实测现象（qual 修好了、national 没修好）。*/
+    var SELF = D;
+    INSTANCES[key] = SELF;
     window.__DUAL__ = INSTANCES;
 
     // 叠层容器：TMap 在下，SVG 在上
@@ -87,6 +93,20 @@
     D.onTilesFail = opts.onTilesFail;
     D.onPick = opts.onPick;
 
+    /* DualMap 视图（全国遥感 / 资质资格）的影像跟随。
+       与业务视图不同，这里的瓦片挂在实例的 esriHost 上、由 syncEsri 管理，
+       所以钩子要指向实例的 esri，而不是宿主的属性。
+       ⚠️ 必须闭包捕获【局部 SELF】而非模块级 D：
+          D 会被后建的视图覆盖（national → qual），钩子会指向别的实例，
+          表现为「只有第一个视图的影像钉死不动」（实测确认）。
+       同样不能少这一行 —— 否则拖动/缩放时影像钉死不动（实测复现）。*/
+    SELF.svg.onImageryRefresh = function () {
+      var inst = SELF;
+      if (!inst.esri || !inst.svg) return;
+      if (inst.esriHost && inst.esriHost.style.display === 'none') return;
+      try { inst.esri.rebuild(inst.svg); } catch (e) { }
+    };
+
     // 相机：优先用 TMap（卫星底图），失败则用 SVG 自身
     // 主动加载 SDK（attachTMap 内部会等待就绪并重试）
     /* ⚠️ Esri 底图必须【立即】建起来，不能等 TMap：
@@ -94,14 +114,14 @@
        本该第一时间就有图。此前只在 svgToSat / fit 里间接触发，
        结果资质资格视图首屏【一张瓦片都没有】（实测 tiles=0），
        用户看到的"各个功能没有遥感地图"包含这个视图。*/
-    try { syncEsri(D); } catch (e0) { }
+    try { syncEsri(SELF); } catch (e0) { }
     if (window.SatMap && window.SatMap.loadSDK) {
-      try { window.SatMap.loadSDK(function () { attachTMap(D, tmapHost, opts); }); }
-      catch (e) { attachTMap(D, tmapHost, opts); }
+      try { window.SatMap.loadSDK(function () { attachTMap(SELF, tmapHost, opts); }); }
+      catch (e) { attachTMap(SELF, tmapHost, opts); }
     } else {
-      attachTMap(D, tmapHost, opts);
+      attachTMap(SELF, tmapHost, opts);
     }
-    return D;
+    return SELF;
   }
 
   /* ---------- 接入 TMap 卫星底图 ----------
@@ -235,10 +255,17 @@
   }
 
   /* ---------- Esri 真实卫星影像底图（免 KEY） ----------
-   独立于腾讯 SDK：无论 I.map 是否就绪都生效。
-   腾讯不可用时（无 KEY / SDK 加载失败）也能出真实卫星影像。 */
-function syncEsri(I) {
-    I = I || D;
+   独立于腾讯 SDK：无论实例的 map 是否就绪都生效。
+   腾讯不可用时（无 KEY / SDK 加载失败）也能出真实卫星影像。
+
+   ⚠️ 原来 `I = I || D` 的兜底是有害的：D 是模块级的"当前操作实例"，
+   每次 init() 都会被覆盖成最后初始化的那个（national）。
+   于是「不带参数调用 syncEsri()」时，会把瓦片挂到【别的视图】的宿主上
+   —— 表面能跑，但影像与地图对不上，且很难查。
+   现在：调用方一律显式传实例；只有确实要取"当前实例"时才读 D。*/
+  function syncEsri(I) {
+    /* 不再兜底到 D —— 多视图并存时会张冠李戴。
+       忘传参数时直接失败，比默默画错地方好排查。*/
     if (!I || !I.svg || !I.svg._vw || !I.host) return;
     if (!window.EsriImagery) return;
     try {
@@ -299,8 +326,10 @@ function syncEsri(I) {
   }
 
   function svgToSat(I) {
-    I = I || D;
-    if (!I || !I.map || !I.svg || !I.svg._vw) { syncEsri(I); return; }
+    /* 同样不再兜底到模块级 D —— 多视图并存时会同步错对象。
+       所有调用方（onViewChange 闭包、fit 的 setTimeout）都已显式传实例。*/
+    if (!I) return;
+    if (!I.map || !I.svg || !I.svg._vw) { syncEsri(I); return; }
     syncEsri(I);
     try {
       var v = I.svg.view();
@@ -327,23 +356,68 @@ function syncEsri(I) {
       var v = this.view();
       return { lng: v.lng, lat: v.lat };
     };
-    // 覆写 _apply：视图变化后驱动卫星层跟随 + 栅格层重绘
+    /* 覆写 _apply：视图变化后驱动【卫星底图跟随】+【栅格层重绘】
+
+       ⚠️ 用户报障："地图移动或变大变小，底层地理图片也要跟着变化啊，不能不动"。
+       实测确认：6 个地图全部复现 —— 拖动后业务面 transform 变了，
+       而 Esri 瓦片的 left/top 纹丝不动（影像被"钉死"在屏幕上）。
+
+       根因有两条，都在这里：
+       ① 根本没有触发影像重建。build() 只在 attachImagery()/syncEsri()
+          时调用一次；之后 _apply 再怎么改 tx/ty/scale，瓦片位置都不重算。
+       ② `if (self._rafRaster) return;` 这个提前 return 有害 ——
+          本意是"栅格重绘用 rAF 合并，别每帧都算"，但它 return 的是
+          整个 _apply 函数体，连下面的 onViewChange 一起跳过了。
+          结果：拖拽时 onViewChange（它会调 svgToSat → syncEsri）被吞掉，
+          卫星层永远收不到"视图变了"的信号。
+
+       修法：
+         · 影像跟随独立走自己的 rAF，与栅格重绘互不影响（去掉耦合的 return）
+         · 用 rebuild() 而非 build()：视图变了 _sig 也会变，build 本可生效，
+           但拖拽过程中一帧可能触发多次，rAF 合并后只算一次即可
+         · 只在瓦片确实需要重算时才动手（比对 _sig，EsriLayer.build 内部已有去重）*/
     GeoCanvas_.prototype._apply = (function (orig) {
       return function () {
         orig.call(this);
-        // 栅格层：视图变化后需重新按像元渲染并同步裁剪
-        if (this.onRasterRefresh) {
-          var self = this;
-          // 用 rAF 合并连续变更（拖拽/缩放时避免重复重算）
-          if (self._rafRaster) return;
-          self._rafRaster = requestAnimationFrame(function () {
-            self._rafRaster = null;
-            try { self.onRasterRefresh(); } catch (e) { }
-          });
+        var self = this;
+        /* ① 卫星影像跟随
+           ⚠️ 合并策略很关键：不能用"已排队就跳过"（if (_rafImagery) return），
+              那样【连续两次快速缩放时，第二次会被丢弃】——
+              实测滚轮放大，第一次 scale 完全不变、第二次才生效，
+              用户表现为"滚一下没反应，要滚两下"。
+           正确做法：始终以【最后一帧】为准 —— 排队期间只置脏标记，
+           rAF 执行时读当前的 tx/ty/scale 重建。
+           这样无论来几次、间隔多短，最终渲染的都是最新视图。*/
+        if (self.onImageryRefresh) {
+          self._imageryDirty = true;
+          if (!self._rafImagery) {
+            self._rafImagery = requestAnimationFrame(function () {
+              self._rafImagery = null;
+              if (!self._imageryDirty) return;
+              self._imageryDirty = false;
+              try { self.onImageryRefresh(); } catch (e) { }
+            });
+          }
         }
+        /* ② 栅格专题层重绘（逐像元计算，开销大）。
+           同样用脏标记合并，且它与影像层【各走各的 rAF】，
+           互不拖累（原来两者共用一个 return，会互相吞帧）。*/
+        if (self.onRasterRefresh) {
+          self._rasterDirty = true;
+          if (!self._rafRaster) {
+            self._rafRaster = requestAnimationFrame(function () {
+              self._rafRaster = null;
+              if (!self._rasterDirty) return;
+              self._rasterDirty = false;
+              try { self.onRasterRefresh(); } catch (e) { }
+            });
+          }
+        }
+        // ③ 相机同步（腾讯底图 / 业务视图的联动回调）
+        //    ⚠️ 必须无条件执行：原来被上面那个 return 跳过了
         if (this.onViewChange) {
           var v = this.view();
-          this.onViewChange(v.lng, v.lat, this.scale);
+          try { this.onViewChange(v.lng, v.lat, this.scale); } catch (e2) { }
         }
       };
     })(GeoCanvas_.prototype._apply);
@@ -464,6 +538,18 @@ function pxRing(I, l, x, y, r, st) { return I && I.svg && I.svg.pxRing(l, x, y, 
         ? window.EsriImagery.create(host.__imageryHost, 'satellite')
         : null;
       if (host.__imageryLayer && onStatus) host.__imageryLayer.onStatus = onStatus;
+    }
+    /* 关键：把影像重建挂到 GeoCanvas 的视图变化钩子上。
+       没有这一行，attachImagery 只在挂载时建一次瓦片，
+       之后拖动/缩放影像就钉死不动（用户报障，实测 6 个地图全复现）。
+       _apply 每次视图变化都会调 onImageryRefresh，内部用 rAF 合并。*/
+    if (!geo.onImageryRefresh) {
+      geo.onImageryRefresh = function () {
+        var h = geo.host;
+        if (!h || !h.__imageryLayer) return;
+        if (h.__imageryHost && h.__imageryHost.style.display === 'none') return;  // 矢量模式下不重建
+        try { h.__imageryLayer.rebuild(geo); } catch (e) { }
+      };
     }
     if (host.__imageryLayer) {
       /* 用 rebuild 而非 build：build 开头有 _sig 去重，视图没变时直接 return。

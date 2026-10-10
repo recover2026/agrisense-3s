@@ -47,13 +47,20 @@ async def main():
         rec("全国：在监灾情详情", d['on'] and d['len']>200, f"{d['t']} {d['len']}字")
         await pg.evaluate("()=>window.__APP__.closeDetail()")
         # 点选按钮
-        await pg.click('#nat-jump-btn'); await pg.wait_for_timeout(700)
+        # ⚠️ 必须在【干净状态】下测。之前把"切专题图层""看灾情详情"
+        #    放在前面，导致点选浮层被前一步的状态影响而误判为失效
+        #    （实测单独测 hidden=false、功能完好）。
+        await pg.evaluate("()=>{window.__APP__ && window.__APP__.closeDetail();}")
+        await pg.click('#nat-jump-btn'); await pg.wait_for_timeout(800)
+        # 用【实际可见性】判定，而不是读 hidden 属性
         jp = await pg.evaluate("""()=>{const p=document.getElementById('nat-jump-pop');
-          return {hidden:p.hidden, n:p.querySelectorAll('[data-j]').length};}""")
-        rec("全国：点选入口", (not jp['hidden']) and jp['n']>0, f"{jp['n']} 个可下钻项")
+          const cs=getComputedStyle(p); const rc=p.getBoundingClientRect();
+          return {vis: cs.display!=='none' && rc.width>10, n:p.querySelectorAll('[data-j]').length};}""")
+        rec("全国：点选入口", jp['vis'] and jp['n']>0, f"{jp['n']} 个可下钻项")
         # 必须先关闭浮层，否则它会盖住地图、吞掉后续点击（实测导致下钻全失败）
         await pg.click('#nat-jump-btn'); await pg.wait_for_timeout(500)
-        jp2 = await pg.evaluate("()=>document.getElementById('nat-jump-pop').hidden")
+        jp2 = await pg.evaluate("""()=>{const p=document.getElementById('nat-jump-pop');
+          const cs=getComputedStyle(p); return cs.display==='none'||p.getBoundingClientRect().width<10;}""")
         rec("全国：点选浮层可关闭", jp2)
         # ---------- 全国：下钻 5 级 ----------
         # ⚠️ 三轮实测踩到的断言陷阱，都记在这里：
