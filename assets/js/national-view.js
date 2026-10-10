@@ -2595,10 +2595,33 @@ var N = {
       var shortList = GP.provinces.slice().sort(function (a, b) { return (b.w * b.h) - (a.w * a.h); });
       var queue = shortList.map(function (p) {
         var nm = shortName(p.n);
-        var ct = G.labelAnchor(abs(p));
+        var rings = abs(p);
+        /* pad：标签半宽换算到世界坐标。labelAnchor 会要求锚点四周
+           留出这么多余量，确保【整个标签都在本省面内】而不是骑在边界上。
+           11px 中文字 ≈ 5.5px/字，"内蒙古"3 字 ≈ 17px 宽 → 半宽 17px。*/
+        var padPx = (nm.length * 5.5 + 4) / 2 + 3;
+        var ct = G.labelAnchor(rings, padPx / (st.scale || 1e-4));
         var px = st.toPx(ct[0], ct[1]);
-        // 用引擎的 measureText 同源逻辑估算：11px 中文约 11px/字
-        return { p: p, nm: nm, ct: ct, px: px, half: nm.length * 5.5 + 4 };   /* 11px 中文字宽≈11px，+描边余量 */
+        /* keepIn：把这个标签"钉"在本省面内。
+           pxLabel 的横向避让只管不重叠、不知道标签归属，
+           内蒙古（面 359x284 的狭长形）实测被右推 39px 到吉林脚下，
+           用户看到的正是"名字和省份对不上号"。*/
+        var self = rings;
+        var bx0 = abox(p) || [0, 0, 0, 0];
+        var fw = Math.max(0, bx0[2] - bx0[0]), fh = Math.max(0, bx0[3] - bx0[1]);
+        return {
+          p: p, nm: nm, ct: ct, px: px, half: nm.length * 5.5 + 4,
+          /* 面在屏幕上的真实像素宽高 —— 用于判断"标签能不能塞进这个面"。
+             内蒙古 359x284，标签 33x16 绰绰有余；
+             北京 26x26、天津 17x27、上海 16x17，标签比面还大，
+             物理上塞不下，只能靠引线出框（callout）。*/
+          facePxW: fw * st.scale, facePxH: fh * st.scale,
+          keepIn: function (x, y) {
+            var w = st.toWorld(x, y);
+            if (!w) return true;
+            return G.inRingsWorld(w[0], w[1], self);
+          }
+        };
       });
 
       /* 第一轮：面内锚点直接标，撞的或引擎让不开的进第二轮。
@@ -2619,8 +2642,12 @@ var N = {
       (N.showLabel ? queue : []).forEach(function (o) {
         if (hitRect(o.px.x, o.px.y, o.half, estHH)) { crowded.push(o); return; }
         var el = DM.pxLabel(MI, 'lab', o.px.x, o.px.y, o.nm,
-          { fill: '#fff', size: 11, halo: '#1c1408' });
+          { fill: '#fff', size: 11, halo: '#1c1408', keepIn: o.keepIn });
+        /* 记录归属：省代码。终检靠它把标签与本省面对上，
+           不靠文字匹配（"河北"这种简称与面文本 "河北省" 做子串匹配
+           既可能漏配、又可能错配到别的面上）。*/
         if (el) {
+          el.setAttribute('data-prov', o.p.c);
           /* 用标签的【真实矩形】登记占用（引擎可能做了横向/纵向让位），
              否则 placed 里存的是请求坐标，与实际落点不一致 ——
              后续标签会拿一个错的占用去避让，判不出相交就叠上。*/
@@ -2648,6 +2675,10 @@ var N = {
             if (nx < 34 || nx > st._vw - 34 || ny < 18 || ny > st._vh - 18) continue;
             if (hitRect(nx, ny, c.half, estHH)) continue;
             if (segHit(c.px.x, c.px.y, nx, ny)) continue;
+            /* 归属约束：候选位必须仍在【本省面内】。
+               第二轮本意是"往四周找空位"，但四周可能是邻省 ——
+               不校验就会把「北京」拉到河北、把「内蒙古」拉到吉林脚下。*/
+            if (c.keepIn && !c.keepIn(nx, ny)) continue;
             ok = { x: nx, y: ny };
           }
         }
@@ -2666,18 +2697,17 @@ var N = {
           加了 ② 之后既能显示、又不会叠字。*/
         if (!ok) {
           /*───────────────────────────────────────────────────────
-             ② 贴面边缘 + 引线（本级真正的正解）
-             ⚠️ 关键约束（实测得出）：全国视图里直辖市/小省的面在屏幕上
-                极小 —— 北京 19×19px、天津 12×20px、上海 11×13px，
-                而「北京」两个字本身就有 22px 宽。**标签比要标注的面还大**，
-                物理上不可能塞进面内。
-                所以「往空旷处躲」的方向本身就是错的：空旷处往往在
-                几百像素外，标签飘那么远等于指错地方
-                （实测「南海诸岛」被推到华北、「北京」被推到河北境内）。
-             正解：标签放在【面边缘外侧一点】、引线连回面中心 ——
-                地图制图的标准做法（callout）。距离封顶 64px，
-                再远读者就认不出对应关系了。
+             ② 贴面边缘 + 引线（callout）
+             ⚠️ 只对【标签塞不进本省面】的小行政区生效 —— 直辖市/特别行政区：
+                北京 26×26px、天津 17×27px、上海 16×17px，
+                而「北京」两个字本身 22px 宽，物理上不可能塞进面内。
+             ⚠️ 大省绝不能走这条路径：实测内蒙古（面 359×284px）被踢到
+                这一级后，标签落到框外 39px 处 —— 正好印在吉林脚下，
+                用户看到的就是「内蒙古和北京没对上号」。
+                面够大却跑去做引线，既指错地方又制造歧义。
              ────────────────────────────────────────────────────────*/
+          var needCallout = (c.facePxW < c.half * 2 + 6) || (c.facePxH < 16);
+          if (!needCallout) return;      /* 面够大：宁可不画，也不指错地方 */
           var moved = false;
           for (var r2 = 1; r2 <= 12 && !moved; r2++) {
             var step2 = 11 + r2 * 5;          // 16,21,26,...71
@@ -2698,10 +2728,19 @@ var N = {
         }
         if (ok) {
           placed.push([ok.x, ok.y, c.half, estHH]);
+          /* ⚠️ noAvoid 必须置位：这里的坐标是"引线标注"的最终位置，
+             已经精确算好了；引擎的 _avoidLabels 只管不重叠、不知道归属，
+             会再横向推一次 —— 实测「北京」就是这样被推到河北境内的。
+             引擎的让位在本轮由 keepIn 之外的第二轮人工完成。*/
           var el2 = DM.pxLabel(MI, 'lab', ok.x, ok.y, c.nm,
-            { fill: '#fff', size: 11, halo: '#1c1408' });
-          /* anchor 会自动画引线（引擎在 _syncPx 里处理，缩放同步重算） */
-          if (el2) DM.anchor(MI, el2, c.ct[0], c.ct[1], 0, null, true, 620);
+            { fill: '#fff', size: 11, halo: '#1c1408', noAvoid: true });
+          if (el2) el2.setAttribute('data-prov', c.p.c);
+          /* 引线：把标签连回它所属面的中心 —— 标签出框时这是唯一的对应关系依据，
+             没有引线用户只能靠猜（小面挤在一起时必然"对不上号"）。*/
+          if (el2) {
+            DM.leader(MI, 'lab', ok.x, ok.y + estHH * 0.6, c.ct[0], c.ct[1]);
+            DM.anchor(MI, el2, c.ct[0], c.ct[1], 0, null, true, 620);
+          }
           return;
         }
         /* 真的无处可放：撤掉该标签，宁可少一个名字，不可叠成一团。
@@ -2721,6 +2760,23 @@ var N = {
        用 setTimeout(60) 而非 rAF：rAF 排在本帧重绘之前，
        扫到的是旧落点，什么也删不掉。*/
     setTimeout(function () {
+      /* 第 1 步：归属终检 —— 把跑到别省脚下的地名拉回本行政区。
+         用户截图实况：「内蒙古」三个字印在吉林脚下，与本省完全对不上号。
+         绘制链路有三处会把标签推出去（引擎横向让位 / 第二轮找空位 /
+         引线出框），前面已给前两处加 keepIn 约束，
+         但最终落点只能在画完后用原生 isPointInFill 量出来。*/
+      try {
+        var labG = MI.svg && MI.svg.layers && MI.svg.layers.lab ? MI.svg.layers.lab.g : null;
+        if (labG) {
+          var pairs = [];
+          labG.querySelectorAll('text[data-prov]').forEach(function (el) {
+            var face = MI.host.querySelector('[data-kind=prov][data-id="' + el.getAttribute('data-prov') + '"]');
+            if (face) pairs.push({ el: el, face: face });
+          });
+          if (pairs.length) DM.fixLabelHome(MI, 'lab', pairs, { dy: 0 });
+        }
+      } catch (e) { }
+      /* 第 2 步：去重去叠字 */
       try { DM.dedupLabels(MI, 'lab'); } catch (e) { }
     }, 60);
   }

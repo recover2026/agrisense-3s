@@ -492,6 +492,12 @@ function pxRing(I, l, x, y, r, st) { return I && I.svg && I.svg.pxRing(l, x, y, 
      ⚠️ 必须延后调用（setTimeout），此刻元素才完成布局、
         getBoundingClientRect 才是真值。*/
   function dedupLabels(I, l) { return I && I.svg ? I.svg.dedupLabels(l) : null; }
+  /* 标注归属终检（见 geo-engine 的 fixLabelHome）：
+     画完后核对每个标签是否仍在本行政区面内，跑偏的拉回来。
+     直辖市这类"标签比面还大"的自动豁免。*/
+  function fixLabelHome(I, l, pairs, opt) {
+    return I && I.svg ? I.svg.fixLabelHome(l, pairs, opt) : { fixed: 0, checked: 0, skipped: 0 };
+  }
   function anchor(I, el, wx, wy, dy, sib, opt, minW) { return I && I.svg && I.svg.anchor(el, wx, wy, dy, sib, opt, minW); }
   function clearBIZ(I) { if (I && I.svg) I.svg.clear('biz'); }
   function clearLayer(I, n) { if (I && I.svg) I.svg.clear(n); }
@@ -597,7 +603,7 @@ function pxRing(I, l, x, y, r, st) { return I && I.svg && I.svg.pxRing(l, x, y, 
 
   window.DualMap = {
     init: init, area: area, pxDot: pxDot, pxRing: pxRing, leader: pxLeader, pxLabel: pxLabel,
-    dedupLabels: dedupLabels,
+    dedupLabels: dedupLabels, fixLabelHome: fixLabelHome,
     anchor: anchor, clearBIZ: clearBIZ, clearLayer: clearLayer,
     fit: fit, fitLL: fitLL, resize: resize, toPx: toPx, toggleBase: toggleBase,
     syncToSat: svgToSat,

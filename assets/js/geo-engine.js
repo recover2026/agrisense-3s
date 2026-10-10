@@ -347,7 +347,14 @@
           }
           if (!show) continue;
         }
+        /* ⚠️ 通用护栏：坐标非有限时【保留原属性不动】。
+           SVG 属性一旦写成 "NaN" 就整体失效，元素会渲染在 (0,0)，
+           屏幕上表现为标签凭空飞到地图左上角（实测「河北」→ 344,56）。
+           与其让一个元素坏掉，不如这一帧不动它 —— 下一次 view 变化
+           若拿到合法坐标，自然就归位了。*/
+        if (!isFinite(a.wx) || !isFinite(a.wy)) continue;
         var s = this.toPx(a.wx, a.wy);
+        if (!isFinite(s.x) || !isFinite(s.y)) continue;
         if (a.el.tagName === 'circle') {
           a.el.setAttribute('cx', s.x.toFixed(1));
           a.el.setAttribute('cy', s.y.toFixed(1));
@@ -373,10 +380,30 @@
     return { x: wx * this.scale + this.tx, y: this.ty - wy * this.scale };
   };
 
+  /* toPx 的逆变换：屏幕(容器内)像素 → 世界坐标，返回 [x, y]。
+     ⚠️ 与 toPx 不同这里返回【数组】不是对象 —— 调用方按 w[0]/w[1] 取值。
+        （曾误照抄 toPx 返回 {x,y}，调用处却用下标访问，判定结果全是 NaN，
+          内蒙古的标签因而被判定"永远出界"，反被踢到框外 39px。）
+     标签归属约束需要在让位过程中把像素点反算回世界坐标，
+     才能用射线法判断"这个新位置还在不在本行政区面内"。*/
+  GeoCanvas.prototype.toWorld = function (px, py) {
+    var s = this.scale;
+    if (!s) return null;
+    return [(px - this.tx) / s, (this.ty - py) / s];
+  };
+
   /* 登记一个需要随视图重投影的 px 标记
      optional=true 时，容器宽度不足 minW 自动隐藏（防窄屏标注堆叠） */
   GeoCanvas.prototype.anchor = function (el, wx, wy, dy, siblings, optional, minW) {
     this.pxAnchors = this.pxAnchors || [];
+    /* ⚠️ 同一元素重复注册会互相打架：_syncPx 逐条写属性，
+       后一条会把前一条覆盖，于是"修正过的锚点"被旧的重新拽回去
+       （实测「内蒙古」「河北」两个标签被归属终检修好，
+        下一帧 _syncPx 又按重复记录弹回原错位）。
+       这里保证每个元素在表里只有一条，后注册覆盖先注册。*/
+    for (var i = this.pxAnchors.length - 1; i >= 0; i--) {
+      if (this.pxAnchors[i].el === el) this.pxAnchors.splice(i, 1);
+    }
     this.pxAnchors.push({
       el: el, wx: wx, wy: wy, dy: dy || 0, siblings: siblings,
       optional: !!optional, minW: minW || 620
@@ -743,6 +770,160 @@
      用于地理紧邻、质心几乎重合而无法直接分开标注的区域
      （实测北京↔河北质心距 10px、香港↔澳门仅 8px）。
      坐标直接存【世界坐标】，随图层变换自动缩放，屏幕上线宽恒定。 */
+  /* 标注归属终检：把"跑到别省脚下"的地名拉回本行政区。
+     ⚠️ 为什么必须在绘制之后做，而不是只靠 labelAnchor + 引擎让位：
+        绘制链路上有三处会把标签推出本省 ——
+          ① pxLabel 的横向让位 _avoidLabels（它只管不重叠，不知道归属）；
+          ② 调用方第二轮"往四周找空位"（四周往往是邻省）；
+          ③ 引线标注路径（允许出框，对直辖市是对的，对大省是错的）。
+        前面两条已加 keepIn 约束，但 draw 之后视图还会 fit/resize，
+        标签最终落点只能事后量。
+
+     判据用浏览器原生 isPointInFill —— 它接受【SVG 用户坐标】，
+     必须先用 getScreenCTM().inverse() 把屏幕点换算过去
+     （直接传 clientX/Y 恒为 false，是本项目踩过的坑）。
+
+     豁免规则：面在屏幕上的像素宽 < 标签宽 × 1.25 的不处理 ——
+     那是直辖市/特别行政区（实测北京面 26px、「北京」二字 22px），
+     标签物理上塞不进面内，本就该用引线出框（callout），
+     强行拉回只会叠字。*/
+  GeoCanvas.prototype.fixLabelHome = function (layerName, pairs, opt) {
+    var L = this.layers[layerName];
+    if (!L || !L.g || !pairs || !pairs.length) return { fixed: 0, checked: 0, skipped: 0 };
+    var host = this.host.getBoundingClientRect();
+    var fixed = 0, checked = 0, skipped = 0;
+    /* 其他省标签的当前矩形 —— 修正落点必须避开它们。
+       ⚠️ 不避让会连带出二次伤害：「河北」从北京的坑里被拉出来，
+       若落点恰好压在「北京」标签上，后面的 dedupLabels 会把
+       "面积更小"的河北当重叠者删掉 —— 屏幕上就是"河北"两个字
+       彻底消失（实测）。
+       ⚠️ 必须在循环【内】按当前元素构建：放到循环外访问 pairs[i]
+          会抛 TypeError，被调用方的 try/catch 静默吞掉，
+          表现为"终检完全没跑、界面毫无变化"，极难定位。 */
+    var freeOfOthers = function (self, sx, sy, w, h) {
+      for (var k = 0; k < pairs.length; k++) {
+        var oe = pairs[k].el;
+        if (!oe || oe === self || !oe.parentNode) continue;
+        var orb = oe.getBoundingClientRect();
+        if (!(orb.width > 1) || !(orb.height > 1)) continue;
+        if (sx + w / 2 > orb.left - 2 && sx - w / 2 < orb.right + 2 &&
+            sy + h / 2 > orb.top - 2 && sy - h / 2 < orb.bottom + 2) return false;
+      }
+      return true;
+    };
+    for (var i = 0; i < pairs.length; i++) {
+      var pair = pairs[i];
+      var t = pair.el, face = pair.face;
+      if (!t || !face || !t.parentNode) continue;
+      var tr = t.getBoundingClientRect();
+      var fr = face.getBoundingClientRect();
+      if (!(tr.width > 1) || !(fr.width > 1)) continue;
+      checked++;
+      var tw = tr.width + 4;
+      /* 小面豁免：标签比面还宽，callout 是正解，拉回只会叠字 */
+      if (fr.width < tw * 1.25) { skipped++; continue; }
+      var fm = face.getScreenCTM();
+      if (!fm) continue;
+      var inv = fm.inverse();
+      var cx = tr.left + tr.width / 2, cy = tr.top + tr.height / 2;
+      /* ⚠️⚠️ 必须判定【anchor 落点】而不是当前属性位置。
+         pxLabel 的引擎让位会把属性挪开，但 anchor 记录的是调用方给的
+         世界坐标 —— 下一次 view 变化（resize/缩放/fit）时 _syncPx 会按
+         anchor 把标签重投影回去。
+         早先终检查的是"当前属性位置"：那一刻标签还没被重投影，
+         判定为"在本省内"就跳过了；随后 _syncPx 生效，标签被挪到了
+         anchor 指向的那个错位点（北京坑里），错位就此固化。
+         这里改成：以 anchor 的世界坐标为准判定与修正，
+         修正后同步写回 anchor，两者永远一致。*/
+      var an = null, w0 = false;
+      if (this.pxAnchors) {
+        for (var q = 0; q < this.pxAnchors.length; q++) {
+          if (this.pxAnchors[q].el === t) { an = this.pxAnchors[q]; w0 = true; break; }
+        }
+      }
+      if (an && isFinite(an.wx) && isFinite(an.wy)) {
+        var ap = this.toPx(an.wx, an.wy);
+        if (isFinite(ap.x) && isFinite(ap.y)) {
+          cx = host.left + ap.x;
+          /* ⚠️ 文字的 y 属性是【基线】，视觉中心在基线上方。
+             引擎的矩形定义 top = y - h*0.78、bottom = y + h*0.22，
+             故视觉中心 = y - h*0.28。
+             不做这个换算会差 5~6px —— 而内蒙古的新月形凹口、
+             北京嵌在河北里的坑都只有几像素宽，5px 之差就是
+             "在本省"与"在邻省"的分界（实测内蒙古、河北因此漏判）。*/
+          cy = host.top + ap.y - tr.height * 0.28;
+        }
+      }
+      var inside = (function (sx, sy) {
+        var q2 = new DOMPoint(sx, sy).matrixTransform(inv);
+        try { return face.isPointInFill ? face.isPointInFill(q2) : false; } catch (e) { return false; }
+      });
+      /* 判据必须是【整个标签矩形都在本省面内】，不能只看中心。
+         ⚠️ 只判中心会漏掉"骑在边界上"的一类错位 —— 用户截图里
+            「内蒙古」三个字正有一半压在国界外侧、视觉上像是印在
+            蒙古国境内；「河北」则有一半压在北京的坑里。
+            实测这两省的标签中心（anchor 视觉中心）判定为"在本省内"，
+            终检直接跳过，实则整块字都有一截在境外。
+         改成：矩形四角 + 中心共 5 个采样点全部在面内才算数。*/
+      var hw2 = tr.width / 2, hh2 = tr.height / 2;
+      var fullIn = inside(cx, cy)
+        && inside(cx - hw2, cy - hh2) && inside(cx + hw2, cy - hh2)
+        && inside(cx - hw2, cy + hh2) && inside(cx + hw2, cy + hh2);
+      if (fullIn) continue;
+      /* 拉回：以 anchor 落点为中心做【环形搜索】，找最近的面内点。
+         ⚠️ 不能朝"面的 bbox 中心"直线推进 —— bbox 中心未必在面内：
+           内蒙古是新月形，bbox 中心正落在凹口里、在境外，
+           朝它推进永远进不去，标签就一直卡在省外。
+         半径上限放到面 bbox 的对角线，保证"面内还有点"就一定能找到。*/
+      var hitX = null, hitY = null;
+      var maxR = Math.max(96, Math.min(240,
+        Math.round(Math.hypot(fr.width, fr.height))));
+      for (var rad = 4; rad <= maxR && hitX == null; rad += 3) {
+        var seg = Math.max(12, Math.round(rad * 1.8));
+        if (seg > 400) seg = 400;
+        for (var s = 0; s < seg; s++) {
+          var ang = s / seg * Math.PI * 2;
+          var sx2 = cx + Math.cos(ang) * rad, sy2 = cy + Math.sin(ang) * rad;
+          if (sx2 < fr.left || sx2 > fr.right || sy2 < fr.top || sy2 > fr.bottom) continue;
+          if (!inside(sx2, sy2) ||
+              !inside(sx2 - hw2, sy2 - hh2) || !inside(sx2 + hw2, sy2 - hh2) ||
+              !inside(sx2 - hw2, sy2 + hh2) || !inside(sx2 + hw2, sy2 + hh2)) continue;
+          if (!freeOfOthers(t, sx2, sy2, tr.width, tr.height)) continue;
+          hitX = sx2; hitY = sy2; break;
+        }
+      }
+      if (hitX == null) continue;
+      /* 用【增量】平移，不做世界↔屏幕坐标换算。
+         ⚠️ 踩坑：先前写成 newX = toPx(hitX - host.left)，一旦引擎的
+            scale/tx/ty 此刻不可用就会得到 NaN，属性写成 "NaN" 后
+            SVG 元素回落到原点 —— 「河北」直接飞到地图左上角 (344,56)。
+         px 图层的坐标就是容器内屏幕坐标，所以"屏幕位移"直接等于"属性位移"。*/
+      var dxs = hitX - cx, dys = hitY - cy;
+      var nx = parseFloat(t.getAttribute('x')) + dxs;
+      var ny = parseFloat(t.getAttribute('y')) + dys;
+      if (!isFinite(nx) || !isFinite(ny)) continue;
+      t.setAttribute('x', nx.toFixed(1));
+      t.setAttribute('y', ny.toFixed(1));
+      t._pxBox = { left: tr.left + dxs, right: tr.right + dxs,
+                   top: tr.top + dys, bottom: tr.bottom + dys };
+      /* anchor 与属性必须同步改：终检修的正是 anchor 落点，
+         不写回的话下一次 _syncPx 又会把标签拽回那个错位点。*/
+      if (w0) {
+        var w = this.toWorld(hitX - host.left, hitY - host.top);
+        /* isFinite 护栏：数组 [NaN,NaN] 也是 truthy，
+           直接写进去会让下一次 _syncPx 把标签重投影到 NaN，
+           SVG 属性失效 → 元素渲染在原点（屏幕左上角）。*/
+        if (w && isFinite(w[0]) && isFinite(w[1])) {
+          for (var q3 = 0; q3 < this.pxAnchors.length; q3++) {
+            if (this.pxAnchors[q3].el === t) { this.pxAnchors[q3].wx = w[0]; this.pxAnchors[q3].wy = w[1]; }
+          }
+        }
+      }
+      fixed++;
+    }
+    return { fixed: fixed, checked: checked, skipped: skipped };
+  };
+
   GeoCanvas.prototype.pxLeader = function (layerName, x1, y1, x2, y2, style) {
     var L = this.layers[layerName]; if (!L) return null;
     /* 屏幕像素 → 世界坐标 */
@@ -1055,6 +1236,24 @@ var HIDE_LABELS = ['香港', '澳门', '厦门', '济源', '苏州', '南海诸�
     }
   }
 
+  /* 螺旋搜索：找离 (px,py) 最近、且满足 keepIn 的点。
+     用于「标签必须留在自己行政区内」这一硬约束 —— 让位可以挪，
+     但绝不能挪出本行政区，否则用户看到的就是「内蒙古」三个字
+     印在黑龙江/吉林脚下，完全对不上号。*/
+  function searchNear(px, py, keepIn, maxR, step) {
+    if (keepIn(px, py)) return [px, py];
+    maxR = maxR || 40; step = step || 4;
+    for (var r = step; r <= maxR; r += step) {
+      var n = Math.max(8, Math.round(r * 1.6));
+      for (var i = 0; i < n; i++) {
+        var a = i / n * Math.PI * 2;
+        var x = px + Math.cos(a) * r, y = py + Math.sin(a) * r;
+        if (keepIn(x, y)) return [x, y];
+      }
+    }
+    return null;
+  }
+
   GeoCanvas.prototype.pxLabel = function (layerName, x, y, text, style, meta) {
     var L = this.layers[layerName]; if (!L) return null;
     if (labelHidden(text)) return null;   // 命中屏蔽名单：不画任何文字
@@ -1068,12 +1267,24 @@ var HIDE_LABELS = ['香港', '澳门', '厦门', '济源', '苏州', '南海诸�
        style.noAvoid = true 时跳过自动避让，完全尊重调用方给的坐标。*/
     var realW = measureText(text, fs, style.weight || 700);
     if (!style.noAvoid) {
+      var ox = x, oy = y;
       y = this._avoidLabels(layerName, x, y, realW, fs * 1.2, fs);
       /* _avoidLabels 可能把标签横向让位（x 会变），取回调整后的坐标。
          ⚠️ 这里不再因"位移超限"丢弃标签 ——
             实测丢得很惨（新疆 24 市只剩 12、河南 18 市只剩 7）。
             密集区里标签互相挤是常态，就近让开即可。*/
       if (this._avoidOut) { x = this._avoidOut.x; y = this._avoidOut.y; }
+      /* ⚠️⚠️ 归属约束：_avoidLabels 只管"不重叠"、【完全不知道标签属于哪个行政区】，
+         横向让位没有边界约束。实测内蒙古的锚点本在面内（面 359x284，狭长形），
+         却因东侧有黑龙江/吉林的标签而被整体右推 39px —— 结果「内蒙古」三个字
+         印在吉林脚下，用户看到的就是"内蒙古和北京没对上号"。
+         有 keepIn（本行政区面内判定）时：让位可以挪，但绝不能挪出去；
+         挪出去了就螺旋回搜最近的合法位置。*/
+      if (style.keepIn) {
+        var ok = searchNear(x, y, style.keepIn, 46, 4);
+        if (ok) { x = ok[0]; y = ok[1]; }
+        else { x = ox; y = oy; }   /* 一步都挪不动：退回调用方给的锚点 */
+      }
     }
 
     /* 描边色：默认用与底图协调的深棕黑（而非纯黑/半透明黑）。
@@ -1312,7 +1523,40 @@ var HIDE_LABELS = ['香港', '澳门', '厦门', '济源', '苏州', '南海诸�
      取每条带的中间点做候选，再用射线法筛出真正在面内的，
      最后选「离形心最近」的那个 —— 既在面内，又尽量居中。
      退化时（面很小或顶点太稀）回落到形心。 */
-  function labelAnchor(rings) {
+  /* 螺旋搜索（世界坐标版）：找离 (px,py) 最近、且在面内的点。
+     labelAnchor 的扫描线在【狭长形】上会整批落空（内蒙古是典型：
+     15 条扫描线全部落在两段之间的空白处），此时若无兜底就回退到质心 ——
+     而狭长形的质心常常落在境外或邻省（内蒙古质心在蒙古国境内）。
+     结果就是「内蒙古」三个字印在吉林脚下，与本省完全对不上号。*/
+  function spiralInRings(px, py, rings, span, ok) {
+    ok = ok || function (x, y) { return inRingsWorld(x, y, rings); };
+    if (ok(px, py)) return [px, py];
+    var step = Math.max(1, span / 240);
+    for (var r = step; r <= span * 1.2; r += step) {
+      var n = Math.max(12, Math.round(r / step));
+      if (n > 220) n = 220;
+      for (var i = 0; i < n; i++) {
+        var a = i / n * Math.PI * 2;
+        var x = px + Math.cos(a) * r, y = py + Math.sin(a) * r;
+        if (ok(x, y)) return [x, y];
+      }
+    }
+    return null;
+  }
+
+  /* 标签锚点：必须真正落在本行政区面内，且【周围要容得下整个标签】。
+     ⚠️ 只要求"锚点本身在面内"是不够的 —— 用户看到的错位多数是这种：
+        「内蒙古」三个字骑在国界上，一半压在蒙古国境内，
+        「河北」压在嵌在它中间北京的坑里，都属于"锚点在境内、
+        标签有一截在境外"。所以锚点必须让开半个标签的余量。
+     ⚠️ 选点策略也从"离质心最近"改为"面内最宽处优先"：
+        狭长形（内蒙古的新月形）靠质心的位置往往很窄，
+        标签根本放不下；真正的空间在南北两端那几条"腿"。
+     流程：扫描线求各切片的宽度 → 取最宽且容得下标签的那条中点
+           → 失败则螺旋搜索 → 再失败才用质心。
+     pad：需要在锚点四周留出的余量（世界坐标），由调用方按标签宽高换算。*/
+  function labelAnchor(rings, pad) {
+    pad = pad || 0;
     if (!rings || !rings.length) return [0, 0];
     var ct = polyCentroid(rings);
     var x0 = 1e18, x1 = -1e18, y0 = 1e18, y1 = -1e18;
@@ -1331,9 +1575,18 @@ var HIDE_LABELS = ['香港', '澳门', '厦门', '济源', '苏州', '南海诸�
        全部候选里选离形心最近的 —— 既保证在面内，又尽量居中。
        ⚠️ 早期版本用「竖直扫描 + 交点两两配对」，在多环嵌套面上
        配对会错位（北京是多环，标签被算到河北境内）。现在改为
-       用射线法直接判定每个交点是否真在面内，不依赖配对顺序。*/
-    var NB = 15;                       // 扫描线数，固定即可（小面很窄，多了也没用)
-    var best = null, bestD = Infinity;
+       用射线法直接判定每个交点是否真在面内，不依赖配对顺序。
+       ⚠️ 扫描线数从 15 提到 41：15 条对狭长形（如内蒙古 359x284 的
+       新月形）会整批落空，命中率太低。 */
+    var NB = 41;                       // 扫描线数
+    var best = null, bestD = Infinity, bestW = -1;
+    /* 某点周围是否容得下标签（四角采样） */
+    var fits = function (x, y) {
+      if (!(pad > 0)) return inRingsWorld(x, y, rings);
+      if (!inRingsWorld(x, y, rings)) return false;
+      return inRingsWorld(x - pad, y, rings) && inRingsWorld(x + pad, y, rings)
+        && inRingsWorld(x, y - pad * 0.7, rings) && inRingsWorld(x, y + pad * 0.7, rings);
+    };
     for (var k = 1; k < NB; k++) {
       var sy = y0 + h * k / NB;
       var xs = [];
@@ -1355,47 +1608,96 @@ var HIDE_LABELS = ['香港', '澳门', '厦门', '济源', '苏州', '南海诸�
         if (xIn && prev === null) prev = xs[s];
         else if (!xIn && prev !== null) {
           var mid = (prev + xs[s]) / 2;
+          var segW = xs[s] - prev;
           var d = (mid - ct[0]) * (mid - ct[0]) + (sy - ct[1]) * (sy - ct[1]);
-          if (d < bestD) { bestD = d; best = [mid, sy]; }
+          /* 宽度优先；同宽再比离质心的距离 */
+          if (segW > bestW + 1e-6 || (segW > bestW - 1e-6 && d < bestD)) {
+            if (fits(mid, sy)) { bestW = segW; bestD = d; best = [mid, sy]; }
+          }
           prev = null;
         }
       }
       if (prev !== null && xs.length) {
         // 区间一直开到边界外：用最右交点收尾
         var mid2 = (prev + xs[xs.length - 1]) / 2;
-        if (inRingsWorld(mid2, sy, rings)) {
+        if (fits(mid2, sy)) {
+          var segW2 = xs[xs.length - 1] - prev;
           var d2 = (mid2 - ct[0]) * (mid2 - ct[0]) + (sy - ct[1]) * (sy - ct[1]);
-          if (d2 < bestD) { bestD = d2; best = [mid2, sy]; }
+          if (segW2 > bestW + 1e-6 || (segW2 > bestW - 1e-6 && d2 < bestD)) {
+            bestW = segW2; bestD = d2; best = [mid2, sy];
+          }
         }
       }
     }
     /* 校验：候选必须真在面内（防御扫描线退化）
        ⚠️ 关键：北京的面在屏幕上只有 19×19px，而它与河北的面心相距很近，
           扫描线稍偏就落到邻省去了。必须用射线法复核。*/
-    if (best && inRingsWorld(best[0], best[1], rings)) return best;
-    return ct;
+    if (best && fits(best[0], best[1])) return best;
+    /* 扫描线全灭（狭长形）→ 从质心螺旋搜索最近的内部点，
+       绝不把质心直接当锚点 —— 狭长形的质心常落在境外。*/
+    var sp = spiralInRings(ct[0], ct[1], rings, Math.max(w, h), fits);
+    if (sp) return sp;
+    sp = spiralInRings((x0 + x1) / 2, (y0 + y1) / 2, rings, Math.max(w, h), fits);
+    return sp || ct;
   }
 
-  /* 射线法：点是否在多边形集合内（even-odd，环按奇偶抵消） */
-  function inRingsWorld(px, py, rings) {
+  /* 单环射线法：点是否在这个环的多边形内（even-odd）。 */
+  function inRing(px, py, r) {
     var inside = false;
-    for (var i = 0; i < rings.length; i++) {
-      var r = rings[i];
-      for (var j = 0, k = r.length - 1; j < r.length; k = j++) {
-        var yi = r[j][1], yk = r[k][1];
-        if ((yi > py) !== (yk > py)) {
-          var xc = r[k][0] + (py - yk) / (yi - yk) * (r[j][0] - r[k][0]);
-          if (px < xc) inside = !inside;
-        }
+    for (var j = 0, k = r.length - 1; j < r.length; k = j++) {
+      var yi = r[j][1], yk = r[k][1];
+      if ((yi > py) !== (yk > py)) {
+        var xc = r[k][0] + (py - yk) / (yi - yk) * (r[j][0] - r[k][0]);
+        if (px < xc) inside = !inside;
       }
     }
     return inside;
+  }
+
+  /* 点是否在多边形集合内。
+     ⚠️ 纯 even-odd（所有环一起数穿越次数）在"外环 + 洞 + 飞地"的数据上会错：
+        飞地与外环同向，却也被当成洞抵消掉。
+     实测河北省是 4 个环（北京嵌在河北里 = 洞，渤海小岛/无棣 = 飞地），
+     纯 even-odd 把「河北」的标签锚点算进了北京的坑里 ——
+     屏幕上"河北"两个字正印在北京的位置上，随后 _syncPx 把它固化。
+
+     正确做法（与浏览器 isPointInFill 一致）：
+       ① 面积最大的环 = 外环，点必须在其中；
+       ② 其余环若落在外环内 → 是"洞"，抵消；
+          其余环若在外环外 → 是"飞地"，命中即为真（同类多个洞用奇偶抵消）。
+     判据以浏览器原生 isPointInFill 为准（fixLabelHome 就是这么做的）。*/
+  function inRingsWorld(px, py, rings) {
+    if (!rings || !rings.length) return false;
+    if (rings.length === 1) return inRing(px, py, rings[0]);
+    var bi = 0, ba = -1;
+    for (var i = 0; i < rings.length; i++) {
+      var a = Math.abs(polyArea(rings[i]));
+      if (a > ba) { ba = a; bi = i; }
+    }
+    var inBase = inRing(px, py, rings[bi]);
+    if (!inBase) {
+      // 飞地：在外环之外，但自己内部也算本行政区的一部分
+      for (var j2 = 0; j2 < rings.length; j2++) {
+        if (j2 === bi) continue;
+        if (inRing(px, py, rings[j2])) return true;
+      }
+      return false;
+    }
+    // 在外环内：减去嵌在外环里的洞（同类多个洞用奇偶抵消）
+    var holes = 0;
+    for (var k2 = 0; k2 < rings.length; k2++) {
+      if (k2 === bi) continue;
+      if (inRing(px, py, rings[k2])) holes++;
+    }
+    return (holes % 2) === 0;
   }
 
   global.GeoCanvas = GeoCanvas;
   global.G = {
     mercY: mercY, lngToX: lngToX, xToLng: xToLng, yToLat: yToLat,
     mulberry32: mulberry32, pointInRings: pointInRings, ringsBBox: ringsBBox,
-    polyCentroid: polyCentroid, polyArea: polyArea, labelAnchor: labelAnchor
+    polyCentroid: polyCentroid, polyArea: polyArea, labelAnchor: labelAnchor,
+    /* 世界坐标版的点在多边形内判定 —— 标签归属约束要用它 */
+    inRingsWorld: inRingsWorld, searchNear: searchNear, spiralInRings: spiralInRings
   };
 })(window);
