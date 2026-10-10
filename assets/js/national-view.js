@@ -17,10 +17,24 @@
 
   var MI = null;          // 本视图的 DualMap 实例
   var RS = window.RasterEngine;
-  var N = {
+  /* 图层状态。
+   activeLayer 保留为「主专题」——图例、详情面板仍以它为准，
+   layers 则是真正的显示集合（可多选叠加、可全空）。
+   ⚠️ 原来只有 rasterOn 一个总开关 + 单选专题，无法表达
+   「底图 + NDVI + 灾情」三层同显，也无法表达「全关只剩底图」。
+   用户诉求即这两点，故改为集合语义。 */
+var N = {
     level: 'country', curProvince: null, curCity: null, activeLayer: 'ndvi',
     satOn: true, engine: '', ready: false, cityCache: {}, countyCache: {},
-    rasterOn: true, lastStats: null
+    rasterOn: true, lastStats: null,
+    /* 遥感专题（栅格）显示集合：键为 LAYERS 的 key */
+    rasterSet: { ndvi: true },
+    /* 业务专题（矢量）显示集合 */
+    bizSet: {},
+    /* 地理要素独立开关 */
+    showEdge: true,      // 行政边界
+    showLabel: true,     // 地名标注
+    showBase: true       // 卫星影像底图
   };
   window.__NAT__ = N;
 
@@ -699,36 +713,62 @@
     if (!RS || !MI || !MI.svg) return;
     var layer = opt.layer || N.activeLayer;
     var topic = rasterFor(layer);
-    // 无栅格专题时隐藏栅格层
-    Object.keys(RS.layers).forEach(function (k) {
-      if (k !== topic) RS.setVisible(k, false);
-    });
-    if (!topic || !N.rasterOn) {
-      if (topic) RS.setVisible(topic, false);
+    var st = MI.svg;
+
+    /* ── 多专题叠加 ──
+       原来只渲染一个专题，并把其余专题 canvas 全部隐藏
+       （`if (k !== topic) setVisible(k,false)`）。
+       现在按 N.rasterSet 决定显示哪些专题，逐个渲染；
+       主专题（topic）负责图例/统计/遮罩，其余专题叠加在其上、各自半透明，
+       这样「底图 + NDVI + 灾情」才能同显。
+       ⚠️ 叠加顺序：按 LAYERS 声明顺序渲染，后渲染的压在上面，
+          避免受用户勾选顺序影响（否则图例与画面会不一致）。*/
+    var order = Object.keys(NAT.LAYERS).filter(function (k) { return !!N.rasterSet[k]; });
+    // 主专题必须在场（详情/图例以它为准）
+    if (topic && order.indexOf(topic) < 0) order.unshift(topic);
+    // 未勾选任何遥感专题 → 关闭全部栅格层，只留底图与业务面
+    if (!N.rasterOn || !order.length) {
+      /*⚠️ 必须逐个显式 setVisible(false)：`_apply` 里的 onRasterRefresh
+         也会调 renderRaster，而 RS.setVisible 是直接改 canvas.style.display，
+         只要有一层漏关，它就会继续显示在画面上
+         （实测「清空专题」后仍有 1 个 canvas 是 display:block）。*/
+      Object.keys(RS.layers).forEach(function (k) { RS.setVisible(k, false); });
       N.lastStats = null;
       if (opt && opt.onStats) opt.onStats(null);
+      if (opt && opt.overlay !== false) paintOverlay(opt.overlay || {});
       return;
     }
-    var st = MI.svg;
     if (!st._vw || !st._vh) return;
-
-    var fn = RS.VALUE_FN[topic] || RS.ndvi;
-    // ★ 真实 Sentinel-2 优先：县级视图且该县有实测网格时，用实测值场
-    var rec = (N.level === 'county') ? s2Of(opt.code) : null;
-    var realFn = rec ? makeS2ValueFn(rec, st) : null;
-    N.s2Active = rec ? rec : null;
-    // 遮罩到当前行政边界（setMask 内部投影为像素坐标，逐像元判定）
-    RS.setMask(st, (opt.rings && opt.rings.length) ? opt.rings : null);
 
     applyRasterMode();
     if (opt.overlay !== false) paintOverlay(opt.overlay || {});
-    RS.render({
-      geo: st, topic: topic, stops: stopsFor(layer),
-      seed: opt.seed == null ? seedFor(layer, opt.code || 0) : opt.seed,
-      valueFn: realFn ? realFn : function (wx, wy, sd) { return fn(wx, wy, sd); },
-      pixelM: opt.pixelM || 460,
-      alpha: opt.alpha == null ? RASTER_ALPHA : opt.alpha,
-      onStats: function (s) { N.lastStats = s; if (opt.onStats) opt.onStats(s); }
+
+    // 遮罩到当前行政边界（setMask 内部投影为像素坐标，逐像元判定）
+    RS.setMask(st, (opt.rings && opt.rings.length) ? opt.rings : null);
+
+    order.forEach(function (tk, i) {
+      var isMain = (tk === topic);
+      var fn = RS.VALUE_FN[tk] || RS.ndvi;
+      var rec = (N.level === 'county' && isMain) ? s2Of(opt.code) : null;
+      var realFn = rec ? makeS2ValueFn(rec, st) : null;
+      if (isMain) N.s2Active = rec ? rec : null;
+      /* 非主专题半透明叠加：全不透明会把下层专题完全遮住。
+         alpha 随"勾了几个"动态收敛：勾 1 个=原值，勾 2 个≈0.72，勾 3+≈0.58。*/
+      var a = opt.alpha == null ? RASTER_ALPHA : opt.alpha;
+      if (!isMain) a *= (order.length > 2 ? 0.58 : 0.72);
+      RS.render({
+        geo: st, topic: tk, stops: stopsFor(tk === topic ? layer : tk),
+        seed: isMain ? (opt.seed == null ? seedFor(layer, opt.code || 0) : opt.seed)
+                    : seedFor(tk, opt.code || 0),
+        valueFn: realFn ? realFn : function (wx, wy, sd) { return fn(wx, wy, sd); },
+        pixelM: opt.pixelM || 460,
+        alpha: a,
+        onStats: isMain ? function (s) { N.lastStats = s; if (opt.onStats) opt.onStats(s); } : null
+      });
+    });
+    // 集合外的专题一律隐藏
+    Object.keys(RS.layers).forEach(function (k) {
+      if (order.indexOf(k) < 0) RS.setVisible(k, false);
     });
   }
 
@@ -925,7 +965,9 @@
       var src = MI.svg.layers.lab;
       var moved = [];
       var hb = MI.host.getBoundingClientRect();
-      if (src && src.pxItems) {
+      /* showLabel=false 时 pxItems 已无标签，这里 clearOverlayLabels
+         把描边层里上一帧残留的字清掉（实测关掉标注后旧标签仍留在图上）。*/
+      if (src && src.pxItems && N.showLabel) {
         for (var si = 0; si < src.pxItems.length; si++) {
           var it = src.pxItems[si];
           if (!it._lx || !it._pxBox) continue;
@@ -940,16 +982,16 @@
             parseFloat(it.getAttribute('font-size')) || 10.5, 0]);
         }
       }
-      if (moved.length) {
-        RS.clearOverlayLabels(MI.host);
-        moved.forEach(function (L) {
-          /* ⚠️ overlayLabel 默认把入参当【世界坐标】再 toScreen 换算；
+      /* 无论有没有标签都要清理一次：showLabel 关掉后 moved 为空，
+         但描边层里还留着上一帧的字，不清就会一直挂在图上。*/
+      RS.clearOverlayLabels(MI.host);
+      moved.forEach(function (L) {
+        /* ⚠️ overlayLabel 默认把入参当【世界坐标】再 toScreen 换算；
              这里传的是 pxLabel 写下的 _pxBox 换算来的容器内像素坐标，
              必须显式声明 screenSpace，否则会被再换算一次而整体偏出容器。*/
-          RS.overlayLabel(MI.host, MI.svg, L[0], L[1], L[2],
-            { fill: L[3], size: L[4], weight: 700, dy: L[5], screenSpace: true });
-        });
-      }
+        RS.overlayLabel(MI.host, MI.svg, L[0], L[1], L[2],
+          { fill: L[3], size: L[4], weight: 700, dy: L[5], screenSpace: true });
+      });
     }
   }
 
@@ -2302,25 +2344,43 @@
        （alpha 0.22/0.55），缩放时看不跟着变，用户完全无感。 */
     var rasterTimer = null, rasterDirty = false;
     function doRasterRefresh() {
-      if (!N.rasterOn || !rasterFor(N.activeLayer)) return;
+      /* 视图变化后要重算的是【当前勾选的所有专题】，不再只是主专题。
+         原来只画lk = N.activeLayer 一个，用户叠加了 3 个专题时
+         拖动/缩放会只更新第1 个、另两个与视野错位（像元不跟图动）。*/
+      var list = Object.keys(NAT.LAYERS).filter(function (k) { return N.rasterSet[k]; });
+      if (list.length) {
+        var main = rasterFor(N.activeLayer);
+        if (main && list.indexOf(main) < 0) list.unshift(main);
+      }
+      if (!N.rasterOn || !list.length) {
+        if (RS) Object.keys(RS.layers).forEach(function (k) { RS.setVisible(k, false); });
+        return;
+      }
       var coarse = (N.level !== 'county' && N.level !== 'city' &&
                     N.level !== 'town' && N.level !== 'village');
       if (coarse) return;                       // 大尺度不重算
       var rings = currentClipRings();
-      var lk = N.activeLayer;
-      RS.setVisible(lk, true);
       RS.setMask(MI.svg, rings);
       syncOverlay();
-      RS.render({
-        geo: MI.svg, topic: lk, stops: stopsFor(lk),
-        seed: seedFor(lk, currentCode()),
-        valueFn: function (wx, wy, sd) { return (RS.VALUE_FN[lk] || RS.ndvi)(wx, wy, sd); },
-        pixelM: pixelForLevel(),
-        alpha: alphaForLevel()
+      list.forEach(function (lk, i) {
+        var isMain = (lk === main);
+        var a = alphaForLevel();
+        if (!isMain) a *= (list.length > 2 ? 0.58 : 0.72);
+        RS.render({
+          geo: MI.svg, topic: lk, stops: stopsFor(lk),
+          seed: seedFor(lk, currentCode()),
+          valueFn: function (wx, wy, sd) { return (RS.VALUE_FN[lk] || RS.ndvi)(wx, wy, sd); },
+          pixelM: pixelForLevel(),
+          alpha: a
+        });
       });
     }
     MI.svg.onRasterRefresh = function () {
-      if (!N.rasterOn || !rasterFor(N.activeLayer)) return;
+      /* 判据改为「有勾选中的专题」，与 doRasterRefresh 保持一致 ——
+         否则用户清空全部专题后，onRasterRefresh 仍因 activeLayer 有值而排队，
+         150ms 后又把它画回来（实测清空后又冒出一个专题层）。*/
+      var any = Object.keys(N.rasterSet).some(function (k) { return N.rasterSet[k]; });
+      if (!N.rasterOn || !any) return;
       rasterDirty = true;
       if (rasterTimer) return;                  // 静默期内已排队
       rasterTimer = setTimeout(function () {
@@ -2924,22 +2984,42 @@
     }) : [];
     // 长名优先：短名（小市）随后由引擎让位，避免被长名挤到无处可去
     labQueue.sort(function (a, b) { return b.name.length - a.name.length; });
-    labQueue.forEach(function (o) {
-      DM.pxLabel(MI, 'lab', o.px.x, o.px.y, o.name,
-        { fill: '#fff', size: 10.5, halo: '#1c1408' });
-    });
+    /* showLabel=false 时不画任何地名（用户在图层面板里关掉了"地名标注"）。
+       此时仍要走 renderRaster的 syncLabels，否则上一次的标签会留在描边层里。*/
+    if (N.showLabel) {
+      labQueue.forEach(function (o) {
+        DM.pxLabel(MI, 'lab', o.px.x, o.px.y, o.name,
+          { fill: '#fff', size: 10.5, halo: '#1c1408' });
+      });
+    }
 
     list.forEach(function (c) {
       var v = NAT.topicValue(N.activeLayer, c.c);
-      var col;
-      if (N.activeLayer === 'cover') col = 'rgb(59,130,246)';
-      else if (N.activeLayer === 'disaster') col = 'rgb(248,113,113)';
-      else col = ramp(stops, v);
-      var rgb = rgbOf(col);
+      /* 业务专题（矢量色块）改为按 bizSet 叠加：
+         没勾任何业务专题时填中性色（纯行政区底图），
+         勾了 1 个用它的口径，勾了 2 个时后一个半透明压在前一个上，
+         用户能同时看"承保规模"与"灾情分布"两类信息。*/
+      var bizs = Object.keys(N.bizSet).filter(function (k) { return N.bizSet[k]; });
+      var rgb;
+      if (!bizs.length) {
+        /* 中性填充：低饱和青灰，既能看出行政区范围又不抢专题的视觉 */
+        rgb = [70, 96, 124];
+      } else {
+        var base = bizs[bizs.length - 1];
+        rgb = rgbOf(base === 'cover' ? 'rgb(59,130,246)' : 'rgb(248,113,113)');
+      }
       DM.area(MI, { n: c.n, c: c.c, kind: 'city', r: abs(c) }, {
-        fill: 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',.62)',
-        stroke: EDGE.vill.c, strokeWidth: 1.05
+        fill: 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',' + (bizs.length ? .62 : .38) + ')',
+        stroke: N.showEdge ? EDGE.vill.c : 'rgba(255,255,255,.14)',
+        strokeWidth: N.showEdge ? 1.05 : .5
       });
+      // 灾情分布叠加一层红色描边（不重复填色，避免把承保色盖掉）
+      if (N.bizSet.disaster) {
+        DM.area(MI, { n: c.n, c: c.c + '-d', kind: 'city', r: abs(c) }, {
+          fill: 'rgba(248,113,113,.001)',
+          stroke: 'rgba(248,113,113,.9)', strokeWidth: 2.4
+        });
+      }
       var b = abox(c);
       bbox = bbox ? [Math.min(bbox[0], b[0]), Math.min(bbox[1], b[1]), Math.max(bbox[2], b[2]), Math.max(bbox[3], b[3])] : b.slice();
     });
@@ -3303,48 +3383,176 @@
     var TAG = { ndvi: 'tag-green', drought: 'tag-orange', flood: 'tag-blue', hail: 'tag-purple',
       biomass: 'tag-green', gdd: 'tag-yellow', soilMoisture: 'tag-teal', lst: 'tag-red' };
     // 遥感观测类专题（栅格影像）放一组；业务分级类（矢量色块）另置一组，避免混淆口径
+    /* 图层面板：五组，每项独立开关、可叠加、可全关。
+       ⚠️ 原来是"单选列表"——点一个专题就把其余全取消（classList.remove('on')），
+       用户没法同时看 NDVI 和灾情，也没法"全关只剩底图"。
+       现在改为复选语义：
+         遥感专题  栅格影像，多选叠加，按 LAYERS 顺序渲染
+         业务专题  矢量色块，多选叠加
+         基础底图  卫星影像 / 纯矢量
+         行政边界 省市区县乡界线
+         地名标注  各行政区名称
+       主专题（activeLayer）= 勾选中的第一个遥感专题，供图例与详情用。*/
     var rsItems = keys.map(function (k) {
       var L = NAT.LAYERS[k];
-      return '<div class="row lay' + (k === 'ndvi' ? ' on' : '') + '" data-lay="' + k + '">' +
-        '<div class="row-h"><div class="row-t">' + L.name + '</div>' +
-        '<span class="tag ' + (TAG[k] || 'tag-grey') + '">' + (k === 'ndvi' ? '推荐' : '遥感') + '</span></div>' +
-        '<div class="row-m"><span class="ell">' + L.desc + '</span></div></div>';
+      var on = !!N.rasterSet[k];
+      return '<div class="layrow' + (on ? ' on' : '') + '" data-lay="' + k + '" data-kind="raster" role="checkbox" aria-checked="' + on + '" tabindex="0">' +
+        '<i class="laybox"></i>' +
+        '<div class="laytx"><div class="laynm">' + L.name + '</div>' +
+        '<div class="layds ell">' + L.desc + '</div></div>' +
+        '<span class="tag ' + (TAG[k] || 'tag-grey') + '">' + (k === 'ndvi' ? '推荐' : '遥感') + '</span>' +
+        '</div>';
     }).join('');
     var bizItems =
-      '<div class="row lay" data-lay="cover"><div class="row-h"><div class="row-t">承保热力分布</div><span class="tag tag-yellow">业务</span></div>' +
-      '<div class="row-m"><span>按保费规模分级渲染（矢量）</span></div></div>' +
-      '<div class="row lay" data-lay="disaster"><div class="row-h"><div class="row-t">灾情分布场</div><span class="tag tag-red">业务</span></div>' +
-      '<div class="row-m"><span>在监预警影响范围（矢量）</span></div></div>';
-    $('#nat-layers').innerHTML =
-      '<div class="lay-group">遥感观测专题 · 切换后为遥感影像</div>' + rsItems +
-      '<div class="lay-group">业务分级专题 · 切换后为矢量色块</div>' + bizItems;
+      '<div class="layrow' + (N.bizSet.cover ? ' on' : '') + '" data-lay="cover" data-kind="biz" role="checkbox" aria-checked="' + !!N.bizSet.cover + '" tabindex="0">' +
+      '<i class="laybox"></i><div class="laytx"><div class="laynm">承保热力分布</div>' +
+      '<div class="layds">按保费规模分级渲染（矢量）</div></div>' +
+      '<span class="tag tag-yellow">业务</span></div>' +
+      '<div class="layrow' + (N.bizSet.disaster ? ' on' : '') + '" data-lay="disaster" data-kind="biz" role="checkbox" aria-checked="' + !!N.bizSet.disaster + '" tabindex="0">' +
+      '<i class="laybox"></i><div class="laytx"><div class="laynm">灾情分布场</div>' +
+      '<div class="layds">在监预警影响范围（矢量）</div></div>' +
+      '<span class="tag tag-red">业务</span></div>';
+    var geoItems =
+      '<div class="layrow' + (N.showBase ? ' on' : '') + '" data-lay="base" role="checkbox" aria-checked="' + !!N.showBase + '" tabindex="0">' +
+      '<i class="laybox"></i><div class="laytx"><div class="laynm">卫星影像底图</div>' +
+      '<div class="layds">Esri World Imagery 真实影像</div></div><span class="tag tag-blue">底图</span></div>' +
+      '<div class="layrow' + (N.showEdge ? ' on' : '') + '" data-lay="edge" role="checkbox" aria-checked="' + !!N.showEdge + '" tabindex="0">' +
+      '<i class="laybox"></i><div class="laytx"><div class="laynm">行政边界</div>' +
+      '<div class="layds">省 / 市 / 县 / 乡镇界线</div></div><span class="tag tag-grey">矢量</span></div>' +
+      '<div class="layrow' + (N.showLabel ? ' on' : '') + '" data-lay="label" role="checkbox" aria-checked="' + !!N.showLabel + '" tabindex="0">' +
+      '<i class="laybox"></i><div class="laytx"><div class="laynm">地名标注</div>' +
+      '<div class="layds">各行政区名称与引线避让</div></div><span class="tag tag-grey">矢量</span></div>';
 
-    $$('#nat-layers .lay').forEach(function (el) {
+    $('#nat-layers').innerHTML =
+      '<div class="lay-bar">' +
+      '<button class="laybtn" data-act="solo" title="只保留这一层">仅此层</button>' +
+      '<button class="laybtn" data-act="all" title="全部遥感专题叠加">全选遥感</button>' +
+      '<button class="laybtn" data-act="none" title="关闭全部专题，只留底图">清空专题</button>' +
+      '<span class="laycnt" id="lay-cnt"></span></div>' +
+      '<div class="lay-group">遥感观测专题 · 可多选叠加</div>' + rsItems +
+      '<div class="lay-group">业务分级专题 · 可多选叠加</div>' + bizItems +
+      '<div class="lay-group">底图与地理要素</div>' + geoItems;
+
+    bindLayerPanel();
+    updateLayerCount();
+  }
+
+  /* 勾选数量提示：让用户随时知道"现在叠了几层" */
+  function updateLayerCount() {
+    var el = $('#lay-cnt'); if (!el) return;
+    var n = Object.keys(N.rasterSet).filter(function (k) { return N.rasterSet[k]; }).length +
+            Object.keys(N.bizSet).filter(function (k) { return N.bizSet[k]; }).length;
+    el.textContent = n ? ('已叠加 ' + n + ' 个专题') : '未叠加专题';
+    el.classList.toggle('zero', n === 0);
+  }
+
+  /* 集合为空时把所有栅格 canvas 彻底隐藏。
+     ⚠️ 必须在 redrawCurrent【之后】调用，且不能放在 updateLayerCount 里 ——
+       updateLayerCount 先跑、redrawCurrent 后跑，而 redrawCurrent → renderRaster
+       会把主专题再打开一次（实测全选8层后点"清空专题"，
+       canvas#0 仍是 display:block、alpha=140，专题"复活"了）。
+     用独立函数、在重绘完成后再扫一遍，顺序才对。*/
+  function hideAllRaster() {
+    if (!RS || !RS.layers) return;
+    var any = Object.keys(N.rasterSet).some(function (k) { return N.rasterSet[k]; });
+    if (any || !N.rasterOn) return;
+    Object.keys(RS.layers).forEach(function (k) {
+      RS.setVisible(k, false);
+      var c = RS.layers[k] && RS.layers[k].canvas;
+      if (c) c.style.display = 'none';
+    });
+  }
+
+  /* 切换某个专题的显示，并把主专题指向"勾选中的第一个" */
+  function toggleLayer(el) {
+    var kind = el.dataset.kind, lay = el.dataset.lay;
+    var set = kind === 'biz' ? N.bizSet : N.rasterSet;
+    var next = !set[lay];
+    set[lay] = next;
+    el.classList.toggle('on', next);
+    el.setAttribute('aria-checked', String(next));
+    // 遥感专题：主专题跟随「第一个勾选项」，保证图例/详情与画面一致
+    if (kind !== 'biz') {
+      var first = Object.keys(NAT.LAYERS).filter(function (k) { return N.rasterSet[k]; })[0];
+      if (first && !N.rasterSet[N.activeLayer]) N.activeLayer = first;
+    }
+    // 勾掉了主专题但还有别的 → 主专题让位；一个都没勾 → 保留记忆值供图例回显
+    if (kind !== 'biz') {
+      var cur = Object.keys(NAT.LAYERS).filter(function (k) { return N.rasterSet[k]; })[0];
+      if (cur) N.activeLayer = cur;
+    }
+    updateLayerCount();
+    buildLegend();
+    if (window.__APP__ && window.__APP__.closeDetail) window.__APP__.closeDetail();
+    redrawCurrent();
+    hideAllRaster();     // 必须重绘之后：renderRaster 会把主专题再打开
+  }
+
+  function bindLayerPanel() {
+    var box = $('#nat-layers');
+    $$('#nat-layers .layrow').forEach(function (el) {
       el.addEventListener('click', function () {
-        $$('#nat-layers .lay').forEach(function (x) { x.classList.remove('on'); });
-        el.classList.add('on');
-        N.activeLayer = el.dataset.lay;
-        buildLegend();
-        // 详情抽屉是打开那一刻的快照，切换专题后其内容已与地图不一致，
-        // 留着会让人误以为「地图没换专题」。直接收起，重新点要素即可看到新专题详情。
-        if (window.__APP__ && window.__APP__.closeDetail) window.__APP__.closeDetail();
-        redrawCurrent();
+        var lay = el.dataset.lay;
+        if (lay === 'base') { N.showBase = !N.showBase; applyBaseVisibility(); return; }
+        if (lay === 'edge') { N.showEdge = !N.showEdge; el.classList.toggle('on', N.showEdge);
+          el.setAttribute('aria-checked', String(N.showEdge)); redrawCurrent(); return; }
+        if (lay === 'label') { N.showLabel = !N.showLabel; el.classList.toggle('on', N.showLabel);
+          el.setAttribute('aria-checked', String(N.showLabel)); redrawCurrent(); return; }
+        toggleLayer(el);
+      });
+      el.addEventListener('keydown', function (e) {
+        if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); el.click(); }
       });
     });
-
-    // 栅格/矢量影像开关
-    var rg = $('#nat-raster-toggle');
-    if (rg) rg.addEventListener('click', function () {
-      N.rasterOn = !N.rasterOn;
-      rg.classList.toggle('off', !N.rasterOn);
-      rg.querySelector('span').textContent = N.rasterOn ? '影像' : '纯矢量';
-      applyRasterMode();
-      if (N.rasterOn) redrawCurrent();
-      else {
-        if (RS) { Object.keys(RS.layers).forEach(function (k) { RS.setVisible(k, false); }); }
-        paintGrowthPanel(null);
-      }
+    $$('#nat-layers .laybtn').forEach(function (b) {
+      b.addEventListener('click', function (e) {
+        e.stopPropagation();
+        var act = b.dataset.act;
+        if (act === 'none') {
+          N.rasterSet = {}; N.bizSet = {};
+        } else if (act === 'all') {
+          N.rasterSet = {}; Object.keys(NAT.LAYERS).forEach(function (k) { N.rasterSet[k] = true; });
+          N.activeLayer = 'ndvi';
+        } else if (act === 'solo') {
+          var on = el_currentLayerKey();
+          if (on) { N.rasterSet = {}; N.bizSet = {}; N.rasterSet[on] = true; N.activeLayer = on; }
+        }
+        syncLayerPanelUI();
+        updateLayerCount();
+        buildLegend();
+        if (window.__APP__ && window.__APP__.closeDetail) window.__APP__.closeDetail();
+        redrawCurrent();
+        hideAllRaster();     // 同上：清空后必须再扫一遍
+      });
     });
+  }
+  /* 当前"主专题"对应的图层行（用于"仅此层"） */
+  function el_currentLayerKey() {
+    var el = $('#nat-layers .layrow[data-kind="raster"][data-lay="' + N.activeLayer + '"]');
+    return el && el.classList.contains('on') ? N.activeLayer
+      : (Object.keys(NAT.LAYERS).filter(function (k) { return N.rasterSet[k]; })[0] || null);
+  }
+  /* 状态变了但 DOM 也要跟着变（"全选/清空"是批量操作） */
+  function syncLayerPanelUI() {
+    $$('#nat-layers .layrow').forEach(function (el) {
+      var lay = el.dataset.lay, on;
+      if (el.dataset.kind === 'biz') on = !!N.bizSet[lay];
+      else if (lay === 'base') on = !!N.showBase;
+      else if (lay === 'edge') on = !!N.showEdge;
+      else if (lay === 'label') on = !!N.showLabel;
+      else on = !!N.rasterSet[lay];
+      el.classList.toggle('on', on);
+      el.setAttribute('aria-checked', String(on));
+    });
+  }
+
+  /* 底图显隐：关掉影像时只留纯色矢量底 */
+  function applyBaseVisibility() {
+    var el = $('#nat-layers .layrow[data-lay="base"]');
+    if (el) { el.classList.toggle('on', N.showBase); el.setAttribute('aria-checked', String(N.showBase)); }
+    if (MI && MI.esri) { try { MI.esri.host.style.display = N.showBase ? '' : 'none'; } catch (e) { } }
+    if (MI && MI.tmapHost) MI.tmapHost.style.display = N.showBase ? '' : 'none';
+    redrawCurrent();
   }
 
   /* 栅格影像模式：给容器加 has-raster，让 SVG 层背景透明
@@ -3352,7 +3560,13 @@
   function applyRasterMode() {
     var host = $('#nat-map');
     if (!host) return;
-    var on = N.rasterOn && !!rasterFor(N.activeLayer);
+    /* 有专题才进栅格模式。
+       ⚠️ 判断必须看【勾选集合】而不是 activeLayer：
+       用户把全部专题取消后 activeLayer 仍保留记忆值，
+       若仍按它判断，容器会保持 has-raster（SVG 背景被清成透明），
+       画面变成"没有底图也没有专题"的空白。*/
+    var any = Object.keys(N.rasterSet).some(function (k) { return N.rasterSet[k]; });
+    var on = N.rasterOn && any;
     host.classList.toggle('has-raster', on);
     if (MI && MI.host) MI.host.classList.toggle('has-raster', on);
   }

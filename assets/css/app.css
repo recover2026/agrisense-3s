@@ -245,6 +245,46 @@ tr.row-click.on{background:rgba(255,211,90,.14)}
    不要用 JS 按字符数截断（中文会切在词中间，读起来像乱码）。 */
 .row-m .ell{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
+/* ========== 图层控制面板（可叠加 / 可全关） ==========
+   原来只有单选列表（点一个专题其余全取消），无法表达
+   「底图 + NDVI + 灾情」同显，也无法「全关只剩底图」。
+   现在每项是一个带复选框的行，批量操作放在顶部工具条。 */
+.lay-bar{display:flex;align-items:center;gap:5px;padding:2px 0 7px;flex-wrap:wrap}
+.laybtn{
+  background:rgba(255,255,255,.06);border:1px solid var(--line-2);
+  color:var(--txt-2);font-size:11px;padding:4px 9px;border-radius:6px;
+  cursor:pointer;font-family:inherit;white-space:nowrap;transition:.15s;
+}
+.laybtn:hover{background:rgba(255,255,255,.13);border-color:var(--brand);color:var(--txt)}
+.laybtn:active{transform:translateY(1px)}
+.laycnt{margin-left:auto;font-size:10.5px;color:var(--txt-3);font-variant-numeric:tabular-nums}
+.laycnt.zero{color:var(--txt-3);opacity:.8}
+
+.layrow{
+  display:flex;align-items:flex-start;gap:8px;padding:8px 9px;
+  border-radius:7px;cursor:pointer;margin-bottom:2px;
+  border:1px solid transparent;transition:background .14s,border-color .14s;
+}
+.layrow:hover{background:rgba(255,255,255,.06)}
+.layrow:focus-visible{outline:2px solid var(--brand);outline-offset:1px}
+/* 勾选态：左侧复选框点亮 + 整行微高亮，让"当前叠了哪几层"一眼可见 */
+.layrow.on{background:rgba(59,130,246,.11);border-color:rgba(59,130,246,.38)}
+.laybox{
+  flex:0 0 auto;width:15px;height:15px;margin-top:2px;border-radius:4px;
+  border:1.5px solid var(--txt-3);background:rgba(0,0,0,.25);
+  position:relative;transition:.15s;
+}
+.layrow.on .laybox{background:var(--brand);border-color:var(--brand)}
+.layrow.on .laybox::after{
+  content:'';position:absolute;left:4px;top:1px;width:4px;height:8px;
+  border:solid #fff;border-width:0 2px 2px 0;transform:rotate(42deg);
+}
+.laytx{flex:1;min-width:0}
+.laynm{font-size:12.5px;font-weight:700;color:var(--txt);line-height:1.35}
+.layrow.on .laynm{color:#fff}
+.layds{font-size:10.5px;color:var(--txt-3);line-height:1.45;margin-top:2px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
 .bar{height:6px;border-radius:6px;background:rgba(255,255,255,.09);overflow:hidden;margin-top:5px}
 .bar>i{display:block;height:100%;border-radius:6px;background:linear-gradient(90deg,var(--brand-2),var(--brand));transition:width .5s}
 
