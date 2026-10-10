@@ -907,17 +907,49 @@
         stroke: EDGE.vill.c, width: 1.0
       });
     }
-    // 面标注（县名/市名）
-    if (opt.labels && MI.svg._vw >= 420) {
-      var st = MI.svg;
-      (opt.labels || []).forEach(function (L) {
-        // 只在视野内标注
-        var sp = st.toPx(L[0], L[1]);
-        if (sp.x < 40 || sp.x > st._vw - 40 || sp.y < 30 || sp.y > st._vh - 30) return;
-        RS.overlayLabel(MI.host, st, L[0], L[1], L[2], {
-          fill: L[3] || '#fff', size: L[4] || 12, weight: 700, dy: L[5] || 0
+    /* 面标注（县名/市名）—— 【同步业务层已画的标签】，不是另画一套。
+       ⚠️ 背景与三次修正：
+       ① 栅格专题层 .dual-raster-wrap 是 z-index:1，业务 SVG 是 z-index:2，
+          但栅格 canvas 必须压在业务面之上才会显示（放中间会被不透明面整片遮住），
+          于是栅格顺带盖住了业务层里的文字。
+       ② 最初在描边层(z=6)【独立生成】一份标签 —— 于是两套标签同时显示：
+          实测新疆市级 56 个标签 / 50 对重叠，每个地名出现两次且像素级重合
+          （"乌鲁木齐市"压"乌鲁木齐"48×15px），用户看到黑色重影。
+       ③ 后来把描边层文字整个关掉 —— 标签确实只剩一套，但被栅格盖住，
+          河南省级 16 个市名"存在但一个都看不见"（DOM 里 16 个、重叠 0）。
+       正解：**唯一数据源 = 业务标签层**。
+       栅格开启时把业务层 pxLabel 元素【原样克隆】一份到描边层，
+       位置/避让/描边光晕全部沿用，不新增任何标签决策 ——
+       于是既无重复（只有一个决策源）、又保证压在栅格之上可见。*/
+    if (opt.syncLabels && MI.svg._vw >= 420) {
+      var src = MI.svg.layers.lab;
+      var moved = [];
+      var hb = MI.host.getBoundingClientRect();
+      if (src && src.pxItems) {
+        for (var si = 0; si < src.pxItems.length; si++) {
+          var it = src.pxItems[si];
+          if (!it._lx || !it._pxBox) continue;
+          var bb = it._pxBox;
+          /* _pxBox 是【视口坐标】，而 overlayLabel 需要【容器内像素坐标】。
+             ⚠️ 这里踩过坑：直接传 _pxBox 的原值 → 标签整体左上偏移一个 host 的量
+             （实测河南 17 个标签全落在容器外，rect.left=323 vs host.left=344，
+              DOM 里明明有文字、屏幕上却一个都看不见）。必须减掉 host 原点。*/
+          var cx = (bb.left + bb.right) / 2 - hb.left;
+          var cy = (bb.top + bb.bottom) / 2 - hb.top;
+          moved.push([cx, cy, it.textContent, it.getAttribute('fill') || '#fff',
+            parseFloat(it.getAttribute('font-size')) || 10.5, 0]);
+        }
+      }
+      if (moved.length) {
+        RS.clearOverlayLabels(MI.host);
+        moved.forEach(function (L) {
+          /* ⚠️ overlayLabel 默认把入参当【世界坐标】再 toScreen 换算；
+             这里传的是 pxLabel 写下的 _pxBox 换算来的容器内像素坐标，
+             必须显式声明 screenSpace，否则会被再换算一次而整体偏出容器。*/
+          RS.overlayLabel(MI.host, MI.svg, L[0], L[1], L[2],
+            { fill: L[3], size: L[4], weight: 700, dy: L[5], screenSpace: true });
         });
-      });
+      }
     }
   }
 
@@ -1303,13 +1335,10 @@
         var ct = G.polyCentroid(rings);
         var px = st.toPx(ct[0], ct[1]);
         if (px.x < 30 || px.x > st._vw - 30 || px.y < 24 || px.y > st._vh - 24) return;
-        var hit = false;
-        for (var j = 0; j < placed.length; j++) {
-          var dx = placed[j][0] - px.x, dy = placed[j][1] - px.y;
-          if (dx * dx + dy * dy < GAP * GAP) { hit = true; break; }
-        }
-        if (hit) return;
-        placed.push([px.x, px.y]);
+        /* ⚠️ 原先用「质心附近有标签就整项丢弃」的避让（GAP/48/46 px），
+         密集区会成片丢名字（实测河南县级 19 面只标 4 个、重叠 5 对）。
+         现改为【一个都不丢】—— pxLabel 内部的 _avoidLabels
+         已能按真实文字宽度做横向+纵向让位（见 geo-engine.pxLabel）。*/
         var el = DM.pxLabel(MI, 'lab', px.x, px.y, shortName(o.n),
           { fill: '#fff', size: 11.5, halo: '#1c1408', weight: 700 });
         if (el) DM.anchor(MI, el, ct[0], ct[1], 0, null, true, Math.round(GAP * 1.5));
@@ -1726,17 +1755,13 @@
       if (st && st._vw > 620) {
         var ct = G.polyCentroid(rings);
         var px = st.toPx(ct[0], ct[1]);
-        var hit = false;
-        for (var i = 0; i < placed.length; i++) {
-          var dx = placed[i][0] - px.x, dy = placed[i][1] - px.y;
-          if (dx * dx + dy * dy < 48 * 48) { hit = true; break; }
-        }
-        if (!hit) {
-          placed.push([px.x, px.y]);
-          var el = DM.pxLabel(MI, 'lab', px.x, px.y, name,
-            { fill: '#fff', size: 10.5, halo: '#1c1408' });
-          if (el) DM.anchor(MI, el, ct[0], ct[1], 0, null, true, 620);
-        }
+        /* ⚠️ 原先用「质心附近有标签就整项丢弃」的避让（GAP/48/46 px），
+         密集区会成片丢名字（实测河南县级 19 面只标 4 个、重叠 5 对）。
+         现改为【一个都不丢】—— pxLabel 内部的 _avoidLabels
+         已能按真实文字宽度做横向+纵向让位（见 geo-engine.pxLabel）。*/
+        var el = DM.pxLabel(MI, 'lab', px.x, px.y, name,
+          { fill: '#fff', size: 10.5, halo: '#1c1408' });
+        if (el) DM.anchor(MI, el, ct[0], ct[1], 0, null, true, 620);
       }
       var b = ringBBox(rings);
       if (b) bbox = bbox ? [Math.min(bbox[0], b[0]), Math.min(bbox[1], b[1]),
@@ -1794,17 +1819,13 @@
       var ct = G.polyCentroid(f.rings);
       if (st && st._vw > 620) {
         var px = st.toPx(ct[0], ct[1]);
-        var hit = false;
-        for (var j = 0; j < placed.length; j++) {
-          var dx = placed[j][0] - px.x, dy = placed[j][1] - px.y;
-          if (dx * dx + dy * dy < 46 * 46) { hit = true; break; }
-        }
-        if (!hit) {
-          placed.push([px.x, px.y]);
-          var el = DM.pxLabel(MI, 'lab', px.x, px.y, f.n,
-            { fill: '#fff', size: 10, halo: '#1c1408' });
-          if (el) DM.anchor(MI, el, ct[0], ct[1], 0, null, true, 620);
-        }
+        /* ⚠️ 原先用「质心附近有标签就整项丢弃」的避让（GAP/48/46 px），
+         密集区会成片丢名字（实测河南县级 19 面只标 4 个、重叠 5 对）。
+         现改为【一个都不丢】—— pxLabel 内部的 _avoidLabels
+         已能按真实文字宽度做横向+纵向让位（见 geo-engine.pxLabel）。*/
+        var el = DM.pxLabel(MI, 'lab', px.x, px.y, f.n,
+          { fill: '#fff', size: 10, halo: '#1c1408' });
+        if (el) DM.anchor(MI, el, ct[0], ct[1], 0, null, true, 620);
       }
       var b = countyBox(c);
       if (b) bbox = bbox ? [Math.min(bbox[0], b[0]), Math.min(bbox[1], b[1]),
@@ -1883,17 +1904,13 @@
       if (st && st._vw > 620) {
         var ct = G.polyCentroid(absKB(k));
         var px = st.toPx(ct[0], ct[1]);
-        var hit = false;
-        for (var i = 0; i < placed.length; i++) {
-          var dx = placed[i][0] - px.x, dy = placed[i][1] - px.y;
-          if (dx * dx + dy * dy < 46 * 46) { hit = true; break; }
-        }
-        if (!hit) {
-          placed.push([px.x, px.y]);
-          var el = DM.pxLabel(MI, 'lab', px.x, px.y, k.n,
-            { fill: '#fff', size: 10.5, halo: '#1c1408' });
-          if (el) DM.anchor(MI, el, ct[0], ct[1], 0, null, true, 620);
-        }
+        /* ⚠️ 原先用「质心附近有标签就整项丢弃」的避让（GAP/48/46 px），
+         密集区会成片丢名字（实测河南县级 19 面只标 4 个、重叠 5 对）。
+         现改为【一个都不丢】—— pxLabel 内部的 _avoidLabels
+         已能按真实文字宽度做横向+纵向让位（见 geo-engine.pxLabel）。*/
+        var el = DM.pxLabel(MI, 'lab', px.x, px.y, k.n,
+          { fill: '#fff', size: 10.5, halo: '#1c1408' });
+        if (el) DM.anchor(MI, el, ct[0], ct[1], 0, null, true, 620);
       }
       // 同countyBox：b 可能是 [x0,y0,x1,y1] 也可能是 [x0,y0]+w/h，统一用 abox
       var b = abox(k);
@@ -2780,17 +2797,13 @@
       if (st && st._vw > 620) {
         var ct = G.polyCentroid(f.rings);
         var px = st.toPx(ct[0], ct[1]);
-        var hit = false;
-        for (var j = 0; j < placed.length; j++) {
-          var dx = placed[j][0] - px.x, dy = placed[j][1] - px.y;
-          if (dx * dx + dy * dy < 46 * 46) { hit = true; break; }
-        }
-        if (!hit) {
-          placed.push([px.x, px.y]);
-          var el = DM.pxLabel(MI, 'lab', px.x, px.y, f.n,
-            { fill: '#fff', size: 10, halo: '#1c1408' });
-          if (el) DM.anchor(MI, el, ct[0], ct[1], 0, null, true, 620);
-        }
+        /* ⚠️ 原先用「质心附近有标签就整项丢弃」的避让（46px），
+           密集区会成片丢名字。现改为【一个都不丢】——
+           pxLabel 内部的 _avoidLabels 已能按真实文字宽度做横向+纵向让位
+           （见 geo-engine.pxLabel）。*/
+        var el = DM.pxLabel(MI, 'lab', px.x, px.y, f.n,
+          { fill: '#fff', size: 10, halo: '#1c1408' });
+        if (el) DM.anchor(MI, el, ct[0], ct[1], 0, null, true, 620);
       }
       for (var i = 0; i < f.rings.length; i++) {
         var b = f.rings[i];
@@ -2865,7 +2878,57 @@
       { fill: 'rgba(59,130,246,.04)', stroke: 'rgba(96,165,250,.55)', strokeWidth: 1.5 });
 
     var stops = layerStops(N.activeLayer);
-    var bbox = null, placed = [];
+    var bbox = null;
+    /* 市名标签：两阶段分配。
+       ⚠️ 原来"质心 48px 内有标签就整市丢弃"（if (hit) 直接不画），
+         实测新疆 24 个市只标出 8 个 —— 塔城/阿勒泰/伊犁这些相邻的
+         密集区成片丢标签，而色块还在，用户看到的是"有色块没名字"。
+       ⚠️ 一阶段画（边遍历边标）也留下问题：遍历顺序靠前的大市先占住
+         质心，后来的小市（双河市、克拉玛依市）只能引线到边缘，
+         又会和新落的标签压在一起（实测残留 2 对重叠）。
+         故改为：先把所有质心算出来，按【名称长度降序】统一分配，
+         长名优先拿到内圈最好的位置，短名（小市）自然被推到外圈，
+         再放不下的才用引线 —— 这样重叠与漏标能同时压到最低。*/
+    var labQueue = (st && st._vw > 620) ? list.map(function (c) {
+      var ct = G.polyCentroid(abs(c));
+      return { name: c.n, ct: ct, cpx: st.toPx(ct[0], ct[1]) };
+    }).filter(function (o) {
+      return o.cpx.x > -60 && o.cpx.x < st._vw + 60 &&
+             o.cpx.y > -60 && o.cpx.y < st._vh + 60;
+    }) : [];
+    labQueue.sort(function (a, b) { return b.name.length - a.name.length; });
+
+    /* 市名标签：直接交给引擎的 pxLabel 避让，不再另建一套。
+       ⚠️ 这里先后踩了四层坑，全部记录下来避免重犯：
+       ① 描边层(gs-overlay) 与业务标签层(gs-layer-lab) 两套标签同时画 →
+          每个地名出现两次且像素级重合（实测 56 标签/50 对重叠）。
+          已停用描边层的文字绘制（栅格在业务 SVG 之下，不会盖住标签）。
+       ②「质心 48px 内有标签就整市丢弃」→ 新疆 24 个市只标出 8 个，
+          塔城/阿勒泰/伊犁等密集区成片丢名字。改为【一个都不丢】：
+          先按名称长度降序，长名优先占质心，短名（小市）被引擎横向/纵向让位。
+       ③ 外部自建避让判据三次都判错：字数估宽差 4 倍；
+          pxLabel 的 _pxBox 是绘制前预估（与实际差 205px）；
+          getBoundingClientRect 在同帧连画多个 SVG 文字时未重排、读到旧值。
+          结论：判据只能有一个数据源，就是引擎内部的 _pxBox。
+       ④ 引擎的 _avoidLabels 此前宽度传 0 → 内部回退 fs*4=42px，
+          对「博尔塔拉蒙古自治州」(52px)、「巴音郭楞蒙古自治州」(95px)
+          严重低估 → 避让失效。已在 geo-engine.pxLabel 改为传真实
+          measureText 宽度，并补上【横向让位】（原来只调 Y，
+          同高相邻的标签怎么纵向让都躲不开）。*/
+    var labQueue = (st && st._vw > 620) ? list.map(function (c) {
+      var ct = G.polyCentroid(abs(c));
+      return { name: c.n, ct: ct, px: st.toPx(ct[0], ct[1]) };
+    }).filter(function (o) {
+      return o.px.x > -60 && o.px.x < st._vw + 60 &&
+             o.px.y > -60 && o.px.y < st._vh + 60;
+    }) : [];
+    // 长名优先：短名（小市）随后由引擎让位，避免被长名挤到无处可去
+    labQueue.sort(function (a, b) { return b.name.length - a.name.length; });
+    labQueue.forEach(function (o) {
+      DM.pxLabel(MI, 'lab', o.px.x, o.px.y, o.name,
+        { fill: '#fff', size: 10.5, halo: '#1c1408' });
+    });
+
     list.forEach(function (c) {
       var v = NAT.topicValue(N.activeLayer, c.c);
       var col;
@@ -2877,20 +2940,6 @@
         fill: 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',.62)',
         stroke: EDGE.vill.c, strokeWidth: 1.05
       });
-      if (st && st._vw > 620) {
-        var ct = G.polyCentroid(abs(c));
-        var px = st.toPx(ct[0], ct[1]);
-        var hit = false;
-        for (var k = 0; k < placed.length; k++) {
-          var dx = placed[k][0] - px.x, dy = placed[k][1] - px.y;
-          if (dx * dx + dy * dy < 48 * 48) { hit = true; break; }
-        }
-        if (!hit) {
-          placed.push([px.x, px.y]);
-          var el = DM.pxLabel(MI, 'lab', px.x, px.y, c.n, { fill: '#fff', size: 10.5, halo: '#1c1408' });
-          if (el) DM.anchor(MI, el, ct[0], ct[1], 0, null, true, 620);
-        }
-      }
       var b = abox(c);
       bbox = bbox ? [Math.min(bbox[0], b[0]), Math.min(bbox[1], b[1]), Math.max(bbox[2], b[2]), Math.max(bbox[3], b[3])] : b.slice();
     });
@@ -2898,15 +2947,20 @@
     // 灾点圈已挪到 DM.fit 之后绘制（toPx 需要新变换）
     DM.fit(MI, bbox);
     drawDisasterCircles();   // 必须在 fit 之后：否则 toPx 用的还是上一级变换
-    var ovl2 = [];
-    list.forEach(function (c) {
-      var cc = G.polyCentroid(abs(c));
-      ovl2.push([cc[0], cc[1], c.n.replace(/市|土家族苗族自治州|林区/g, ''), '#fff', 12, 0]);
-    });
+    /*⚠️ 不要再往描边层塞市名标签（labels）—— 业务标签层已用引线标注画全了，
+      两套标签同时显示会让每个地名出现两次并像素级重合（黑色重影）。*/
     renderRaster({
       layer: N.activeLayer, rings: null, code: pv.c, pixelM: 620, alpha: .55,
       onStats: paintGrowthPanel,
-      overlay: { rings: null, labels: ovl2 }
+      overlay: { rings: null, syncLabels: true }
+    });
+    /* syncLabels 需要在【标签全部画完之后】才有东西可同步。
+       renderRaster → paintOverlay 可能同步执行、也可能在栅格渲染回调里执行，
+       时序不稳（实测首次执行时标签还没画完，河南 16 个市名一个都没同步过去）。
+       故在 rAF 里再跑一次：此时 pxItems 已齐备。
+       幂等——clearOverlay 会先清空描边层，重复执行不会叠加。*/
+    requestAnimationFrame(function () {
+      if (N._overlayOpt && N._overlayOpt.syncLabels) paintOverlay(N._overlayOpt);
     });
     paintCrumb();
   }

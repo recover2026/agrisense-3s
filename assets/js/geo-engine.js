@@ -430,6 +430,7 @@
   GeoCanvas.prototype._reorder = function () {
     var self = this;
     Object.keys(this.layers)
+      .filter(function (n) { return n !== 'lab'; })
       .sort(function (a, b) { return self.layers[a].order - self.layers[b].order; })
       .forEach(function (n) { self.stack.appendChild(self.layers[n].g); });
   };
@@ -647,7 +648,35 @@
         var ix = Math.min(myR + gap, b.right + gap) - Math.max(myL - gap, b.left - gap);
         var iy = Math.min(myB + gap, b.bottom + gap) - Math.max(myT - gap, b.top - gap);
         if (ix > 0 && iy > 0) {
-          /* 相交时优先往下让；下方空间不够（会顶出视口）则改为上让 */
+          /* 相交时的让位顺序（实测单一策略不够用）：
+             ① 先试【横向让】——上下都是密集区时，纵向让位会不断往下堆，
+                最终顶出视口或仍与别的标签交叠
+                （实测「克拉玛依市 × 塔城地区」正是同高相邻、纵向怎么让都躲不开）；
+             ② 横向找不到位再退回纵向（下优先、下顶出视口则上）。
+             横向候选按「离原位由近到远」逐档试探。*/
+          var moved = false;
+          for (var hs = 1; hs <= 5 && !moved; hs++) {
+            var dxs = [hs * (estW / 2 + 6), -hs * (estW / 2 + 6)];
+            for (var di = 0; di < 2 && !moved; di++) {
+              var cX = x + dxs[di];
+              if (hostX + cX - estW / 2 < R.left + 6) continue;
+              if (hostX + cX + estW / 2 > R.right - 6) continue;
+              var nL = hostX + cX - estW / 2, nR = hostX + cX + estW / 2;
+              var stillHit = false;
+              for (var j = 0; j < L.pxItems.length; j++) {
+                var jt = L.pxItems[j];
+                if (!jt._lx || !jt._pxBox) continue;
+                var bb2 = jt._pxBox;
+                var g2 = 4;
+                if (Math.min(nR + g2, bb2.right + g2) - Math.max(nL - g2, bb2.left - g2) > 0 &&
+                    Math.min(myB + g2, bb2.bottom + g2) - Math.max(myT - g2, bb2.top - g2) > 0) {
+                  stillHit = true; break;
+                }
+              }
+              if (!stillHit) { x = cX; moved = true; }
+            }
+          }
+          if (moved) { hitOne = true; break; }
           var down = b.bottom + gap + estH / 2;
           var up = b.top - gap - estH / 2;
           var candY = (down + hostY < R.bottom - 6) ? down : up;
@@ -658,10 +687,13 @@
       }
       if (!hitOne) break;
     }
-    // 边界内收：贴边时把标签往里推，避免溢出地图外
+    /* 边界内收：贴边时把标签往里推，避免溢出地图外 */
     var finalY = tryY;
     if (hostY + finalY < R.top + 12) finalY = R.top - hostY + 12;
     if (hostY + finalY > R.bottom - 10) finalY = R.bottom - hostY - 10;
+    /* 横向让位的结果要传出去（x 是形参、调用方拿不到）。
+       用 this._avoidOut.x 传回，pxLabel 随即取用。*/
+    this._avoidOut = { x: x, y: finalY };
     return finalY;
   };
 
@@ -770,7 +802,18 @@
     var L = this.layers[layerName]; if (!L) return null;
     if (labelHidden(text)) return null;   // 命中屏蔽名单：不画任何文字
     var fs = style.size || 12;
-    y = this._avoidLabels(layerName, x, y, 0, 0, fs);
+    /* ⚠️ 原来这里传 0 0 —— _avoidLabels 内部回退到 `estW = fs * 4`，
+       对长中文名严重低估：11px 字号下estW 恒为 42px，
+       而「博尔塔拉蒙古自治州」实测 52px、「巴音郭楞蒙古自治州」95px。
+       宽度估小了 → 避让判不出相交 → 标签直接叠上
+       （实测新疆市级下钻残留 2 对重叠：
+         博尔塔拉蒙古自治州 × 双河市 21×13px、克拉玛依市 × 塔城地区 10×7px）。
+       改为传真实测量宽度：与后面写 _pxBox 用的是同一个 measureText，
+       保证「避让用的框」与「实际绘制的框」严格一致。*/
+    var realW = measureText(text, fs, style.weight || 700);
+    y = this._avoidLabels(layerName, x, y, realW, fs * 1.2, fs);
+    /* _avoidLabels 可能把标签横向让位（x 会变），取回调整后的坐标 */
+    if (this._avoidOut) { x = this._avoidOut.x; y = this._avoidOut.y; }
 
     /* 描边色：默认用与底图协调的深棕黑（而非纯黑/半透明黑）。
        实色描边在浅色面上边缘更利落，不会因半透明而"发灰显脏"。 */

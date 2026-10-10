@@ -673,9 +673,35 @@
     if (rec && rec.g) while (rec.g.firstChild) rec.g.removeChild(rec.g.firstChild);
   };
 
+  /* 只清描边层里的【文字】，保留边界路径。
+   栅格开启时业务标签会被栅格盖住（栅格 z=1 必须压在业务面 z=2 之上才会显示），
+   需要把业务层已画的标签原样复制一份到描边层（z=6）压在栅格之上。
+   复制而非重画，是为了让"标签位置/避让"只有一个决策源 ——
+   此前两边各自生成，实测新疆市级 56 标签 / 50 对重叠。
+   ⚠️ 边界 path 与标签 text 混在同一 <g> 里，按标签数（0）清除即可。*/
+  R.clearOverlayLabels = function (dualHost) {
+    /* ⚠️ overlayOf 返回的是记录对象 {svg, g}，不是 <g> 本身。
+       直接当 g 用会在 g.childNodes 上抛
+       "Cannot read properties of undefined (reading 'length')"。*/
+    var rec = R.overlayOf(dualHost);
+    if (!rec || !rec.g) return 0;
+    var kids = rec.g.childNodes;
+    var n = 0;
+    for (var i = kids.length - 1; i >= 0; i--) {
+      if (kids[i].nodeType === 1 && kids[i].nodeName === 'text') {
+        rec.g.removeChild(kids[i]); n++;
+      }
+    }
+    return n;
+  };
+
   R.overlayOf = function (dualHost) {
-    if (!OV.map) return null;
-    return OV.map[dualHost.id || ('_' + dualHost.__ovId)] || null;
+    if (!OV.map || !dualHost) return null;
+    /* 必须走 ovKey —— 这里原来写的是 `dualHost.id || ('_' + dualHost.__ovId)`，
+       与 R.overlay 里的 ovKey 算法不一致（__ovId 为 null 时会算出 '_null'），
+       于是取到另一层、clearOverlayLabels 什么也没清掉。
+       同一个坑 clearOverlay 的注释里已经写过一次，这里必须统一。*/
+    return OV.map[ovKey(dualHost)] || null;
   };
 
   /* 把入参统一摊平成「世界坐标环」的数组 [[x,y], [x,y], ...]。
@@ -788,7 +814,17 @@
     var g = R.overlay(dualHost, geo);
     var NS = 'http://www.w3.org/2000/svg';
     opt = opt || {};
-    var sp = geo.toScreen(wx, wy);                 // 屏幕像素坐标
+    /* ⚠️ wx/wy 的语义取决于 opt.screenSpace：
+         默认 false → wx/wy 是【世界坐标】，内部 toScreen 换算成像素；
+         opt.screenSpace=true → wx/wy 已经是【容器内像素坐标】，直接用。
+       加这个开关是因为"把业务标签原样搬到描边层"时，来源坐标是
+       pxLabel 写下的 _pxBox（视口坐标减去host 原点得到的像素值），
+       再走一次世界→像素换算会整体偏出容器
+       （实测直接传像素：全部叠到同一点 -12322,4616；
+         先转世界再换算：偏到容器外 323,49 vs host.left=344）。*/
+    var sp = opt.screenSpace
+      ? { x: wx, y: wy }
+      : geo.toScreen(wx, wy);
     var y = sp.y + (opt.dy || 0);
     var size = String(opt.size || 12);
 
