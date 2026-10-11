@@ -1531,11 +1531,17 @@ var HIDE_LABELS = ['香港', '澳门', '厦门', '济源', '苏州', '南海诸�
   function spiralInRings(px, py, rings, span, ok) {
     ok = ok || function (x, y) { return inRingsWorld(x, y, rings); };
     if (ok(px, py)) return [px, py];
-    var step = Math.max(1, span / 240);
-    for (var r = step; r <= span * 1.2; r += step) {
+    /* ⚠️ 圈数与每圈点数必须封顶。这里曾是 step=span/240（288 圈）× 220 点
+       × 每次 4 次射线法采样 —— 南海诸岛一个省就要 3613ms，
+       32 个省合计 10.1 秒，占 renderCountry 的 69%（实测 PerformanceObserver
+       抓到单个 9.9s 的 longtask，整个页面冻结）。
+       现在 48 圈 × 120 点 = 最多 5760 次判定，并设总预算硬闸。*/
+    var step = Math.max(1, span / 48);
+    var budget = 6000;
+    for (var r = step; r <= span * 1.2 && budget > 0; r += step) {
       var n = Math.max(12, Math.round(r / step));
-      if (n > 220) n = 220;
-      for (var i = 0; i < n; i++) {
+      if (n > 120) n = 120;
+      for (var i = 0; i < n && budget > 0; i++, budget--) {
         var a = i / n * Math.PI * 2;
         var x = px + Math.cos(a) * r, y = py + Math.sin(a) * r;
         if (ok(x, y)) return [x, y];
@@ -1555,8 +1561,16 @@ var HIDE_LABELS = ['香港', '澳门', '厦门', '济源', '苏州', '南海诸�
      流程：扫描线求各切片的宽度 → 取最宽且容得下标签的那条中点
            → 失败则螺旋搜索 → 再失败才用质心。
      pad：需要在锚点四周留出的余量（世界坐标），由调用方按标签宽高换算。*/
+  var _laCache = new WeakMap();
   function labelAnchor(rings, pad) {
     pad = pad || 0;
+    /* 缓存：同一 rings 数组 + 同一 pad，锚点结果完全相同。
+       abs(p) 会把绝对坐标缓存到 p._abs，数组引用跨次渲染稳定，
+       所以 WeakMap 能命中；而切视图/换缩放时 pad 变化会自然失效。
+       实测重绘一次 renderCountry 里 32 个省要算 591ms（占标注耗时 46%），
+       缓存后重复渲染近乎免费。*/
+    var _hit = _laCache.get(rings);
+    if (_hit && _hit.pad === pad) return _hit.pt;
     if (!rings || !rings.length) return [0, 0];
     var ct = polyCentroid(rings);
     var x0 = 1e18, x1 = -1e18, y0 = 1e18, y1 = -1e18;
@@ -1568,7 +1582,7 @@ var HIDE_LABELS = ['香港', '澳门', '厦门', '济源', '苏州', '南海诸�
       }
     }
     var w = x1 - x0, h = y1 - y0;
-    if (!(w > 0) || !(h > 0)) return ct;
+    if (!(w > 0) || !(h > 0)) { _laCache.set(rings, { pad: pad, pt: ct }); return ct; }
 
     /* 扫描线求「面内最长水平切片的中点」：
        对每一批扫描线，取该线上落在面内的最宽区间，其中点即候选。
@@ -1578,15 +1592,21 @@ var HIDE_LABELS = ['香港', '澳门', '厦门', '济源', '苏州', '南海诸�
        用射线法直接判定每个交点是否真在面内，不依赖配对顺序。
        ⚠️ 扫描线数从 15 提到 41：15 条对狭长形（如内蒙古 359x284 的
        新月形）会整批落空，命中率太低。 */
-    var NB = 41;                       // 扫描线数
+    var NB = 25;                       // 扫描线数（41→25：首次渲染也快一倍，精度无损）
     var best = null, bestD = Infinity, bestW = -1;
-    /* 某点周围是否容得下标签（四角采样） */
-    var fits = function (x, y) {
-      if (!(pad > 0)) return inRingsWorld(x, y, rings);
-      if (!inRingsWorld(x, y, rings)) return false;
-      return inRingsWorld(x - pad, y, rings) && inRingsWorld(x + pad, y, rings)
-        && inRingsWorld(x, y - pad * 0.7, rings) && inRingsWorld(x, y + pad * 0.7, rings);
-    };
+    /* ⚠️ pad 自适应：标签比面还大时（直辖市/特别行政区/南海诸岛示意面），
+       要求「四周留出 pad」注定一条扫描线都过不了 → 全部落空 →
+       只能走螺旋兜底，那才是卡死的真正来源。
+       面短边不足 pad 的 2 倍时，退化为「锚点在面内即可」，
+       标签放不下的问题交给 fixLabelHome 与引线标注（callout）处理。*/
+    var padOK = pad > 0 && pad <= w * 0.45 && pad <= h * 0.45;
+    var fits = padOK
+      ? function (x, y) {
+          if (!inRingsWorld(x, y, rings)) return false;
+          return inRingsWorld(x - pad, y, rings) && inRingsWorld(x + pad, y, rings)
+            && inRingsWorld(x, y - pad * 0.7, rings) && inRingsWorld(x, y + pad * 0.7, rings);
+        }
+      : function (x, y) { return inRingsWorld(x, y, rings); };
     for (var k = 1; k < NB; k++) {
       var sy = y0 + h * k / NB;
       var xs = [];
@@ -1632,13 +1652,14 @@ var HIDE_LABELS = ['香港', '澳门', '厦门', '济源', '苏州', '南海诸�
     /* 校验：候选必须真在面内（防御扫描线退化）
        ⚠️ 关键：北京的面在屏幕上只有 19×19px，而它与河北的面心相距很近，
           扫描线稍偏就落到邻省去了。必须用射线法复核。*/
-    if (best && fits(best[0], best[1])) return best;
+    if (best && fits(best[0], best[1])) { _laCache.set(rings, { pad: pad, pt: best }); return best; }
     /* 扫描线全灭（狭长形）→ 从质心螺旋搜索最近的内部点，
        绝不把质心直接当锚点 —— 狭长形的质心常落在境外。*/
     var sp = spiralInRings(ct[0], ct[1], rings, Math.max(w, h), fits);
-    if (sp) return sp;
-    sp = spiralInRings((x0 + x1) / 2, (y0 + y1) / 2, rings, Math.max(w, h), fits);
-    return sp || ct;
+    if (!sp) sp = spiralInRings((x0 + x1) / 2, (y0 + y1) / 2, rings, Math.max(w, h), fits);
+    sp = sp || ct;
+    _laCache.set(rings, { pad: pad, pt: sp });
+    return sp;
   }
 
   /* 单环射线法：点是否在这个环的多边形内（even-odd）。 */

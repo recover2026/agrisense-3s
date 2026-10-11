@@ -12,7 +12,7 @@
 import asyncio
 import glob
 import json
-import sys
+import sys, os
 
 from playwright.async_api import async_playwright
 
@@ -20,7 +20,7 @@ CHROME = glob.glob(
     "/Users/recover/Library/Caches/ms-playwright/chromium_headless_shell-*/"
     "chrome-headless-shell-mac-arm64/chrome-headless-shell"
 )[0]
-LOCAL = "http://127.0.0.1:8899/index.html"
+LOCAL = "file://" + os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "index.html"))
 
 JS = r"""
 () => {

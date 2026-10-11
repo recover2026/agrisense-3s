@@ -3783,7 +3783,6 @@ var N = {
     buildLegend();
     if (window.__APP__ && window.__APP__.closeDetail) window.__APP__.closeDetail();
     redrawCurrent();
-    hideAllRaster();     // 必须重绘之后：renderRaster 会把主专题再打开
   }
 
   function bindLayerPanel() {
