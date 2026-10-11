@@ -189,6 +189,43 @@
     return inside;
   }
 
+  /* 视图变换变化时的即时同步 —— 修"拖动后专题层与边界脱节"。
+     ⚠️ 实测：拖动地图 210px 后，遥感专题 canvas 的 getBoundingClientRect
+        位移仍是 (0,0)，而矢量层 gs-stack 的 translate 变了 210px，
+        结果西藏/青海/甘肃一带的专题色块整块溢出省界
+        （用户截图里楠木坪乡的 NDVI 色块与乡镇黑线错开，同一成因）。
+        根因：专题是低分辨率缓冲（420×267）放大到全屏绘制，
+        重绘一次 15ms，拖动每步都重绘会卡；但完全不重绘又会脱节。
+     折中：平移用 CSS transform 瞬时对齐（矢量），缩放才交给重绘。
+     推导：世界点 W 的屏幕位置 p = W*scale + tx（y 轴翻转），
+        新旧视图像素差 = tx_new - tx_old、ty_old - ty_new。*/
+  R.onViewChange = function (geo) {
+    if (!geo || !geo.scale) return;
+    var changed = false;
+    for (var k in R.layers) {
+      var lay = R.layers[k];
+      if (!lay || !lay.canvas) continue;
+      if (lay._bx == null) { lay._bx = geo.tx; lay._by = geo.ty; lay._bs = geo.scale; continue; }
+      var scaleSame = Math.abs(geo.scale - lay._bs) < 1e-12;
+      if (!scaleSame) {
+        /* 缩放：位移同步不再准确，清掉交给重绘路径 */
+        lay.canvas.style.transform = 'none';
+        lay._bx = geo.tx; lay._by = geo.ty; lay._bs = geo.scale;
+        changed = true;
+        continue;
+      }
+      /* ⚠️ 必须传【相对上次渲染基准的绝对差】，不能传增量：
+         CSS transform 每次赋值是覆盖而非累加，传增量会让 canvas
+         每次只跟上"最后一步"（实测拖 210px 只跟了 14px，色块依旧错位）。*/
+      var dx = geo.tx - lay._bx, dy = lay._by - geo.ty;
+      if (dx === 0 && dy === 0) continue;
+      lay.canvas.style.transform = 'translate(' + dx.toFixed(1) + 'px,' + dy.toFixed(1) + 'px)';
+      /* 基准只在 render 时重置；这里不动 _bx/_by，否则下次增量又只算一步 */
+      changed = true;
+    }
+    return changed;
+  };
+
   /* 预计算一条水平扫描线与所有环的交点（按 x 升序）。
      与 inRings 的 even-odd 判定等价：像元左侧交点数为奇数 → 在面内。
      ⚠️ 这是专题渲染卡死的根治点。原先每个像元都单独跑一次射线法：
@@ -338,6 +375,9 @@
       }
     }
     bctx.putImageData(img, 0, 0);
+    /* 记录本次渲染所用的视图变换，作为后续平移同步的基准 */
+    lay._bx = geo.tx; lay._by = geo.ty; lay._bs = geo.scale;
+    lay.canvas.style.transform = 'none';
 
     // --- 放大到全屏 ---
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);

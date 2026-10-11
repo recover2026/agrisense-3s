@@ -312,6 +312,13 @@
     this.bbox = b;
     this._updateScaleBar();
     this.onView(this.view());
+ 
+    /* 遥感专题层跟随视图变换（平移即时对齐）。
+       见 raster-engine 的 R.onViewChange —— 拖动后专题色块
+       曾整块溢出省界（用户截图实况）。*/
+    if (typeof RasterEngine !== 'undefined' && RasterEngine.onViewChange) {
+      try { RasterEngine.onViewChange(this); } catch (e) { }
+    }
   };
 
   /* px 图层：抵消父级变换，使内部 px 坐标等于真实屏幕像素
