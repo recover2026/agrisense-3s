@@ -59,7 +59,7 @@ body{
 }
 /* 旧的 ::after 装饰圆已不需要（原来画在渐变方块上） */
 .brand-mark::after{display:none}
-/* 「测试版」徽标 */
+/* 品牌徽标（预留） */
 .brand-badge{
   align-self:flex-start;margin-left:2px;padding:2px 7px;border-radius:999px;
   font-size:10.5px;font-weight:700;letter-spacing:.4px;white-space:nowrap;
@@ -71,19 +71,24 @@ body{
 .brand-name em{font-style:normal;color:var(--brand)}
 .brand-sub{font-size:11px;color:var(--txt-3);white-space:nowrap;margin-top:-3px}
 
-.tabs{display:flex;gap:5px;margin-left:8px;flex:1;min-width:0;overflow-x:auto;scrollbar-width:none}
+/* 标签栏可横向滚动，但必须让用户知道能滚 —— 否则右端标签"看不见也点不到"
+   （2026-10-13 实测：视口 ≤1440px 时「预警与调度」「灾情损失评估」被右侧时钟遮挡，
+    elementFromPoint 命中的是时钟 <b>，真实点击打不开该视图） */
+.tabs{display:flex;gap:5px;margin-left:8px;flex:1;min-width:0;overflow-x:auto;scrollbar-width:none;
+  scroll-behavior:smooth;
+  /* 右侧渐隐提示 + 渐隐区不接收指针，避免误判可点 */
+  -webkit-mask-image:linear-gradient(90deg,#000 0,#000 calc(100% - 26px),transparent 100%);
+  mask-image:linear-gradient(90deg,#000 0,#000 calc(100% - 26px),transparent 100%);
+}
 .tabs::-webkit-scrollbar{display:none}
+/* 无溢出时去掉渐隐 */
+.tabs.noscroll{-webkit-mask-image:none;mask-image:none}
 .tab{
-  display:flex;align-items:center;gap:7px;padding:8px 14px;border-radius:10px;cursor:pointer;
+  display:flex;align-items:center;gap:6px;padding:8px 12px;border-radius:10px;cursor:pointer;
   border:1px solid transparent;background:transparent;color:var(--txt-2);font-size:13.5px;font-weight:600;
   white-space:nowrap;transition:.18s;flex:0 0 auto;
 }
 .tab:hover{background:rgba(120,160,220,.10);color:var(--txt)}
-/* 标签已改为 <button>，需清掉浏览器默认按钮样式；
-   并补键盘焦点环 —— 此前 <div> 方案键盘完全不可用。 */
-.tab{border:0;background:rgba(255,255,255,.03);font-family:inherit;cursor:pointer}
-.tab:focus{outline:none}
-.tab:focus-visible{outline:2px solid var(--brand);outline-offset:1px;border-radius:9px}
 .tab.on{
   background:linear-gradient(180deg,rgba(255,211,90,.17),rgba(255,211,90,.08));
   border-color:rgba(255,211,90,.42);color:var(--brand);
@@ -94,6 +99,34 @@ body{
   background:rgba(255,255,255,.09);color:var(--txt-2);
 }
 .tab.on b{background:rgba(255,211,90,.2);color:var(--brand)}
+
+/* ---- 顶栏自适应压缩（2026-10-13）----
+   实测：7 个标签自然宽度 1077px，加上品牌区与时钟后在 1280px 视口溢出 323px，
+   右端两个标签被时钟完全遮挡 → 真实用户点不到「预警与调度」「灾情损失评估」。
+   策略：随视口逐级收紧间距与字号，保证 ≥1180px 时全部标签无需滚动即可点。 */
+@media (max-width:1560px){
+  .topbar{gap:11px;padding:0 13px}
+  .tabs{margin-left:2px;gap:3px}
+  .tab{padding:8px 9px;gap:4px;font-size:12.8px}
+  .tab i{font-size:12.5px}
+  .tab b{font-size:10px;padding:1px 4px}
+  .brand-sub{font-size:10.5px}
+  .clock{font-size:11px}
+}
+@media (max-width:1400px){
+  .topbar{gap:9px;padding:0 11px}
+  .tab{padding:8px 7px;gap:3px;font-size:12.2px}
+  .tab i{font-size:11.5px}
+  .tab b{display:none}          /* 徽标信息密度低，优先让位给可点性 */
+  .brand-sub{display:none}
+  .pill{padding:5px 9px;font-size:11px}
+  .clock b{font-size:13px}
+}
+@media (max-width:1240px){
+  .tab{padding:8px 6px;font-size:11.8px;gap:2px}
+  .tab i{display:none}          /* 图标先让位，文字保留可读性 */
+  .clock{display:none}         /* 时钟纯装饰，优先保住全部标签可点 */
+}
 
 .top-right{display:flex;align-items:center;gap:9px;flex:0 0 auto}
 .clock{font-size:12px;color:var(--txt-2);font-variant-numeric:tabular-nums;text-align:right;line-height:1.35}
@@ -116,13 +149,7 @@ body{
 .view.on{display:flex}
 
 .side{
-  /* 宽度用 clamp 随视口收缩：固定 344px 在 1100–1300px 的窗口里
-     会占到 1/3 屏，地图被挤得很窄；再窄就出现标题/按钮被裁切
-     （用户截图：侧栏占半屏、"返回上级"只剩一半）。
-     clamp(268px, 24vw, 344px)：宽屏保持 344，中间档平滑收缩，
-     1280 时约 307px，1100 时约 268px 下限。 */
-  width:clamp(268px, 24vw, 344px);flex:0 0 clamp(268px, 24vw, 344px);
-  display:flex;flex-direction:column;
+  width:344px;flex:0 0 344px;display:flex;flex-direction:column;
   border-right:1px solid var(--line);background:var(--panel);backdrop-filter:blur(10px);
   overflow:hidden;z-index:20;
 }
@@ -171,14 +198,6 @@ body{
   background:rgba(11,20,36,.86);padding:4px 9px;border-radius:7px;z-index:12;
   border:1px solid var(--line);font-variant-numeric:tabular-nums;pointer-events:none;
 }
-/* ⚠️ 右下角有三个元素抢同一块地方，实测必须分三层排开：
-     · .esri-attr   Esri 版权署名（服务条款要求显示，bottom:2px，10px 小字）
-     · .gs-coord    经纬度坐标块
-     · .biz-base-btn 影像/矢量切换按钮（bottom:34px，29px 高）
-     原先坐标在 bottom:14px → 与署名重叠 20x4px；
-   改到 bottom:26px → 又与影像按钮重叠 20x2px。
-   现按"署名 2px → 坐标 20px → 按钮 34px"三层错开，互不压盖。 */
-.gs-coord{bottom:20px}
 
 /* ============ 组件 ============ */
 .kpis{display:grid;grid-template-columns:repeat(2,1fr);gap:9px}
@@ -196,6 +215,8 @@ body{
 .legend{display:flex;flex-direction:column;gap:6px}
 .lg-row{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--txt-2);cursor:pointer;padding:3px 5px;border-radius:7px;transition:.15s}
 .lg-row:hover{background:rgba(255,255,255,.05)}
+/* 纯展示图例条目：不可点击，不给 hover 反馈（同 .row.static 的处理） */
+.lg-row.static,.lg-row.static:hover{background:transparent;cursor:default}
 .lg-sw{width:14px;height:14px;border-radius:4px;flex:0 0 14px;border:1px solid rgba(255,255,255,.22)}
 .lg-row.off{opacity:.38}
 .lg-n{margin-left:auto;color:var(--txt-3);font-size:10.5px;font-variant-numeric:tabular-nums}
@@ -212,29 +233,18 @@ body{
 }
 .row:hover{background:rgba(255,255,255,.075);border-color:var(--line-2);transform:translateX(2px)}
 .row.on{background:rgba(255,211,90,.11);border-color:rgba(255,211,90,.45)}
+/* 纯展示行（不可点击）：去掉可点假象，避免"点了没反应"（2026-10-13）
+   之前靠行内 style="cursor:default" 只能改指针，hover 位移/高亮仍在，
+   视觉上仍像可点，实测 28 个元素属此类。改用 class 统一处理。 */
+.row.static,.row.static:hover{
+  cursor:default;transform:none;background:rgba(255,255,255,.03);
+  border-color:var(--line);
+}
+.row.static .row-t{color:var(--txt-2);font-weight:600}
 .row-h{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:3px}
 .row-t{font-size:13px;font-weight:700;color:var(--txt)}
 .row-m{display:flex;gap:12px;font-size:11px;color:var(--txt-3);flex-wrap:wrap}
 .row-m b{color:var(--txt-2);font-weight:600;font-variant-numeric:tabular-nums}
-
-/* ---------- 可点行的视觉标识 ----------
-   此前大量列表项虽然绑了事件，但外观与纯文本无差别，用户
-   不知道能不能点、点了会发生什么 —— 这是"功能无法使用"错觉的
-   主要来源（其实点了是好的，只是看不出来）。
-   .row-click 明确给出「可点」信号：手型光标 + 右侧 › 指示。 */
-.row-click{position:relative}
-.row-click::after{
-  content:'›';position:absolute;right:9px;top:50%;transform:translateY(-50%);
-  font-size:16px;line-height:1;color:var(--brand);opacity:.55;
-  transition:.16s;pointer-events:none;
-}
-.row-click:hover::after{opacity:1;transform:translateY(-50%) translateX(3px)}
-.row-click:hover{border-color:rgba(255,211,90,.35)}
-/* 表格里的可点行 */
-tr.row-click{cursor:pointer}
-tr.row-click::after{display:none}
-tr.row-click:hover{background:rgba(255,211,90,.09)}
-tr.row-click.on{background:rgba(255,211,90,.14)}
 
 .tag{padding:2px 8px;border-radius:20px;font-size:10.5px;font-weight:700;white-space:nowrap;flex:0 0 auto}
 .tag-red{background:rgba(248,113,113,.18);color:var(--red);border:1px solid rgba(248,113,113,.32)}
@@ -253,46 +263,6 @@ tr.row-click.on{background:rgba(255,211,90,.14)}
    不要用 JS 按字符数截断（中文会切在词中间，读起来像乱码）。 */
 .row-m .ell{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
-/* ========== 图层控制面板（可叠加 / 可全关） ==========
-   原来只有单选列表（点一个专题其余全取消），无法表达
-   「底图 + NDVI + 灾情」同显，也无法「全关只剩底图」。
-   现在每项是一个带复选框的行，批量操作放在顶部工具条。 */
-.lay-bar{display:flex;align-items:center;gap:5px;padding:2px 0 7px;flex-wrap:wrap}
-.laybtn{
-  background:rgba(255,255,255,.06);border:1px solid var(--line-2);
-  color:var(--txt-2);font-size:11px;padding:4px 9px;border-radius:6px;
-  cursor:pointer;font-family:inherit;white-space:nowrap;transition:.15s;
-}
-.laybtn:hover{background:rgba(255,255,255,.13);border-color:var(--brand);color:var(--txt)}
-.laybtn:active{transform:translateY(1px)}
-.laycnt{margin-left:auto;font-size:10.5px;color:var(--txt-3);font-variant-numeric:tabular-nums}
-.laycnt.zero{color:var(--txt-3);opacity:.8}
-
-.layrow{
-  display:flex;align-items:flex-start;gap:8px;padding:8px 9px;
-  border-radius:7px;cursor:pointer;margin-bottom:2px;
-  border:1px solid transparent;transition:background .14s,border-color .14s;
-}
-.layrow:hover{background:rgba(255,255,255,.06)}
-.layrow:focus-visible{outline:2px solid var(--brand);outline-offset:1px}
-/* 勾选态：左侧复选框点亮 + 整行微高亮，让"当前叠了哪几层"一眼可见 */
-.layrow.on{background:rgba(59,130,246,.11);border-color:rgba(59,130,246,.38)}
-.laybox{
-  flex:0 0 auto;width:15px;height:15px;margin-top:2px;border-radius:4px;
-  border:1.5px solid var(--txt-3);background:rgba(0,0,0,.25);
-  position:relative;transition:.15s;
-}
-.layrow.on .laybox{background:var(--brand);border-color:var(--brand)}
-.layrow.on .laybox::after{
-  content:'';position:absolute;left:4px;top:1px;width:4px;height:8px;
-  border:solid #fff;border-width:0 2px 2px 0;transform:rotate(42deg);
-}
-.laytx{flex:1;min-width:0}
-.laynm{font-size:12.5px;font-weight:700;color:var(--txt);line-height:1.35}
-.layrow.on .laynm{color:#fff}
-.layds{font-size:10.5px;color:var(--txt-3);line-height:1.45;margin-top:2px;
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-
 .bar{height:6px;border-radius:6px;background:rgba(255,255,255,.09);overflow:hidden;margin-top:5px}
 .bar>i{display:block;height:100%;border-radius:6px;background:linear-gradient(90deg,var(--brand-2),var(--brand));transition:width .5s}
 
@@ -302,49 +272,36 @@ tr.row-click.on{background:rgba(255,211,90,.14)}
 .note.warn b{color:var(--orange)}
 
 /* 详情浮层 */
+/* 详情浮层
+   ⚠️ 层级与定位三次修正（2026-10-13，全部为实测踩坑）：
+     ① z-index:30 < 顶栏 z-index:60，且 top:14px 让浮层顶部落在顶栏下沿
+        → 关闭按钮 × 实际点不到（命中的是顶栏时钟），只能刷新页面才能关掉详情。
+     ② 改 fixed/top:70px 后，又盖住地图右上角的缩放控件
+        （+ / − / ⌂ 在 x≈1552，正落在浮层宽度范围内）→ 出详情后无法缩放。
+     ③ 改左下角又会压住左侧栏底部内容。
+     最终方案：停靠在**地图区左下角**——用 calc 扣掉侧栏宽度与底栏高度，
+     既避开顶栏时钟、右上缩放控件、左侧栏、底部跑马灯，又不遮挡地图中央业务面。 */
 .detail{
-  /* ⚠️ 这里原本是 position:absolute; right:14px; top:14px。
-     但 #detail 是 <body> 的直接子元素（index.html:440），它的定位祖先
-     是 .app / body，**不是** .mapwrap —— 所以"相对地图右上角"是假的，
-     实际落点是【整个页面】的右上角，正好压在顶栏时钟（#clock-time）上。
-     后果：详情标题栏里的收起/关闭按钮被时钟挡住、点不到
-     （线上实测 Playwright 报 "clock-time intercepts pointer events"，
-      重试 10 次仍失败）。
-     改用 fixed + 视口右下角：
-       · 彻底脱离文档流，不再被任何祖先定位带偏
-       · 右下角是地图的次要操作区（左上/中部才是图斑密集区）
-       · 始终在视口内，底部的 ticker / 声明栏高度已用 bottom 值避开
-     收起功能仍保留（点「▾」折叠成 150px 窄条让出地图）。 */
-  position:fixed;right:16px;bottom:74px;width:300px;max-height:calc(100vh - 190px);
+  position:fixed;
+  left:calc(var(--side-w, 232px) + 14px);
+  bottom:46px;
+  width:308px;
+  max-height:calc(100vh - 60px - 46px - 76px);
   background:rgba(12,22,40,.965);border:1px solid var(--line-2);border-radius:var(--r);
-  box-shadow:var(--shadow);backdrop-filter:blur(18px);z-index:30;display:none;
+  box-shadow:var(--shadow);backdrop-filter:blur(18px);z-index:80;display:none;
   flex-direction:column;overflow:hidden;
-  transition:width .2s cubic-bezier(.2,.9,.3,1),max-height .2s;
 }
 .detail.on{display:flex;animation:slideIn .24s cubic-bezier(.2,.9,.3,1)}
-/* 折叠态：只留标题栏，让出几乎整幅地图 */
-.detail.mini{width:150px;max-height:none}
-.detail.mini .dt-b,
-.detail.mini .nat-dis-go{display:none}
-.detail.mini .dt-h{cursor:pointer;border-bottom:none;padding:11px 13px}
-.detail.mini .dt-s{display:none}
-.detail.mini::after{
-  content:'展开';position:absolute;right:10px;top:12px;
-  font-size:10.5px;color:var(--brand);font-weight:700;
+@keyframes slideIn{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
+/* 窄屏隐藏侧栏后浮层回到左下角 */
+@media (max-width:900px){
+  .detail{left:14px;bottom:14px;max-height:calc(100vh - 120px)}
 }
-@keyframes slideIn{from{opacity:0;transform:translateX(22px)}to{opacity:1;transform:none}}
 .dt-h{padding:13px 15px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:flex-start;gap:9px;background:rgba(255,255,255,.028)}
 .dt-t{font-size:15px;font-weight:800;color:var(--txt)}
 .dt-s{font-size:11.5px;color:var(--txt-3);margin-top:2px}
 .dt-x{background:none;border:none;color:var(--txt-3);cursor:pointer;font-size:19px;line-height:1;padding:2px 5px;border-radius:6px}
 .dt-x:hover{background:rgba(255,255,255,.1);color:var(--txt)}
-/* 收起按钮：在关闭按钮左侧 */
-.dt-fold{
-  background:none;border:1px solid var(--line-2);color:var(--txt-3);
-  cursor:pointer;font-size:11px;font-weight:700;padding:3px 8px;border-radius:6px;
-  display:flex;align-items:center;gap:3px;flex:0 0 auto;
-}
-.dt-fold:hover{background:rgba(255,255,255,.1);color:var(--txt);border-color:var(--line-2)}
 .dt-b{padding:13px 15px;overflow-y:auto;flex:1}
 .dt-b::-webkit-scrollbar{width:6px}
 .dt-b::-webkit-scrollbar-thumb{background:rgba(120,160,220,.25);border-radius:6px}
@@ -370,15 +327,6 @@ tr.row-click.on{background:rgba(255,211,90,.14)}
 .hbar-t{flex:1;height:9px;background:rgba(255,255,255,.08);border-radius:5px;overflow:hidden}
 .hbar-t>i{display:block;height:100%;border-radius:5px;transition:width .55s}
 .hbar-v{width:44px;text-align:right;color:var(--txt);font-weight:700;font-variant-numeric:tabular-nums;flex:0 0 44px}
-/* 可点的排名条：给出手型光标与悬停反馈。
-   ⚠️ 此前 .hbar 一律无光标提示，用户无法区分"这一条能点"和"这只是图"，
-      点下去没反应就以为功能坏了。凡绑定了 click 的 hbar 都加 .hbar-click。*/
-.hbar-click{cursor:pointer;position:relative;padding:2px 16px 2px 0;margin-left:-4px;border-radius:5px;transition:background .16s}
-.hbar-click:hover{background:rgba(255,211,90,.10)}
-.hbar-click:hover .hbar-n{color:var(--txt)}
-.hbar-click:focus-visible{outline:1px solid rgba(255,211,90,.6);outline-offset:1px}
-/* 纯展示的权重条不加任何可点暗示 */
-.hbar-vonly{cursor:default}
 
 /* 首页大屏 */
 .hero{flex:1;display:flex;flex-direction:column;min-width:0;position:relative}
@@ -465,13 +413,9 @@ tr.row-click.on{background:rgba(255,211,90,.14)}
   position:absolute;left:14px;top:14px;z-index:14;display:flex;flex-direction:column;gap:5px;
   pointer-events:none;max-width:calc(100% - 90px);
 }
-/* 标题过长时省略，而不是把 HUD 撑出容器被裁掉。
-   （用户截图里"内蒙古自治区 · 市级遥感下钻"左侧被切掉一截。）
-   完整名称通过 title 属性悬停可见。*/
 .nat-title{
   font-size:14.5px;font-weight:800;color:#fff;letter-spacing:.4px;
   text-shadow:0 2px 10px rgba(0,0,0,.95),0 0 24px rgba(0,0,0,.7);line-height:1.35;
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
 }
 .nat-meta{font-size:11px;color:#cfe0f5;text-shadow:0 1px 6px rgba(0,0,0,.95)}
 .nat-back{
@@ -577,115 +521,28 @@ tr.row-click.on{background:rgba(255,211,90,.14)}
 .dual-raster{position:absolute;inset:0;z-index:4;pointer-events:none}
 
 /* 影像/矢量切换按钮 */
-/* ---------- 点选入口（右上角）----------
-   香港/澳门/厦门/济源/苏州 这类区域按用户要求不显示文字，
-   但仍需能进入 —— 右上角此按钮按名称直接下钻。
-   定位：紧贴缩放控件（.gs-ctl 也在 right:14px）下方一行，
-   用 column 排布避免与＋/－/⌂ 三个按钮重叠。 */
-/* ---------- 点选入口（右上角）----------
-   定位策略（返工两次后的定稿，勿再改）：
-   .nat-jump 本身只放按钮（absolute，top 由 --jump-top 控制）；
-   .nat-jump-pop 脱离按钮、**直接绝对定位到 .mapwrap**，
-   位置完全由 --jump-top 计算，与按钮无任何层叠关系。
-
-   之前两次失败：
-   1) pop 作为 .nat-jump 的子元素 + bottom 向上 ——
-      父容器高度由内容决定，pop 找不到稳定原点，实测 popTop 824 > 地图底 856，
-      24 个市全部落在地图外；
-   2) 改 column-reverse / z-index 分层 ——
-      pop 仍与按钮在同一个流里，展开后直接盖住按钮，
-      实测点击被 "nat-jump-grp ... intercepts pointer events" 拦截。
-   教训：**浮层与触发按钮的定位必须彻底解耦**，
-   共用一个父容器时两者必然互相干扰。 */
-/* 详情弹层展开时（body.has-detail，由 app.js 的 detail() 打上）
-   把点选按钮推到弹层下方。
-
-   ⚠️ 踩了两个坑，都必须记住：
-   1) 原来用 document.querySelector('.mapwrap') 打 has-detail ——
-      但全站有 7 个 mapwrap，只取到【第一个】（总览驾驶舱的），
-      全国视图的按钮纹丝不动，用户仍看到「按钮被弹层压住」；
-   2) 改成全量标记 mapwrap 后仍不生效 ——
-      因为 #detail 根本不在任何 .mapwrap 内，它是 body 的直接子元素
-      （index.html:440），CSS 写 .mapwrap.has-detail（后代选择器）
-      自然匹配不上。
-   正解：标记挂在 body 上，CSS 侧限定到全国视图的 mapwrap。 */
-/* ⚠️ 原来这里在详情态下把「点选」按钮左移到 --jump-right:336px，
-   目的是躲开右上角的详情弹层。但详情浮层已改为 fixed 右下角定位，
-   不再占右上角 —— 这条规则会让按钮无故左移、位置别扭，直接移除。
-   （若日后详情浮层位置再变，请先确认是否真的与按钮重叠再启用。）*/
-
-.nat-jump{
-  /* z-index 31（高于 .detail 的 30）：弹层已在右下角，理论上不重叠。
-     保留更高层级是为了兜住极端情况（超窄屏时右下角也可能与顶栏按钮挤到一起），
-     保证点选按钮永远可点。 */
-  /* ⚠️ --jump-top 原来是 126px，而 .gs-ctl（＋－⌂ 三个按钮，实测 34x114）
-     占 top:14px → 底边落在 188px。126+32=158 看似不冲突，
-     但实测两者仍重叠 2px（缩放控件 1552,74,34,114 ↔ 点选 1522,186,64,32）。
-     把「点选」压到 --jump-top:152px，稳定让出 16px 间隙。 */
-  position:absolute;right:var(--jump-right, 14px);top:var(--jump-top, 152px);z-index:31;
-  display:flex;align-items:center;gap:5px;
-  height:var(--jump-btn-h, 32px);padding:0 11px;border-radius:10px;
-  border:1px solid var(--line-2);background:rgba(11,20,36,.92);color:var(--txt);
-  font-size:11.5px;font-weight:700;cursor:pointer;font-family:inherit;
-  backdrop-filter:blur(8px);transition:.16s;
+.nat-raster-toggle{
+  position:absolute;right:14px;bottom:44px;z-index:15;
+  display:flex;align-items:center;gap:6px;padding:7px 12px;border-radius:10px;
+  border:1px solid rgba(255,211,90,.45);background:rgba(255,211,90,.16);
+  color:var(--brand);font-size:11.5px;font-weight:700;cursor:pointer;
+  backdrop-filter:blur(10px);transition:.16s;font-family:inherit;
 }
-.nat-jump:hover{background:rgba(255,211,90,.2);border-color:rgba(255,211,90,.5);color:var(--brand)}
-.nat-jump i{font-style:normal;font-size:13px;line-height:1}
-.nat-jump[aria-expanded="true"]{
-  background:rgba(255,211,90,.24);border-color:rgba(255,211,90,.7);color:var(--brand);
+.nat-raster-toggle:hover{background:rgba(255,211,90,.26);border-color:rgba(255,211,90,.7)}
+.nat-raster-toggle i{font-style:normal;font-size:14px;line-height:1}
+.nat-raster-toggle.off{
+  border-color:var(--line-2);background:rgba(11,20,36,.9);color:var(--txt-3);
 }
-.nat-jump-pop{
-  /* 挂在 .mapwrap 上、与按钮同级，位置只由 --jump-top 决定，
-     不受按钮自身尺寸/层叠影响 —— 两者永远不会互相压住。
-
-     展开方向：默认【向下】。但当按钮被详情弹层推到地图下方时
-     （实测 btnTop=836、mapBottom=856，只剩 20px 余量），
-     向下列表会整块溢出地图外（popInMap:false）。
-     故用 --jump-up 变量切换：body.has-detail 时置1，
-     列表改为向上展开（transform 反向），两种场景都在可视范围内。 */
-  position:absolute;right:var(--jump-right, 14px);z-index:32;
-  /* 贴在按钮【下沿】之下，向【下】生长。
-     向上展开会盖住按钮（实测 btnClickable:false），
-     向下展开则按钮完全不受影响；只要--jump-top 留足下方空间即可不出界，
-     而 .mapwrap.has-detail 已把按钮下移、且默认 126px 时下方有 ~700px 余量。 */
-  top:calc(var(--jump-top, 126px) + var(--jump-btn-h, 32px) + 6px);
-  width:236px;max-height:min(56vh,440px);overflow:auto;
-  padding:6px;border-radius:12px;border:1px solid var(--line-2);
-  background:rgba(9,16,28,.96);backdrop-filter:blur(12px);
-  box-shadow:0 10px 30px rgba(0,0,0,.5);
-  font-size:12px;color:var(--txt-2);
+/* 全国/省级不支持模拟栅格（全国层每像元 700m，屏幕上不足 1px，
+   既糊掉卫星影像又要跑千万级点-面判定）→ 按钮置灰并说明下钻要求 */
+.nat-raster-toggle.disabled{
+  border-color:var(--line);background:rgba(11,20,36,.82);
+  color:var(--txt-3);cursor:not-allowed;opacity:.75;
 }
-/* 详情态：按钮已移到右上角【左侧 336px 处】（--jump-right），
-   列表紧贴其下方展开。
-   ⚠️ 定位基准是 .mapwrap（pop 的父级），不是按钮 ——
-      之前写 left:calc(100% + 8px) 是相对 pop 自身宽度，
-      等于把自己推到屏幕外（实测列表完全不可见）。
-      与按钮共用同一个 --jump-right，两者的水平位置自然对齐。 */
-body.has-detail #v-national .nat-jump-pop{
-  right:var(--jump-right, 336px);
-  left:auto;
-  top:calc(var(--jump-top, 14px) + var(--jump-btn-h, 32px) + 6px);
+.nat-raster-toggle.disabled:hover{
+  background:rgba(11,20,36,.82);border-color:var(--line);
 }
-
-.nat-jump-pop[hidden]{display:none}
-.nat-jump-grp{
-  padding:6px 8px 4px;font-size:10px;font-weight:700;color:var(--txt-3);
-  letter-spacing:.06em;border-top:1px solid rgba(255,255,255,.06);
-}
-.nat-jump-grp:first-child{border-top:0}
-.nat-jump-pop button{
-  display:block;width:100%;text-align:left;padding:6px 9px;margin:1px 0;
-  border:0;border-radius:8px;background:transparent;color:var(--txt);
-  font-size:12px;font-family:inherit;cursor:pointer;line-height:1.5;
-}
-.nat-jump-pop button:hover{background:rgba(255,211,90,.18);color:var(--brand)}
-.nat-jump-pop button small{
-  display:block;color:var(--txt-3);font-size:10.5px;margin-top:1px;
-}
-.nat-jump-empty{padding:12px 9px;color:var(--txt-3);font-size:11.5px;line-height:1.6}
-@media (max-width:640px){
-  .nat-jump{top:auto;bottom:96px;right:14px}
-}
+.nat-raster-toggle.disabled i{opacity:.45}
 
 /* 层级面包屑 */
 .nat-crumb{
@@ -711,7 +568,8 @@ body.has-detail #v-national .nat-jump-pop{
 .glev em u{display:block;height:100%;border-radius:3px;transition:width .3s}
 
 @media (max-width:900px){
-    .nat-crumb span{font-size:9.5px;padding:1px 5px}
+  .nat-raster-toggle{right:9px;bottom:52px;padding:6px 10px;font-size:10.5px}
+  .nat-crumb span{font-size:9.5px;padding:1px 5px}
 }
 
 
@@ -777,67 +635,6 @@ body.has-detail #v-national .nat-jump-pop{
   .top-right .btn-ghost{display:none}
 }
 
-/* ========== 窄屏（≤640px）：标签栏独占一行，避免被 logo 挤没 ==========
-   实测 390px 下 .tabs 可用宽仅 63px（8 个标签需 528px），
-   顶栏被 logo + 按钮占满，标签完全不可见、无法切换功能。
-   改为两行布局：上排 logo+按钮，下排标签横向滚动。 */
-/* ========== 全局加载反馈 ==========
-   切换标签实测耗时 0.09~2.19s，此前界面完全静止、无提示，
-   用户会以为卡死或反复点击。用顶部细进度条 + 文案给出反馈。 */
-#busybar{
-  position:fixed;left:0;right:0;top:52px;height:2px;z-index:99998;
-  pointer-events:none;opacity:0;transition:opacity .16s;
-}
-#busybar.on{opacity:1}
-#busybar i{
-  position:absolute;left:0;top:0;height:100%;width:34%;
-  background:linear-gradient(90deg,transparent,var(--brand),transparent);
-  animation:bubyslide 1.05s ease-in-out infinite;
-}
-@keyframes bubyslide{0%{left:-34%}100%{left:100%}}
-#busybar span{
-  position:absolute;top:7px;left:50%;transform:translateX(-50%);
-  font-size:11.5px;color:var(--txt-2);background:rgba(12,20,33,.92);
-  border:1px solid var(--line-2);border-radius:999px;padding:3px 11px;
-  white-space:nowrap;box-shadow:0 4px 14px rgba(0,0,0,.35);
-}
-@media (prefers-reduced-motion:reduce){
-  #busybar i{animation:none;width:100%;opacity:.5}
-}
-
-@media (max-width:640px){
-  .topbar{
-    height:auto;flex:0 0 auto;flex-wrap:wrap;padding:7px 9px;gap:7px;
-    position:sticky;top:0;z-index:60;
-  }
-  .brand{flex:1 1 auto;min-width:0}
-  .brand-name{font-size:14px;white-space:nowrap}
-  .top-right{flex:0 0 auto;gap:6px}
-  /* 标签独占整行，横向滑动 */
-  .tabs{
-    order:9;flex:1 0 100%;margin-left:-9px;margin-right:-9px;
-    padding:0 9px 2px;gap:4px;
-    overflow-x:auto;-webkit-overflow-scrolling:touch;
-    scroll-snap-type:x proximity;
-  }
-  .tab{flex:0 0 auto;padding:7px 12px;scroll-snap-align:start}
-  .tab span.tb{display:inline;font-size:12.5px;margin-left:5px}
-  .tab i{font-size:13px}
-  /* 标签在滚动时给出视觉提示：左右渐隐 */
-  .tabs{
-    -webkit-mask-image:linear-gradient(90deg,transparent 0,#000 10px,#000 calc(100% - 14px),transparent 100%);
-    mask-image:linear-gradient(90deg,transparent 0,#000 10px,#000 calc(100% - 14px),transparent 100%);
-  }
-  /* 地图给足高度 */
-  .mapwrap{min-height:52vh}
-  .side{max-height:none}
-  .gs-ctl{gap:5px}
-  .gs-ctl button{width:34px;height:34px;font-size:15px}
-  .disc{font-size:9.5px;padding:4px 9px}
-  /* 窄屏顶栏变成两行，加载条下移到第二行（标签栏）之下 */
-  #busybar{top:88px}
-}
-
 @media print{.topbar,.ticker,.disc,.gs-ctl{display:none}}
 
 /* ========== 栅格影像模式（放最后以确保优先级最高） ==========
@@ -849,6 +646,40 @@ body.has-detail #v-national .nat-jump-pop{
 #nat-map.has-raster .dual-svg{background:none !important}
 #nat-map.has-raster .gs-map{background-color:transparent !important;
   background-image:none !important}
+
+/* ---- Esri 影像底图可见性（2026-10-13）----
+   .dual-svg 继承了 .gs-map 的**不透明**深色渐变背景，而 Esri 瓦片层
+   z-index:0 在它下面 → 影像被整片遮住，画面只剩文字标签（面也看不见）。
+   ⚠️ 注意选择器权重：#nat-map.gs-map 是 ID 选择器，优先级远高于
+   [id^=...] 属性选择器，必须用同级或更具体的规则压过去。 */
+.mapwrap:has(.esri-imagery) .dual-svg,
+.mapwrap:has(.esri-imagery) .gs-map,
+#nat-map:has(.esri-imagery),#nat-map:has(.esri-imagery).gs-map,
+#qual-map:has(.esri-imagery),#qual-map:has(.esri-imagery).gs-map{
+  background:transparent !important;background-image:none !important;
+  background-color:transparent !important;
+}
+/* 不支持 :has() 的浏览器兜底：由 JS 给容器与地图本体都加 .esri-on */
+.mapwrap.esri-on,.mapwrap.esri-on .dual-svg,.mapwrap.esri-on .gs-map,
+.gs-map.esri-on,.gs-map.esri-on .dual-svg{
+  background:transparent !important;background-image:none !important;
+  background-color:transparent !important;
+}
+
+/* ⚠️ SVG 内的世界底板矩形必须一并撤掉（2026-10-13，"怪异图层"的最终真凶）
+   geo-engine.js 在 <g class="gs-world"> 里放了一个 2e5×2e5 的
+   <rect class="gs-bg" fill:#08111f>，作用是"没有底图时给个深海色底"。
+   上面那些 CSS 只能清 CSS 背景，**清不掉 SVG 元素的 fill** ——
+   于是卫星影像被这层深色矩形整片遮住：
+     实测像素  完整叠加亮度 26.1 / 隐藏整个 SVG 后 92.5（亮 3.5 倍）
+   现在：一旦 Esri 影像在场，就让这块底板透明。 */
+.mapwrap:has(.esri-imagery) .gs-bg,
+#nat-map:has(.esri-imagery) .gs-bg,
+#qual-map:has(.esri-imagery) .gs-bg,
+.gs-map.esri-on .gs-bg,
+.mapwrap.esri-on .gs-bg{
+  fill:none !important;display:none !important;
+}
 
 /* 栅格宿主容器 */
 /* 栅格须叠在 Esri 瓦片(0) 之上、SVG 面(2) 之下 → z-index 1（整数，小数会被取整为 0） */
@@ -878,287 +709,85 @@ body.has-detail #v-national .nat-jump-pop{
   linear-gradient(180deg,#060d18,#04080f)}
 
 /* ============================================================
-   承保信息上传视图
-   ============================================================ */
-
-/* 步骤条 */
-.uw-steps{display:flex;align-items:center;gap:6px;padding:12px 16px;border-bottom:1px solid var(--line)}
-.uw-step{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--txt-3);opacity:.5;transition:.2s}
-.uw-step b{
-  width:19px;height:19px;border-radius:50%;display:grid;place-items:center;
-  font-size:11px;font-weight:800;background:rgba(120,160,220,.16);color:var(--txt-2);
+   图例面板增强（2026-10-15，按《3S平台完善》PPT 第2/4/5/6/7页）
+   ------------------------------------------------------------
+   PPT 要求"增加黄绿渐变色带和数值图例""标注具体数值区间"
+   "标注单位、有效范围和计算口径""跨日期比较时保持相同色标范围"，
+   原样式只有 .lg-row 一行式色块列表，承载不了这些信息。 */
+.lg-head{
+  display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;
+  margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--line);
 }
-.uw-step.on{opacity:1;color:var(--txt-2)}
-.uw-step.on b{background:rgba(52,211,153,.2);color:var(--green)}
-.uw-step.cur{color:#fff}
-.uw-step.cur b{background:var(--brand);color:#0b1424;box-shadow:0 0 0 3px rgba(255,211,90,.18)}
-.uw-step+.uw-step::before{content:"";width:14px;height:1px;background:var(--line-2);margin-right:2px}
-
-/* 拖拽上传区 */
-.uw-drop{
-  border:1.5px dashed var(--line-2);border-radius:12px;padding:26px 14px;text-align:center;
-  cursor:pointer;transition:.18s;background:rgba(120,160,220,.035);
+.lg-head b{font-size:12.5px;color:var(--txt-1);font-weight:700}
+.lg-unit{margin-left:auto;font-size:10.5px;color:var(--txt-3);font-variant-numeric:tabular-nums}
+/* 色带条：连续渐变，直接体现"颜色代表什么" */
+.lg-ramp{margin-bottom:9px}
+.lg-bar{
+  height:13px;border-radius:3px;border:1px solid rgba(255,255,255,.16);
+  box-shadow:inset 0 0 0 1px rgba(0,0,0,.25);
 }
-.uw-drop:hover{border-color:var(--brand);background:rgba(255,211,90,.06)}
-.uw-drop.over{border-color:var(--brand);background:rgba(255,211,90,.11);transform:scale(1.01)}
-.uw-drop-i{font-size:30px;color:var(--brand);line-height:1;margin-bottom:9px}
-.uw-drop-t{font-size:13px;font-weight:700;color:var(--txt)}
-.uw-drop-s{font-size:11px;color:var(--txt-3);margin-top:5px}
-
-.uw-status{margin-top:9px;font-size:11.5px;line-height:1.55;color:var(--txt-3);min-height:16px}
-.uw-status.loading{color:var(--cyan)}
-.uw-status.ok{color:var(--green)}
-.uw-status.err{color:var(--red)}
-
-.uw-privacy{
-  margin-top:11px;padding:10px 11px;border-radius:10px;font-size:11px;line-height:1.65;
-  color:var(--txt-3);background:rgba(52,211,153,.055);border:1px solid rgba(52,211,153,.2);
+.lg-ax{
+  display:flex;justify-content:space-between;margin-top:3px;
+  font-size:10px;color:var(--txt-3);font-variant-numeric:tabular-nums;
 }
-.uw-privacy b{color:var(--green)}
-.uw-privacy b:not(:first-child){color:var(--txt)}
-
-.uw-fileinfo{font-size:11.5px;color:var(--txt-2);margin-bottom:9px;word-break:break-all}
-.uw-fileinfo b{color:var(--txt)}
-
-.uw-btns{display:flex;flex-wrap:wrap;gap:7px}
-.uw-btn{
-  padding:7px 12px;border-radius:8px;font-size:11.5px;font-weight:700;cursor:pointer;
-  border:1px solid var(--line-2);background:rgba(120,160,220,.09);color:var(--txt-2);
-  font-family:inherit;transition:.16s;
+/* 逐档条目：色块 + 数值区间 + 业务含义三列 */
+.lg-items{display:flex;flex-direction:column;gap:1px}
+.lg-item{
+  display:flex;align-items:center;gap:7px;padding:3px 5px;border-radius:6px;
+  font-size:11px;color:var(--txt-2);cursor:default;transition:background .15s;
 }
-.uw-btn:hover{background:rgba(120,160,220,.17);color:var(--txt)}
-.uw-btn.primary{background:var(--brand);border-color:var(--brand);color:#0b1424}
-.uw-btn.primary:hover{background:#ffdf85}
-.uw-btn.danger{border-color:rgba(248,113,113,.35);color:var(--red);background:rgba(248,113,113,.08)}
-.uw-btn.danger:hover{background:rgba(248,113,113,.16)}
-
-.uw-sheet{
-  margin-top:9px;width:100%;padding:6px 8px;border-radius:8px;font-size:11.5px;
-  background:rgba(8,16,30,.9);color:var(--txt-2);border:1px solid var(--line-2);font-family:inherit;
+.lg-item:hover{background:rgba(255,255,255,.045)}
+.lg-item .lg-sw{width:13px;height:13px;border-radius:3px;flex:0 0 13px;border:1px solid rgba(255,255,255,.22)}
+.lg-item .lg-v{
+  flex:0 0 auto;color:var(--txt-1);font-weight:600;
+  font-variant-numeric:tabular-nums;min-width:62px;
 }
-
-/* 字段映射 */
-.uw-mrow{display:grid;grid-template-columns:96px 1fr;gap:8px;align-items:center;margin-bottom:6px}
-.uw-mn{font-size:11.5px;color:var(--txt-2)}
-.uw-mn i{color:var(--red);font-style:normal;margin-left:2px}
-.uw-mrow.req .uw-mn{color:var(--txt);font-weight:700}
-.uw-ms{
-  padding:5px 7px;border-radius:7px;font-size:11px;background:rgba(8,16,30,.9);
-  color:var(--txt-2);border:1px solid var(--line);font-family:inherit;width:100%;
+.lg-item .lg-d{
+  font-style:normal;color:var(--txt-3);font-size:10.5px;
+  margin-left:auto;text-align:right;line-height:1.35;
 }
-
-/* 数据预览表 */
-.uw-pvwrap{margin-top:8px;overflow:auto;max-height:260px;border:1px solid var(--line);border-radius:9px}
-.uw-pv{border-collapse:collapse;font-size:10.5px;width:100%;white-space:nowrap}
-.uw-pv th{
-  position:sticky;top:0;background:var(--panel-solid);color:var(--txt-2);font-weight:700;
-  padding:5px 7px;text-align:left;border-bottom:1px solid var(--line-2);
+/* 分组小标题（如"无数据区"） */
+.lg-sec{
+  margin:10px 0 4px;font-size:10px;color:var(--txt-3);
+  letter-spacing:.4em;text-transform:none;
 }
-.uw-pv th.mapped{color:var(--brand);background:rgba(255,211,90,.1)}
-.uw-pv td{padding:4px 7px;color:var(--txt-3);border-bottom:1px solid rgba(120,160,220,.07)}
-.uw-pv tbody tr:hover td{background:rgba(120,160,220,.05)}
-
-.uw-empty-tip{font-size:11.5px;color:var(--txt-3);padding:8px 0}
-
-.uw-bad{
-  margin-top:11px;padding:9px 10px;border-radius:9px;font-size:11px;line-height:1.6;
-  background:rgba(248,113,113,.07);border:1px solid rgba(248,113,113,.24);
+/* 说明块：计算口径 / 数据来源 / 使用边界 */
+.lg-note{
+  margin-top:7px;padding:6px 8px;border-radius:7px;
+  background:rgba(255,255,255,.035);border:1px solid var(--line);
+  font-size:10.5px;line-height:1.62;color:var(--txt-3);
 }
-.uw-badtip{color:var(--red);margin-bottom:6px}
-.uw-badlist{display:flex;flex-wrap:wrap;gap:5px}
-
-/* 明细表 */
-.uw-tblwrap{max-height:420px;overflow:auto;border:1px solid var(--line);border-radius:9px}
-.uw-tblwrap .table{margin:0;font-size:11px}
-.uw-tblwrap .table th{position:sticky;top:0;background:var(--panel-solid);z-index:2}
-.uw-tblwrap .table td{white-space:nowrap}
-
-/* 图例 */
-.uw-legend{
-  position:absolute;left:14px;bottom:14px;z-index:7;padding:10px 12px;border-radius:11px;
-  background:rgba(8,16,30,.86);border:1px solid var(--line);backdrop-filter:blur(9px);
-  font-size:11px;color:var(--txt-2);display:flex;flex-direction:column;gap:5px;
-}
-/* 未上传数据时不显示图例 —— 地图是空的，"保费低/中/较高/最高" 无从对应，
-   悬在空图左下角只会让人以为漏了东西。 */
-#uw-legend-box[hidden]{display:none}
-
-/* 未上传数据时的空状态说明 */
-.uw-empty-hint{
-  position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:6;
-  text-align:center;pointer-events:none;
-}
-.uw-empty-hint .eh-t{
-  font-size:15px;font-weight:700;color:var(--txt-2);margin-bottom:7px;
-}
-.uw-empty-hint .eh-d{
-  font-size:12px;color:var(--txt-3);line-height:1.75;
-}
-.uw-empty-hint[hidden]{display:none}
-.ql-row{display:flex;align-items:center;gap:7px;white-space:nowrap}
-.ql-sw{width:13px;height:13px;border-radius:3px;flex:0 0 auto;display:inline-block}
+.lg-note b{color:var(--txt-2);font-weight:700}
+.lg-note.warn{background:rgba(250,204,21,.07);border-color:rgba(250,204,21,.22)}
+.lg-note.warn b{color:#facc15}
+/* 色标锁定提示（PPT 第4/5页：跨日期可比） */
+.lg-note.lock{background:rgba(59,130,246,.09);border-color:rgba(59,130,246,.26)}
+.lg-note.lock b{color:#93c5fd}
+.lg-empty{padding:8px 4px;font-size:11px;color:var(--txt-3);text-align:center}
 
 /* ============================================================
-   承保信息地图的卫星底图叠放
-   ------------------------------------------------------------
-   Esri 瓦片是 <img>，直接 append 到 #uw-map 里，而 GeoCanvas 的
-   <svg> 默认 position:static —— 结果 svg 排在 img 之前，
-   且 svg 内 .gs-bg 是不透明填充，整片盖住底图（实测只露出
-   加载成功的那一两块瓦片）。
-   修法：给宿主加 .has-basemap，同时
-     ① svg 提升为 absolute + z-index 1（压在瓦片之上）
-     ② 清掉 .gs-bg 的不透明填充，让瓦片透出来
-   ⚠️ z-index 只能取整数，小数会被浏览器取整为 0 而失效。
+   遥感专题列表改版（2026-10-16）
+   用户要求：植被长势指数、干旱指数等"带不同颜色，然后底下小字说明"
+   实现：每项左侧一条该专题真实色块（与图上颜色一一对应），
+        名称下方一句小字业务说明
    ============================================================ */
-#uw-map.has-basemap{background:none !important}
-#uw-map.has-basemap .gs-map{
-  background:transparent !important;background-image:none !important;
+/* ⚠️ .layrow 是 display:block，子元素必须自己定 display。
+   <i> 默认 inline → 宽高完全无效，色块渲染成 0×0（实测过）。
+   用 inline-block 而非 flex，避免破坏既有 .laybox 勾选框布局。 */
+.layrow{
+  position:relative;          /* 色块绝对定位的参照系，缺了会飞���祖先容器 */
+  padding-left:30px;min-height:34px;
 }
-#uw-map.has-basemap .gs-svg{
-  position:absolute;inset:0;z-index:1;
+.layrow .laychip{
+  position:absolute;left:17px;top:6px;z-index:1;
+  display:block;
+  width:4px;height:24px;border-radius:3px;
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.22);
 }
-#uw-map.has-basemap .gs-bg{fill:transparent !important}
-/* 底图瓦片在最底层 */
-#uw-map .esri-imagery{position:absolute;inset:0;z-index:0;pointer-events:none;overflow:hidden}
-#uw-map .esri-imagery img{position:absolute;pointer-events:none;user-select:none}
-/* 控件与比例尺要在底图之上 */
-#uw-map .gs-ctl,#uw-map .gs-scale,#uw-map .gs-coord{z-index:3}
-
-/* ============================================================
-   下钻加载指示（#nat-loading）
-   ------------------------------------------------------------
-   用户报障「一直在加载 / 点不到乡镇」。实测下钻数据其实很快
-   （省→市→县→乡镇 每级约 0.3s），但此前下钻期间地图区域
-   完全没变化、只有标题里一句「加载中…」，用户分不清
-   "在加载"与"卡死"，反复点击后认定"点不动"。
-   这里给一个不遮挡操作、只在慢时才升级的进度提示。
-   ============================================================ */
-.nat-loading{
-  position:absolute;inset:auto 0 50% 0;z-index:11;
-  display:flex;justify-content:center;
-  pointer-events:none;opacity:0;
-  transform:translateY(6px);
-  transition:opacity .18s ease,transform .18s ease;
-}
-.nat-loading.on{opacity:1;transform:translateY(0)}
-/* 0.25s 内完成则不显示，避免每次下钻都闪一下 */
-.nat-loading:not(.show){opacity:0}
-.nat-loading .nl-box{
-  display:flex;align-items:center;gap:10px;
-  padding:7px 14px;border-radius:999px;
-  background:rgba(9,17,30,.86);border:1px solid rgba(120,180,240,.24);
-  backdrop-filter:blur(6px);
-  box-shadow:0 6px 22px rgba(0,0,0,.42);
-}
-.nat-loading .nl-bar{
-  position:relative;width:74px;height:3px;border-radius:2px;
-  background:rgba(255,255,255,.16);overflow:hidden;
-}
-.nat-loading .nl-bar>i{
-  position:absolute;inset:0;width:42%;border-radius:2px;
-  background:linear-gradient(90deg,transparent,#7fd4ff,transparent);
-  animation:nl-slide 1.05s linear infinite;
-}
-@keyframes nl-slide{from{transform:translateX(-110%)}to{transform:translateX(268%)}}
-.nat-loading .nl-t{color:#dce9f7;font:600 12.5px/1.2 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;white-space:nowrap}
-/* 慢速态：补一条可操作的重试入口，而不是让人干等 */
-.nat-loading .nl-retry{
-  display:none;height:22px;padding:0 10px;border-radius:999px;
-  background:rgba(127,212,255,.16);border:1px solid rgba(127,212,255,.42);
-  color:#bfe8ff;font:600 11.5px/1 -apple-system,"PingFang SC",sans-serif;cursor:pointer;
-}
-.nat-loading .nl-retry:hover{background:rgba(127,212,255,.26)}
-.nat-loading.slow .nl-t{color:#ffd08a}
-.nat-loading.slow .nl-retry{display:inline-block}
-@media (max-width:640px){
-  .nat-loading .nl-t{font-size:11.5px}
-  .nat-loading .nl-bar{width:56px}
-}
-
-/* ============================================================
-   业务视图的卫星影像底图（总览驾驶舱/承保风险/理赔定损/预警调度）
-   ------------------------------------------------------------
-   这四个视图的地图容器此前【一张瓦片都没有】（实测 canvas=0、img=0），
-   屏幕上只有纯矢量色块 —— 用户看到的"各个功能没有遥感地图"。
-   现在统一接入 Esri World Imagery，叠放规则与 #uw-map 完全一致：
-     ① 宿主加 .has-basemap 后清掉不透明底色
-     ② svg 提升 absolute + z-index 1（压在瓦片之上，才能接收点击）
-     ③ .gs-bg 透明，瓦片透出来
-   ⚠️ 业务图元的 fill 多为 rgba(.xx) 半透明，正好能透出影像；
-     但少数不透明填充会整片遮挡，故对有底图时的底层面降透明度。
-   ⚠️ z-index 只能取整数，小数会被取整为 0 而失效。
-   ⚠️ 只作用于业务视图的 4 个容器（不含 #nat-map / #qual-map）：
-       那两个走 DualMap + 栅格专题层，有各自既有的叠放规则，
-       套用通用规则会把栅格层的层级打乱。
-   ============================================================ */
-#map-overview.has-basemap,#map-uw.has-basemap,
-#map-cl.has-basemap,#map-wn.has-basemap{background:none !important;background-image:none !important}
-#map-overview.has-basemap .gs-svg,#map-uw.has-basemap .gs-svg,
-#map-cl.has-basemap .gs-svg,#map-wn.has-basemap .gs-svg{position:absolute;inset:0;z-index:1}
-#map-overview.has-basemap .gs-bg,#map-uw.has-basemap .gs-bg,
-#map-cl.has-basemap .gs-bg,#map-wn.has-basemap .gs-bg{fill:transparent !important}
-/* 底图之上，业务面需半透明让影像透出。
-   ⚠️ 图层容器的真实 class 是 .gs-layer-<name>（实测 DOM：
-      class="gs-layer gs-layer-base"），不是 data-layer 属性 ——
-      之前按 [data-layer="base"] 写选择器，一个都没匹配上，
-      影像挂上了却被不透明业务面整片盖住（截图确认）。*/
-#map-overview.has-basemap .gs-layer-base path,
-#map-uw.has-basemap .gs-layer-base path,
-#map-cl.has-basemap .gs-layer-base path,
-#map-wn.has-basemap .gs-layer-base path{opacity:.3}
-#map-overview.has-basemap .gs-layer-cover path,
-#map-uw.has-basemap .gs-layer-cover path,
-#map-cl.has-basemap .gs-layer-cover path,
-#map-wn.has-basemap .gs-layer-cover path{opacity:.45}
-#map-overview .esri-imagery,#map-uw .esri-imagery,
-#map-cl .esri-imagery,#map-wn .esri-imagery{position:absolute;inset:0;z-index:0;pointer-events:none;overflow:hidden}
-#map-overview .esri-imagery img,#map-uw .esri-imagery img,
-#map-cl .esri-imagery img,#map-wn .esri-imagery img{position:absolute;pointer-events:none;user-select:none}
-#map-overview .gs-ctl,#map-uw .gs-ctl,
-#map-cl .gs-ctl,#map-wn .gs-ctl,
-#map-overview .gs-scale,#map-uw .gs-scale,
-#map-cl .gs-scale,#map-wn .gs-scale,
-#map-overview .gs-coord,#map-uw .gs-coord,
-#map-cl .gs-coord,#map-wn .gs-coord{z-index:3}
-
-/* DualMap 视图（#nat-map / #qual-map）的底图叠放：
-   这两个容器结构与业务视图不同（多一层 .dual-svg），
-   但同样需要清底色 + 抬 svg + 让业务面半透明。
-   ⚠️ 不写 .gs-layer-base 降透明度：全国视图的省面是业务主信息，
-      压太淡会看不清；这里只保证底图能透出，不动业务面配色。*/
-#nat-map.has-basemap,#qual-map.has-basemap{background:none !important}
-#nat-map.has-basemap .dual-svg,#qual-map.has-basemap .dual-svg{
-  position:absolute;inset:0;z-index:3;
-}
-#nat-map.has-basemap .gs-bg,#qual-map.has-basemap .gs-bg{fill:transparent !important}
-#nat-map.has-basemap .esri-imagery,#qual-map.has-basemap .esri-imagery{
-  position:absolute;inset:0;z-index:0;pointer-events:none;overflow:hidden;
-}
-#nat-map.has-basemap .esri-imagery img,#qual-map.has-basemap .esri-imagery img{
-  position:absolute;pointer-events:none;user-select:none;
-}
-/* 全国视图的省面填色较实，降到 0.78 让实拍影像透得出纹理，
-   但边界与色块仍需清晰可读。
-   ⚠️ 资质资格视图绝对不能降透明：那里【颜色本身就是主信息】
-     （政策占比分级色），一降透明就只剩灰影、色块全部消失
-     （实测 opacity:.42 直接把整张资格分布图抹平了）。
-     正确做法是不动它的业务面透明度 —— 影像在本视图里仅作弱氛围，
-     压在下面透出一点即可，不追求清晰。*/
-#nat-map.has-basemap .gs-layer-base path{opacity:.78}
-#qual-map.has-basemap .gs-layer-base path{opacity:1}
-
-/* 业务视图的底图切换按钮（右上角，与全国视图的影像按钮同一位置语汇） */
-.biz-base-btn{
-  position:absolute;right:11px;bottom:34px;z-index:12;
-  display:flex;align-items:center;gap:5px;
-  height:29px;padding:0 11px;border-radius:8px;
-  background:rgba(11,20,34,.82);border:1px solid rgba(255,255,255,.16);
-  color:#dbe7f5;font:600 12px/1 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
-  cursor:pointer;backdrop-filter:blur(6px);
-}
-.biz-base-btn:hover{background:rgba(24,42,68,.9)}
-.biz-base-btn i{font-style:normal;font-size:13px;opacity:.9}
-.biz-base-btn.on{border-color:rgba(120,200,255,.55);color:#bfe6ff}
-@media (max-width:640px){
-  .biz-base-btn{right:8px;bottom:30px;height:27px;padding:0 9px;font-size:11px}
-}
+.layrow .laytx{display:block;width:100%}
+.layrow .laybox{left:0}
+.layrow .laynm{font-size:12px;line-height:1.35;color:var(--txt-1)}
+.layrow .layds{font-size:10.5px;line-height:1.4;color:var(--txt-3);margin-top:1px}
+.layrow.on .laynm{color:var(--txt-1);font-weight:600}
+.layrow.on .layds{color:var(--txt-2)}
+.layrow.on .laychip{box-shadow:inset 0 0 0 1px rgba(255,255,255,.45)}

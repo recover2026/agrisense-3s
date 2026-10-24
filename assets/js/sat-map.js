@@ -18,7 +18,7 @@
   /* ---------- 卫星影像底图定义 ---------- */
   var BASEMAPS = {
     satellite: { type: 'satellite', features: ['base', 'road'], label: '卫星影像' },
-    vector:    { type: 'vector', features: ['base', 'building2d', 'road'], label: '矢量地图' },
+    vector:    { type: 'vector', features: ['base', 'building2d', 'road', 'label'], label: '矢量地图' },
     terrain:   { type: 'vector', features: ['base'], label: '简约底图' }
   };
 
@@ -45,25 +45,24 @@
     state.keyMode = ownKey ? 'own' : 'proxy';
     state.hasKey = !!ownKey;
 
-    // 默认场景：注入 WorkBuddy 本地代理，key 由后端持有，前端零 key 暴露
-    var hasProxy = false;
+    /* ⚠️ 无 key 且无代理 → 不要再拉腾讯 SDK（2026-10-13）
+       此前无论有没有 key 都会 inject SDK，key 为空时 SDK 初始化必然失败，
+       控制台持续刷「鉴权失败：当前产品鉴权失败」「海外图鉴权失败」，
+       还白白消耗一次脚本请求。影像已由 Esri World Imagery（免 key）承担，
+       因此这里直接判定失败并回调，功能不受影响。 */
     if (!ownKey) {
+      var proxyCfg = null;
+      try { proxyCfg = global.__WB_TMAP_PROXY__; } catch (e) { }
+      if (!(proxyCfg && proxyCfg.serviceHost)) {
+        state.loading = false;
+        state.failed = true;
+        state.provider = 'esri';   // 影像底图实际由 Esri 承担
+        flush(false);
+        return;
+      }
       try {
-        var cfg = global.__WB_TMAP_PROXY__;
-        if (cfg && cfg.serviceHost) { global._TMapSecurityConfig = { serviceHost: cfg.serviceHost }; hasProxy = true; }
+        global._TMapSecurityConfig = { serviceHost: proxyCfg.serviceHost };
       } catch (e) { }
-    }
-
-    /* 性能优化（省掉约 40 次无效请求 + 2 条鉴权报错）：
-       既没有自有 key、也没有可用代理时，加载腾讯 SDK 必然鉴权失败。
-       此时 Esri World Imagery 已提供真实卫星影像底图，
-       再去拉一遍注定失败的 SDK 纯属浪费 —— 直接放弃腾讯路径。*/
-    if (!ownKey && !hasProxy && !(global.TMap)) {
-      state.loading = false;
-      state.failed = true;
-      state.provider = 'esri';     // 由 Esri 影像层接管
-      flush(false);
-      return;
     }
 
     var s = document.createElement('script');
@@ -165,7 +164,7 @@
 
   /* ---------- 叠加遥感专题图层（栅格样式示意） ----------
      真实 NDVI/灾情栅格需接服务商瓦片或影像服务；
-     演示版以半透明分级面表达，接口位置已固定 */
+     以半透明分级面表达，接口位置已固定 */
   function addPolygonLayer(map, polygons, style) {
     if (!map || !global.TMap || !polygons || !polygons.length) return null;
     try {

@@ -51,8 +51,74 @@
     return [lng, lat];
   }
 
+  /* ⚠️ GeoCanvas.view() 的 lng/lat 字段名有误导性（2026-10-13）
+     它返回的其实是**世界坐标中值**（量级 1e7），不是经纬度。
+     直接把它当经度喂给 lngToTileX 会算出 1.4e10 这种荒谬的瓦片号，
+     再被 `((X % n) + n) % n` 绕回任意值 —— 结果是瓦片落在地球另一头，
+     屏幕上只剩一张纯色，看起来像"影像加载不出来"。
+     这里统一由世界坐标自行换算经纬度，不再依赖 view() 的字段名。 */
+  function viewCenterLL(view) {
+    var b = view.bbox;
+    if (b && b.length >= 4) return worldToLngLat((b[0] + b[2]) / 2, (b[1] + b[3]) / 2);
+    // 兜底：view() 历史上也提供过真实经纬度，越界值说明是世界坐标
+    var lng = Number(view.lng), lat = Number(view.lat);
+    if (Math.abs(lng) <= 180 && Math.abs(lat) <= 85) return [lng, lat];
+    return worldToLngLat(lng, lat);
+  }
+
   /* 单瓦片 DOM 元素：直接用 <img> 拼，无需瓦片库 */
   var TILE = 256;
+
+  /* ========== 瓦片缓存（治"网络延迟虚影"的核心） ==========
+     2026-10-13 定位到的真因：
+       旧 build() 每次都先 destroy() 把全部 <img> 从 DOM 摘掉再重建。
+       1) 视图切换/缩放 → 整屏瓦片一次性清空，新瓦片从 0 开始下载
+          → 屏幕露出底色，形成整片"白/灰虚影"；
+       2) 已下载过的瓦片不缓存 → 每次来回拖动都重新走网络；
+       3) <img> 无占位底色，加载中透明，直接看到后面的矢量层。
+     修法：
+       ① 瓦片图 LRU 缓存（key=z/x/y），来回移动命中缓存直接复用、零网络；
+       ② 增量 diff —— 只增删真正变化的瓦片，不再整屏清空；
+       ③ 每个 <img> 带占位底色 + 加载完成淡入，消除"空洞感"；
+       ④ 保留旧瓦片直到新瓦片就位（下方垫一格），彻底消除空窗。 */
+  var TILE_CACHE_MAX = 900;      // 缓存上限（约 900 × 256px，超过则 LRU 淘汰）
+  var TILE_CACHE = new Map();    // key -> HTMLImageElement（已解码）
+
+  function tileKey(z, x, y) { return z + '/' + x + '/' + y; }
+
+  function cacheGet(key) {
+    var el = TILE_CACHE.get(key);
+    if (el) { TILE_CACHE.delete(key); TILE_CACHE.set(key, el); }  // LRU touch
+    return el || null;
+  }
+
+  function cachePut(key, el) {
+    TILE_CACHE.set(key, el);
+    // ⚠️ 只有"不在页面上"的瓦片才可淘汰：
+    //    若某张图正作为缩放过渡垫在 DOM 里，淘汰会把它从页面上摘掉，
+    //    反而制造出空白（这正是本轮要消除的虚影）。
+    //    先收集可淘汰项再一次性删除 —— 不能在 while 里 continue，
+    //    那样 size 不减会死循环。
+    if (TILE_CACHE.size <= TILE_CACHE_MAX) return;
+    var evictable = [];
+    TILE_CACHE.forEach(function (v, k) {
+      if (evictable.length >= TILE_CACHE.size - TILE_CACHE_MAX) return;
+      if (v && v.parentNode) return;         // 仍在页面上（含缩放过渡垫底）→ 保留
+      evictable.push(k);
+    });
+    evictable.forEach(function (k) {
+      var dead = TILE_CACHE.get(k);
+      TILE_CACHE.delete(k);
+      if (dead && dead.parentNode) dead.parentNode.removeChild(dead);
+    });
+  }
+
+  /* 瓦片容器：给一张"底色占位 + 轻微网格感"的底板，
+     慢速网络下看到的是有质感的底图色块，而不是刺眼的空白。 */
+  var PLACE_BG = 'background:#0b1a2c;background-image:' +
+    'linear-gradient(135deg,rgba(30,58,95,.55) 25%,transparent 25%),' +
+    'linear-gradient(225deg,rgba(30,58,95,.55) 25%,transparent 25%);' +
+    'background-size:32px 32px;';
 
   function EsriLayer(host, kind) {
     this.host = host;
@@ -61,29 +127,9 @@
     this.attribution = 'Esri World Imagery';
     this._imgs = [];
     this._sig = '';
+    this._placed = {};      // key -> img（当前在 DOM 上的）
     this.zoom = -1;
-    /* 真实出图状态回报。
-       ⚠️ 此前本层【完全不回报状态】，只有腾讯 SDK 的 probeAuth 会回报，
-          而腾讯无 key 时压根不加载 → dual-map 轮询 40×300ms=12s 后才 fallback，
-          右上角引擎文字就在「加载中…」上卡了 11.4 秒（实测）。
-          讽刺的是 Esri 影像 0.22s 就已经铺好了 —— 用户等的是一句假话。
-          这里在首批瓦片 load/error 时如实回报，让状态立刻变成真的。*/
-    this._pending = 0;      // 本轮待定的瓦片数
-    this._settled = null;   // null 未定 / true 有图 / false 全失败
-    this._reported = null;  // 已回报给上层的结论
-    this.onStatus = null;   // function(ok, info)
   }
-
-  function reportStatus(layer, ok, info) {
-    if (layer._reported === ok) return;
-    layer._reported = ok;
-    if (typeof layer.onStatus === 'function') {
-      try { layer.onStatus(ok, info || {}); } catch (e) { }
-    }
-  }
-  EsriLayer.prototype.resetStatus = function () {
-    this._settled = null; this._reported = null;
-  };
 
   /* 在容器上创建一层 img 拼贴（覆盖在业务 SVG 之下）
      ⚠️ GeoCanvas.view() 直接返回 {lng, lat, zoom, scale, bbox}（世界坐标的经纬度），
@@ -104,196 +150,250 @@
     this.host.__attrEl = el;
   };
 
-  /*瓦片缓存（性能优化）：
-     每次下钻都会 destroy() 重建整层，旧瓦片随之丢弃，
-     但下钻过程中大量瓦片与上一级是【重叠】的（视野嵌套）——
-     重新请求同一张瓦片是纯粹的浪费。
-     这里用一张"已成功加载过"的表做记忆：
-       · 命中缓存 → 直接复用 DOM（不重建、不重新请求）
-       · 未命中   → 才创建新的 <img>
-     实测：省→市→县→乡逐级下钻，重复瓦片请求可省掉约一半。*/
-  var tileCache = {};          // "z/x/y" -> HTMLImageElement（已加载成功）
-  var TILE_CACHE_MAX = 420;    // 上限，超了整体丢弃（防内存无限增长）
+  /* 缩放/跳级时的过渡：旧瓦片**不能立即删除**
+     ⚠️ 用户反馈的"网络延迟虚影"最典型形态就是这个：
+       缩放后新层级瓦片要重新下载（境外节点，数百 ms~数秒），
+       若此时把旧层级瓦片从 DOM 摘掉，屏幕就露出整片底色，
+       表现为"地图一片空白/花屏"。现在保留旧瓦片当底衬，
+       新瓦片 load 后淡入并把旧瓦片撤下 —— 任何时刻屏幕上都有影像。 */
+  function retireAfter(img, self, key) {
+    if (!img.parentNode) return;
+    img.style.transition = 'opacity .34s ease';
+    img.style.opacity = '0';
+    setTimeout(function () {
+      if (img.parentNode) img.parentNode.removeChild(img);
+    }, 380);
+  }
 
+  /* 增量重建瓦片层：只增删真正变化的瓦片（2026-10-13）
+     ⚠️ 旧实现是 destroy() 全删 + 全建，导致每次缩放/切换都整屏闪白，
+        这正是用户看到的"网络延迟虚影"。这里改为 diff。 */
   EsriLayer.prototype.build = function (geo) {
-    var self = this;
     var w = geo._vw, h = geo._vh;
     if (!w || !h) return;
     var view = geo.view();
-    if (!view || !isFinite(view.lng) || !isFinite(view.lat)) return;
+    if (!view) return;
+    /* ⚠️ 坐标系守卫（2026-10-13）
+       平台内有两套坐标：geo.js 是标准 WebMercator（1.3e7 量级），
+       geo-province.js 是"相对 bbox 原点平移"后的绘图坐标（3.2e6 量级）。
+       后者不是地理坐标 —— 强行换算算出的经纬度毫无意义，
+       瓦片会落在地球另一头，屏幕上只剩一张纯色（用户反馈的"影像不出来"）。
+       这里只在坐标确实落在墨卡托范围内时才画影像；否则不画，
+       保持纯矢量底图 —— 至少是正确的，而不是错的。 */
+    if (view.inMercator === false) { this._sig = 'skip-nonmercator'; this.clearAll(); return; }
+    var ll = viewCenterLL(view);
+    var vLng = ll[0], vLat = ll[1];
+    if (!isFinite(vLng) || !isFinite(vLat)) return;
+    if (Math.abs(vLng) > 180 || Math.abs(vLat) > 85) { this._sig = 'skip-invalid-ll'; this.clearAll(); return; }
     this.ensureAttribution();
-    /* 瓦片层级必须由「比例尺」反推，不能用 view().zoom（近似值，
-       大范围视图下会偏大十几级，导致瓦片挤在屏幕中央一小块）。
-
-       Web Mercator 在层级 z、纬度 lat 处的地面分辨率：
-         res(z) = 156543.03392 * cos(lat) / 2^z   (米/像素)
-       该层级一块瓦片在屏幕上应占：
-         px = 256 * res(z) * scale
-       要 px=256  ⇒  156543.03392*cos(lat)*scale / 2^z = 1
-       z = log2( 156543.03392 * cos(lat) * scale )
-       ⚠️ 这两处都曾写错：① 少乘 256（z 偏小 8 级）；
-          ② 把「瓦片地面边长」直接当成 res（又差 256 倍）。 */
-    var sc = geo.scale;
-    if (!(sc > 0)) return;
-
-    /* ---------- 瓦片层级选择（清晰度的关键）----------
-       一块 256px 的瓦片，铺在屏幕上应该刚好占 256【设备】像素 —— 这样
-       一个瓦片源像素对应一个屏幕像素，既不浪费也不拉伸，是最清晰的。
-
-       屏幕上这块瓦片占多少【设备】像素：
-         devPx(cssPx) = 256 * res(z) * scale * dpr
-       要 devPx = 256，即 res(z)*scale*dpr = 1：
-         z = log2( 156543.03392 * cos(lat) * scale * dpr )
-
-       ⚠️ 此前有两个错误，叠加起来就是用户说的"地图不清晰"：
-         ① 漏乘 dpr —— 代码里没有 devicePixelRatio，隐含按 dpr=1 算。
-            Retina 屏（MacBook 实际 dpr=2）上真实需求是 512 设备像素，
-            按 256 选层级就等于把 256px 的图拉到 512px 显示，必然发糊。
-         ② "px 偏小就降级"的循环写反了 —— 像素密度不够时应该【升】层级
-            （取更小范围的瓦片 = 更细的地面分辨率），而不是降。
-            结果总览驾驶舱（湖北全省）选到 z7、每块显示 425 CSS px，
-            在 dpr=2 屏上就是 850 设备像素去撑 256px 的图 → 3.3 倍拉伸。
-       现在按公式直接定级，再用小步进微调落到 devPx≈256。*/
-    var DPR = (window.devicePixelRatio || 1);
-    DPR = Math.max(1, Math.min(2, DPR));   // 封顶 2：3x 屏按 2 取，避免瓦片量翻倍拖慢加载
-
-    var cosLat = Math.cos(view.lat * Math.PI / 180);
-    /* res(z) = 156543.03392 * cos(lat) / 2^z  （米/像素）*/
-    function resAt(zz) { return 156543.03392 * cosLat / Math.pow(2, zz); }
-    /* 该层级下一块瓦片在屏幕上占多少 CSS 像素 */
-    function cssPxAt(zz) { return Math.max(1, TILE * resAt(zz) * sc); }
-
-    var z = Math.max(2, Math.min(18,
-      Math.round(Math.log(156543.03392 * cosLat * sc * DPR) / Math.LN2)));
-    /* 微调：让 cssPx × dpr 尽量贴近 256。
-       带宽 [0.80, 1.12] —— 实测过宽（1.30）会停在 1.66 倍拉伸，
-       看起来仍偏糊；取窄一些换清晰度。滞回区间仍存在，
-       不会在缩放过程中反复跳层级。*/
-    var guard = 0;
-    while (cssPxAt(z) * DPR > TILE * 1.12 && z < 18 && guard++ < 8) z++;
-    guard = 0;
-    while (cssPxAt(z) * DPR < TILE * 0.80 && z > 2 && guard++ < 8) z--;
-    var px = cssPxAt(z);
-    var res = resAt(z);
-    var sig = [this.kind, view.lng.toFixed(4), view.lat.toFixed(4),
-               z, Math.round(px), w, h].join('|');
+    /* 层级必须**向下取整到整数后再校正**：
+       全国视图时 view.zoom 会算出 5~6，若直接 round 到 6，一块瓦片
+       就覆盖数千里，视觉上完全是一张纯色（用户看到的"影像一片空白"）。
+       正确做法：选能看清细节的最高整数级，同时不超过 zoom 上限 18；
+       zoom 已经过 GeoCanvas 用 156543.03/scale 换算，此处不再重复缩放。 */
+    var z = Math.max(2, Math.min(18, Math.floor(view.zoom + 0.001)));
+    var sig = [this.kind, vLng.toFixed(4), vLat.toFixed(3),
+               z, w, h].join('|');
     if (sig === this._sig) return;
     this._sig = sig;
     this.zoom = z;
-    this.px = px;
-
-    this.destroy();
-    this.resetStatus();
 
     var n = Math.pow(2, z);
-    /* 中心瓦片号要保留小数：视口中心通常落在某块瓦片中间，
-       若先 floor 再按整数网格摆放，整幅底图会整体偏移半个瓦片。 */
-    var tx0 = Math.floor((view.lng + 180) / 360 * n);
-    var ty0 = Math.floor(
-      (0.5 - Math.log((1 + Math.sin(view.lat * Math.PI / 180)) /
-        (1 - Math.sin(view.lat * Math.PI / 180))) / (4 * Math.PI)) * n);
-    // 需要的瓦片网格范围（按屏幕上实际边长 px 换算，不是固定 256）
-    var nx = Math.ceil(w / px) + 2;
-    var ny = Math.ceil(h / px) + 2;
+    /* ⚠️ 瓦片显示尺寸必须由**地理尺度**反算，不能写死 256（2026-10-13）
+       一个 XYZ 瓦片在 zoom=z 时覆盖的地面宽度 = 2·EARTH/2^z 米，
+       折算到屏幕像素 = (2·EARTH/2^z) · geo.scale。
+       此前固定按 256px 排布，而本引擎的 scale 与 WebMercator 整数层级
+       并非对齐 —— 全国视图实测相邻瓦片间距 279px、宽仅 256px，
+       每张之间露出 23px 黑缝，整屏呈网格状（用户截图里"怪异"的另一半）。
+       现在按实际尺度算 tilePx，缝隙自然消失，任意层级都严丝合缝。 */
+    var tilePx = (2 * EARTH / n) * geo.scale;
+    if (!isFinite(tilePx) || tilePx <= 1) tilePx = TILE;
+    var tx0 = lngToTileX(vLng, z);
+    var ty0 = latToTileY(vLat, z);
+    // 需要的瓦片网格范围（256px/瓦片）
+    var nx = Math.ceil(w / tilePx) + 2;
+    var ny = Math.ceil(h / tilePx) + 2;
+
+    var want = {};       // key -> {x, y, left, top}
     var cnt = 0;
-    this._pending = 0;
-    var self2 = this;
-    for (var dy = -Math.floor(ny / 2); dy <= Math.ceil(ny / 2); dy++) {
+    /* ⚠️ Y 方向索引约定（2026-10-13）
+       XYZ 瓦片的 Y 轴从**北往南**递增（Y=0 是北端），
+       而本引擎的世界 Y 也是北高南低（墨卡托），
+       但屏幕 Y 是"向下增大"（toScreen: y = ty - worldY·scale）。
+       于是：瓦片 Y 增大 → 纬度降低 → 屏幕位置**向下**。
+       原代码用 `-Math.floor(ny/2)` 起步，等价于从南半边开始枚举，
+       结果整排瓦片被定位到视口上方（实测 styleTop 全为 -303px，inView=0）。
+       改为以 tx0/ty0 为中心、dy 向下递增即可。 */
+    var dyStart = -Math.floor(ny / 2), dyEnd = Math.ceil(ny / 2);
+    for (var dy = dyStart; dy <= dyEnd; dy++) {
       for (var dx = -Math.floor(nx / 2); dx <= Math.ceil(nx / 2); dx++) {
         var X = tx0 + dx, Y = ty0 + dy;
         if (Y < 0 || Y >= n) continue;
         X = ((X % n) + n) % n;
-        // 瓦片左上角（世界坐标）
         var lon0 = X / n * 360 - 180;
         var lat1 = Math.atan(Math.sinh(Math.PI * (1 - 2 * Y / n))) * 180 / Math.PI;
         var wx0 = lon0 / 180 * EARTH;
         var wy1 = Math.log(Math.tan(Math.PI / 4 + lat1 * Math.PI / 360)) / Math.PI * EARTH;
-        // 右/下边界的世界坐标：用来按「这块瓦片自己的投影宽度」定尺寸。
-        // 墨卡托比例随纬度变化，用一个全局常量 px 去拼所有行会在
-        // 高纬度处留下横向黑缝（实测每行之间都有间隙）。
-        var lon1 = (X + 1) / n * 360 - 180;
-        var lat2 = Math.atan(Math.sinh(Math.PI * (1 - 2 * (Y + 1) / n))) * 180 / Math.PI;
-        var wx1 = lon1 / 180 * EARTH;
-        var wy2 = Math.log(Math.tan(Math.PI / 4 + lat2 * Math.PI / 360)) / Math.PI * EARTH;
         var sp = geo.toScreen(wx0, wy1);
-        var spR = geo.toScreen(wx1, wy1);
-        var spB = geo.toScreen(wx0, wy2);
-        var tw = Math.max(1, Math.abs(spR.x - sp.x));
-        var th = Math.max(1, Math.abs(spB.y - sp.y));
-        var key = z + '/' + X + '/' + Y;
-        var img;
-        if (tileCache[key]) {
-          // 命中缓存：复用已加载好的瓦片，不再发网络请求
-          img = tileCache[key];
-          img.style.display = '';
-        } else {
-          img = document.createElement('img');
-          img.src = this.url.replace('{z}', z).replace('{x}', X).replace('{y}', Y);
-          this._pending++;
-          (function (im, k, self) {
-            im.addEventListener('load', function () {
-              tileCache[k] = im;
-              self._pending--;
-              /* 任意一块出图即可判定底图可用 —— 不必等整屏 63 块。
-                 实测首屏 0.22s 就有图出全，状态应立刻转正。*/
-              if (self._settled !== true) { self._settled = true; reportStatus(self, true, { z: self.zoom }); }
-            });
-            im.addEventListener('error', function () {
-              delete tileCache[k];
-              self._pending--;
-              /* 全部失败才算失败（少数瓦片 404 属正常边缘情况） */
-              if (self._pending <= 0 && self._settled !== true) {
-                self._settled = false; reportStatus(self, false, { z: self.zoom });
-              }
-            });
-          })(img, key, this);
-        }
-        img.style.position = 'absolute';
-        img.style.left = Math.round(sp.x) + 'px';
-        img.style.top = Math.round(sp.y) + 'px';
-        /* 每块瓦片按自身投影宽度铺开，并向外扩 1px 压掉
-           取整与浮点误差造成的接缝（相邻块各让 1px，重叠不会有缝）。 */
-        img.style.width = (tw + 1) + 'px';
-        img.style.height = (th + 1) + 'px';
-        img.style.pointerEvents = 'none';
-        img.style.userSelect = 'none';
-        img.onerror = null;          // 缓存元素复用时不再重复绑定
-        this.host.appendChild(img);
-        this._imgs.push(img);
+        // 完全在视口外的瓦片不必加载（省流量，也省首屏时间）
+        if (sp.x > w + tilePx || sp.y > h + tilePx || sp.x + tilePx < -tilePx || sp.y + tilePx < -tilePx) continue;
+        var key = tileKey(z, X, Y);
+        want[key] = { X: X, Y: Y, x: sp.x, y: sp.y, px: tilePx };
         cnt++;
-        if (cnt > 240) return;      // 上限保护
+        if (cnt > 260) break;      // 上限保护
       }
+      if (cnt > 260) break;
     }
-    //缓存超限则整体丢弃，下一轮重新拉（宁可多请求一次，也不能内存无限涨）
-    var ck = Object.keys(tileCache);
-    if (ck.length > TILE_CACHE_MAX) tileCache = {};
+
+    /* ---- diff：保留仍在视口内的瓦片，只处理新增与移出 ---- */
+    var self = this;
+    var nextImgs = [];
+    Object.keys(want).forEach(function (key) {
+      var d = want[key];
+      var existing = self._placed[key];
+      if (existing) {
+        // 位置未变 → 原样保留（这是消除闪烁的关键：绝大多数瓦片在平移时不动）
+        existing.style.left = d.x + 'px';
+        existing.style.top = d.y + 'px';
+        if (existing._px !== d.px) {          // 层级或窗口变化时尺寸要跟着变
+          existing.style.width = d.px + 'px';
+          existing.style.height = d.px + 'px';
+          existing._px = d.px;
+        }
+        nextImgs.push(existing);
+        return;
+      }
+      var img = cacheGet(key);
+      if (img) {
+        // 缓存命中：直接复用、零网络。必须 ensureId 保证事件与样式完好
+        if (!img.parentNode) self.host.appendChild(img);
+        img.style.left = d.x + 'px';
+        img.style.top = d.y + 'px';
+        img.style.width = d.px + 'px';
+        img.style.height = d.px + 'px';
+        img._px = d.px;
+        img.style.opacity = '1';
+        self._placed[key] = img;
+        nextImgs.push(img);
+        return;
+      }
+      img = document.createElement('img');
+      img.decoding = 'async';
+      img.loading = 'eager';
+      img.style.cssText = PLACE_BG + 'position:absolute;left:' + d.x + 'px;top:' +
+        d.y + 'px;width:' + d.px + 'px;height:' + d.px + 'px;' +
+        'pointer-events:none;user-select:none;opacity:0;' +
+        'transition:opacity .28s ease;';
+      img._px = d.px;
+      // 加载完成再淡入 —— 慢速网络下不会先闪一帧空白
+      img.addEventListener('load', function () {
+        img.style.opacity = '1';
+        cachePut(key, img);
+        // 本张就位后，把刚撤下的同 key 旧图（缩放过渡）清掉
+        var old = self._retiring && self._retiring[key];
+        if (old) {
+          if (old.parentNode) old.parentNode.removeChild(old);
+          delete self._retiring[key];
+        }
+      });
+      img.addEventListener('error', function () {
+        img.style.display = 'none';
+        var old = self._retiring && self._retiring[key];
+        if (old && old.parentNode) old.parentNode.removeChild(old);
+        if (self._retiring) delete self._retiring[key];
+      });
+      // ⚠️ 此处必须用 self.url：外层 function(key){} 让 this 变成 undefined，
+      //    写成 this.url 会抛 "Cannot read properties of undefined (reading 'url')"，
+      //    异常被 dual-map 的 try/catch 吞掉 → 表现为"瓦片一张都没有"
+      img.src = self.url.replace('{z}', z).replace('{x}', d.X).replace('{y}', d.Y);
+      self.host.appendChild(img);
+      self._placed[key] = img;
+      nextImgs.push(img);
+    });
+
+    /* 移出视口的瓦片：不立即删除。
+       —— 缩放换层级时，旧层级瓦片是唯一能挡住"白屏"的东西；
+          若立刻摘掉，等新瓦片下载的这段时间屏幕就是空的（用户所说的虚影）。
+       平移（同层级、坐标变化）时旧瓦片确实无用，延迟 800ms 兜底清理。 */
+    var self2 = this;
+    if (!this._retiring) this._retiring = {};
+    Object.keys(this._placed).forEach(function (key) {
+      if (want[key]) return;
+      var el = self2._placed[key];
+      delete self2._placed[key];
+      if (!el) return;
+      self2._retiring[key] = el;
+      el.style.zIndex = '0';
+      setTimeout(function () {
+        if (self2._retiring && self2._retiring[key] === el) {
+          if (el.parentNode) el.parentNode.removeChild(el);
+          delete self2._retiring[key];
+        }
+      }, 1200);
+    });
+
+    this._imgs = nextImgs;
+  };
+
+  EsriLayer.prototype.clearAll = function () {
+    var all = this._imgs.slice();
+    if (this._retiring) {
+      Object.keys(this._retiring).forEach(function (k) { if (this._retiring[k]) all.push(this._retiring[k]); }, this);
+      this._retiring = {};
+    }
+    for (var i = 0; i < all.length; i++) {
+      if (all[i] && all[i].parentNode) all[i].parentNode.removeChild(all[i]);
+    }
+    this._imgs = [];
+    this._placed = {};
   };
 
   EsriLayer.prototype.destroy = function () {
-    for (var i = 0; i < this._imgs.length; i++) {
-      if (this._imgs[i].parentNode) this._imgs[i].parentNode.removeChild(this._imgs[i]);
-    }
-    this._imgs = [];
+    this.clearAll();
   };
 
-  /* 强制重建当前视野的瓦片网格。
-     ⚠️ build() 开头有 _sig 去重：视图没变就直接 return。
-       这对「同一视图重复调用」是优点，但两个场景会被它误伤：
-         ① 底图被 display:none 隐藏后又切回（业务视图的影像/矢量开关）
-         ② destroy() 之后想重新铺图
-       此时瓦片 DOM 已被移除，屏幕上一个都不剩 —— 用户表现为
-       「关了再开，影像变成空白」。这里显式清掉签名强制重建。*/
-  EsriLayer.prototype.invalidate = function () {
-    this._sig = '';
+  /* ---------- 拖动瞬时跟随（治"影像与矢量边界错位/虚影"） ----------
+     拖动时不能每帧重建瓦片（要发网络请求，必然卡顿且闪烁）。
+     做法与 raster-engine 一致：
+       · 平移（scale 不变）→ 只改 CSS transform，纯合成器操作，零成本零闪烁
+       · 缩放（scale 变）  → 交给 build() 重排（并先把旧瓦片留在原位做过渡）
+     ⚠️ transform 传的是「相对上次 build 基准的绝对差」，不是本次增量。
+        CSS transform 是覆盖语义，传增量会导致只跟上最后一步（此前踩过）。 */
+  EsriLayer.prototype.onViewChange = function (geo) {
+    if (!this.host || !this._placed) return;
+    if (!this._baseScale) { this._baseScale = geo.scale; this._baseTx = geo.tx; this._baseTy = geo.ty; }
+    var scaleRatio = geo.scale / this._baseScale;
+
+    if (Math.abs(scaleRatio - 1) > 0.001) {
+      // 缩放：transform 已失效，重建（build 内部会重置基准）
+      this.host.style.transform = '';
+      this._baseScale = 0;
+      this.build(geo);
+      return;
+    }
+    var dx = geo.tx - this._baseTx;
+    var dy = this._baseTy - geo.ty;   // Y 轴翻转：屏幕向下 = 世界 ty 减小
+    this.host.style.transform =
+      'translate3d(' + dx.toFixed(1) + 'px,' + dy.toFixed(1) + 'px,0)';
   };
-  EsriLayer.prototype.rebuild = function (geo) {
-    this.invalidate();
-    this.destroy();
-    return this.build(geo);
+
+  /* build 后重置 transform 基准 */
+  var _origBuild = EsriLayer.prototype.build;
+  EsriLayer.prototype.build = function (geo) {
+    var r = _origBuild.call(this, geo);
+    if (geo) {
+      this._baseScale = geo.scale; this._baseTx = geo.tx; this._baseTy = geo.ty;
+      if (this.host) this.host.style.transform = '';
+    }
+    return r;
   };
 
   global.EsriImagery = {
     URLS: ESRI,
+    /* 瓦片缓存状态：供控制台与核验脚本读取（确认缓存是否真的在生效） */
+    cacheStats: function () {
+      return { cached: TILE_CACHE.size, max: TILE_CACHE_MAX };
+    },
     /* 底图来源合规自检：供控制台与核验脚本调用
        返回当前生效的底图来源与是否境内合规。
        ⚠️ 必须在 EsriImagery 定义之后挂载，否则运行到这行时它是 undefined
@@ -307,17 +407,6 @@
         advice: '仅限内部演示与方案验证；对外出单/定损出图须改用天地图/腾讯位置服务/高德等境内持证服务'
       };
     },
-    create: function (host, kind) { return new EsriLayer(host, kind); },
-    /* 供 dual-map / 业务视图挂载：创建并立即出图，不依赖腾讯 SDK */
-    attach: function (host, geo, onStatus) {
-      var layer = new EsriLayer(host, 'satellite');
-      if (onStatus) layer.onStatus = onStatus;
-      layer.build(geo);
-      return layer;
-    },
-    /* 视图容器尺寸变了（标签切换/resize）后强制重建，绕开 _sig 去重 */
-    refresh: function (layer, geo) {
-      if (layer && typeof layer.rebuild === 'function') layer.rebuild(geo);
-    }
+    create: function (host, kind) { return new EsriLayer(host, kind); }
   };
 })(window);

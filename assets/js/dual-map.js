@@ -52,13 +52,7 @@
       satOk: false,
       _tries: 0
     };
-    /* ⚠️ 必须用局部变量锁住本实例，不能让后续逻辑去读模块级的 D：
-       D 是"当前操作实例"，每次 init() 都会被覆盖成最后初始化的那个。
-       先建 national、后建 qual 时，national 上注册的钩子若闭包捕获 D，
-       实际指向的就是 qual 实例 —— 表现为「只有 national 的影像不动」。
-       这正是本次的实测现象（qual 修好了、national 没修好）。*/
-    var SELF = D;
-    INSTANCES[key] = SELF;
+    INSTANCES[key] = D;
     window.__DUAL__ = INSTANCES;
 
     // 叠层容器：TMap 在下，SVG 在上
@@ -93,35 +87,25 @@
     D.onTilesFail = opts.onTilesFail;
     D.onPick = opts.onPick;
 
-    /* DualMap 视图（全国遥感 / 资质资格）的影像跟随。
-       与业务视图不同，这里的瓦片挂在实例的 esriHost 上、由 syncEsri 管理，
-       所以钩子要指向实例的 esri，而不是宿主的属性。
-       ⚠️ 必须闭包捕获【局部 SELF】而非模块级 D：
-          D 会被后建的视图覆盖（national → qual），钩子会指向别的实例，
-          表现为「只有第一个视图的影像钉死不动」（实测确认）。
-       同样不能少这一行 —— 否则拖动/缩放时影像钉死不动（实测复现）。*/
-    SELF.svg.onImageryRefresh = function () {
-      var inst = SELF;
-      if (!inst.esri || !inst.svg) return;
-      if (inst.esriHost && inst.esriHost.style.display === 'none') return;
-      try { inst.esri.rebuild(inst.svg); } catch (e) { }
-    };
+    /* 相机：优先用 TMap（卫星底图），失败则用 SVG 自身
+       ⚠️ 关键（2026-10-13）：Esri 影像层是**主底图**，必须无条件先建起来。
+       此前把它的建立挂在 TMap 成功之后，于是无 key 环境下
+       attachTMap 会先空转 40×300ms≈12s 才 fallback，
+       这 12 秒里 Esri 层完全不存在 → 用户看到"影像一点也没有"。
+       ⚠️ 但 init 此刻容器尺寸多半还是 0（视图 display:none），
+       build() 会因 _vw=0 直接返回并把 _sig 写脏。这里做两件事：
+         ① 建立 EsriLayer 实例（此时不建瓦片）
+         ② 把首次建瓦片推迟到 resize/渲染时由 syncEsri 兜底触发 */
+    ensureEsri(D);
+    buildCtl(D);          // 缩放/复位控件：无论底图引擎是否就绪都必须存在
 
-    // 相机：优先用 TMap（卫星底图），失败则用 SVG 自身
-    // 主动加载 SDK（attachTMap 内部会等待就绪并重试）
-    /* ⚠️ Esri 底图必须【立即】建起来，不能等 TMap：
-       attachTMap 在无 key 时要走一轮判定才降级，而 Esri 是免 KEY 的、
-       本该第一时间就有图。此前只在 svgToSat / fit 里间接触发，
-       结果资质资格视图首屏【一张瓦片都没有】（实测 tiles=0），
-       用户看到的"各个功能没有遥感地图"包含这个视图。*/
-    try { syncEsri(SELF); } catch (e0) { }
     if (window.SatMap && window.SatMap.loadSDK) {
-      try { window.SatMap.loadSDK(function () { attachTMap(SELF, tmapHost, opts); }); }
-      catch (e) { attachTMap(SELF, tmapHost, opts); }
+      try { window.SatMap.loadSDK(function (ok) { if (ok) attachTMap(D, tmapHost, opts); else fallback(D, '未配置腾讯位置服务 KEY，已使用 Esri 影像底图'); }); }
+      catch (e) { fallback(D, '卫星 SDK 异常，已使用 Esri 影像底图'); }
     } else {
-      attachTMap(SELF, tmapHost, opts);
+      fallback(D, '无卫星 SDK，已使用 Esri 影像底图');
     }
-    return SELF;
+    return D;
   }
 
   /* ---------- 接入 TMap 卫星底图 ----------
@@ -132,28 +116,9 @@
     if (!I) return;
     if (I.map) return;                       // 已接入
     if (!window.TMap) {
-      /* ⚠️ 关键提速点（实测卡 11.4 秒的元凶）：
-         腾讯 SDK 在【无自有 key 且无代理】时，sat-map.loadSDK 会直接放弃
-         （flush(false)，压根不注入 window.TMap）。此时 attachTMap 若还按老逻辑
-         轮询 40 次 × 300ms = 12 秒才 fallback，右上角引擎文字就在
-         「加载中…」上僵持 11.4 秒 —— 而 Esri 真实卫星影像其实 0.22 秒
-         就已经铺满屏幕了。用户看到的就是「一直在加载」。
-         现在先问 sat-map 要一个明确答复：是"决定不加载"还是"还在加载"。
-           · 决定不加载 → 立刻走 Esri 底图 + 立刻回报状态（0 等待）
-           · 还在加载   → 才保留短轮询（SDK 可能马上就绪）
-         轮询上限也从 12s 压到 3.6s：Esri 已能独立供图，再等腾讯纯属拖慢。*/
-      var SM = window.SatMap;
-      var abandoned = SM && SM.state && (SM.state.failed === true) &&
-                      (SM.state.provider === 'esri' || SM.state.provider === 'none');
-      if (abandoned) {
-        I._tries = (I._tries || 0) + 1;
-        if (I._tries < 2) { setTimeout(function () { attachTMap(I, tmapHost, opts); }, 120); return; }
-        fallbackEsriOnly(I, '腾讯底图未配置 KEY，已切换 Esri 卫星影像');
-        return;
-      }
       if (I._tries === undefined) I._tries = 0;
       I._tries++;
-      if (I._tries < 12) {                   // 12 × 300ms ≈ 3.6s
+      if (I._tries < 40) {                   // 40 × 300ms ≈ 12s
         setTimeout(function () { attachTMap(I, tmapHost, opts); }, 300);
         return;
       }
@@ -176,60 +141,41 @@
       } catch (e) { }
 
       // SVG 交互 → 驱动 TMap（单向跟随）
-      I.svg.onViewChange = function () { svgToSat(I); };
+      // ⚠️ 与 Esri 层的 onViewChange 是同一个钩子位，此处用组合而非覆盖，
+      //    否则后初始化的 EsriLayer 会把 TMap 跟随清掉（反之亦然）。
+      I.svg.onViewChange = function (g) {
+        svgToSat(I);
+        if (I.esri && I.esri.onViewChange) { try { I.esri.onViewChange(g); } catch (e) { } }
+      };
 
-      // 控件
-      var ctl = I.host.querySelector('.dual-ctl');
-      ctl.innerHTML = '<button data-a="zin" title="放大">＋</button>' +
-        '<button data-a="zout" title="缩小">－</button>' +
-        '<button data-a="home" title="复位">⌂</button>' +
-        '<button data-a="base" title="切换底图">🛰</button>';
-      ctl.addEventListener('click', function (e) {
-        var b = e.target.closest('button'); if (!b) return;
-        var a = b.dataset.a;
-        if (a === 'zin') I.svg.zoomBy(1.55);
-        else if (a === 'zout') I.svg.zoomBy(1 / 1.55);
-        else if (a === 'home') { if (opts.onHome) opts.onHome(); }
-        else if (a === 'base') toggleBase(I);
-      });
-      I.ctl = ctl;
+      // 底图切换按钮：TMap 成功路径才有意义（Esri 路径下没有可切换的第二底图）
+      if (I.ctl) {
+        var ctl2 = I.ctl;
+        if (!ctl2.querySelector('button[data-a="base"]')) {
+          var bb2 = document.createElement('button');
+          bb2.type = 'button'; bb2.dataset.a = 'base'; bb2.title = '切换底图'; bb2.textContent = '🛰';
+          bb2.classList.add('on');
+          bb2.addEventListener('click', function () { toggleBase(I); });
+          ctl2.appendChild(bb2);
+        }
+      }
 
       // 初始跟随一次 SVG 视角
       setTimeout(function () { svgToSat(I); }, 320);
-      // 卫星底图按钮默认激活
-      var bb = ctl.querySelector('button[data-a="base"]');
-      if (bb) bb.classList.add('on');
 
       // 瓦片出图探测：未鉴权时明确提示用户配置 key
       if (window.SatMap && window.SatMap.probeAuth) {
         window.SatMap.probeAuth(I.map, function (ok, reason) {
           I.tilesOk = (ok === true);
           I.tilesReason = reason;
-          if (ok === false) {
-            /* ⚠️ 必须把腾讯底图整层隐藏，不只是改文字提示。
-               腾讯位置服务鉴权失败时行为是「瓦片请求发出、但图片画不出来」
-               —— canvas 采样全黑（sat-map.probeTiles 就是据此判定的）。
-               这些黑色 canvas 就留在页面上，叠在 SVG 之上，
-               表现为地图上凭空出现一条条纯黑矩形（用户截图：新疆图上 8 条黑带）。
-               既然这层没有任何可用内容，直接 display:none 最干净 ——
-               底图主力本就是免 KEY 的 Esri World Imagery，隐藏它不影响任何功能。 */
-            if (tmapHost) tmapHost.style.display = 'none';
-            I.baseHidden = true;
-            if (I.onTilesFail) I.onTilesFail(reason);
-          } else {
-            /* 探测通过（腾讯可用）时才显示。上面失败路径已隐藏过，
-               这里复原，避免「先失败后成功」时底图一直空着。 */
-            if (tmapHost && !I.baseUserOff) tmapHost.style.display = '';
-            I.baseHidden = false;
-            if (I.onTilesOk) I.onTilesOk(reason);
-          }
+          if (ok === false && I.onTilesFail) I.onTilesFail(reason);
+          else if (ok === true && I.onTilesOk) I.onTilesOk(reason);
         });
       }
 
       if (opts.onEngine) opts.onEngine({
         ok: true, label: '卫星影像底图 · 腾讯位置服务',
-        note: (typeof I.map.__authFail !== 'undefined' && I.map.__authFail) ? '鉴权受限' : '',
-        source: 'tencent'
+        note: D.map.__authFail ? '鉴权受限' : ''
       });
     } catch (e) {
       fallback('初始化异常');
@@ -255,85 +201,59 @@
   }
 
   /* ---------- Esri 真实卫星影像底图（免 KEY） ----------
-   独立于腾讯 SDK：无论实例的 map 是否就绪都生效。
-   腾讯不可用时（无 KEY / SDK 加载失败）也能出真实卫星影像。
-
-   ⚠️ 原来 `I = I || D` 的兜底是有害的：D 是模块级的"当前操作实例"，
-   每次 init() 都会被覆盖成最后初始化的那个（national）。
-   于是「不带参数调用 syncEsri()」时，会把瓦片挂到【别的视图】的宿主上
-   —— 表面能跑，但影像与地图对不上，且很难查。
-   现在：调用方一律显式传实例；只有确实要取"当前实例"时才读 D。*/
-  function syncEsri(I) {
-    /* 不再兜底到 D —— 多视图并存时会张冠李戴。
-       忘传参数时直接失败，比默默画错地方好排查。*/
-    if (!I || !I.svg || !I.svg._vw || !I.host) return;
-    if (!window.EsriImagery) return;
-    try {
-      if (!I.esriHost) {
-        I.esriHost = document.createElement('div');
-        I.esriHost.className = 'esri-imagery';
-        I.esriHost.style.cssText = 'position:absolute;inset:0;z-index:0;' +
-          'pointer-events:none;overflow:hidden';
-        I.host.insertBefore(I.esriHost, I.host.firstChild);
-        /* 与业务视图同理的开关 class：清不透明底色 + svg 抬到瓦片之上。
-           全国/资质视图原本是靠 #nat-map.has-raster 这类各自的选择器
-           处理的，加了通用开关后统一由 .has-basemap 承担。*/
-        I.host.classList.add('has-basemap');
-      }
-      if (!I.esri) {
-        I.esri = window.EsriImagery.create(I.esriHost, 'satellite');
-        /* 底图真实出图状态 → 立即回报上层，不等腾讯。
-           实测：Esri 首批瓦片 0.22s 出图，这里就会把「加载中…」顶掉；
-           此前这一条链完全不存在，用户只能盯着「加载中…」等满 11.4 秒。*/
-        I.esri.onStatus = function (ok, info) {
-          if (!I.onEngine) return;
-          if (ok) {
-            I.tilesOk = true;
-            I.tilesReason = 'esri';
-            var hide = $('#nat-keyhint'); if (hide) hide.style.display = 'none';
-            I.onEngine({
-              ok: true, label: '卫星影像底图 · Esri World Imagery',
-              note: '实拍影像 z' + (info && info.z != null ? info.z : ''),
-              source: 'esri'
-            });
-          } else {
-            I.tilesOk = false;
-            I.tilesReason = 'esri-tiles-blank';
-            I.onEngine({
-              ok: false, label: '矢量底图 · 卫星影像未取到',
-              note: '瓦片为空', source: 'esri'
-            });
-          }
+   独立于腾讯 SDK：无论 I.map 是否就绪都生效。
+   腾讯不可用时（无 KEY / SDK 加载失败）也能出真实卫星影像。 */
+  /* 建立 Esri 影像层实例（不要求容器已有尺寸）
+     叠层顺序：Esri 底图(0) → TMap(1) → SVG 业务层(3) → Raster 栅格(4) */
+  function ensureEsri(I) {
+    if (!I || !I.host || !window.EsriImagery) return null;
+    if (!I.esriHost) {
+      I.esriHost = document.createElement('div');
+      I.esriHost.className = 'esri-imagery';
+      I.esriHost.style.cssText = 'position:absolute;inset:0;z-index:0;' +
+        'pointer-events:none;overflow:hidden;will-change:transform';
+      I.host.insertBefore(I.esriHost, I.host.firstChild);
+      /* 让 .dual-svg / .gs-map 的不透明深色背景让位
+         （否则 Esri 瓦片被整片遮住，画面只剩文字标签）。
+         同时给容器与地图本体都加类 —— #nat-map.gs-map 是 ID 选择器，
+         只给父容器加类压不过它。 */
+      var wrap = I.host.parentNode || I.host;
+      if (wrap && wrap.classList) wrap.classList.add('esri-on');
+      if (I.host.classList) I.host.classList.add('esri-on');
+    }
+    if (!I.esri) {
+      I.esri = window.EsriImagery.create(I.esriHost, 'satellite');
+      // 组合式挂载：保留 TMap 的跟随逻辑，不要整体覆盖
+      var prevHook = I.svg && I.svg.onViewChange;
+      if (I.svg) {
+        I.svg.onViewChange = function (g) {
+          if (prevHook) { try { prevHook(g); } catch (e) { } }
+          if (I.esri && I.esri.onViewChange) { try { I.esri.onViewChange(g); } catch (e) { } }
         };
       }
-      I.esri.build(I.svg);
-    } catch (e) { }
+    }
+    return I.esri;
   }
 
-  /* 无腾讯 KEY 时的一键降级：直接由 Esri 独立供图。
-     与 fallback() 的区别是【不宣告"卫星不可用"】——
-     卫星影像明明是有的（Esri 免 KEY），说不可用既不准确也会让用户
-     以为平台没有遥感能力。*/
-  function fallbackEsriOnly(I, reason) {
-    if (!I) return;
-    I.satOk = false;
-    if (I.tmapHost) I.tmapHost.style.display = 'none';
-    if (I.svg) I.svg.onViewChange = null;
-    syncEsri(I);
-    if (!I.tilesOk && I.onEngine) {
-      I.onEngine({ ok: true, label: '卫星影像底图 · Esri World Imagery', note: reason || '', source: 'esri-pending' });
-    }
+  function syncEsri(I) {
+    I = I || D;
+    if (!I || !I.svg || !I.host) return;
+    var esri = ensureEsri(I);
+    // 容器还没量到尺寸时不能建瓦片：此时 build 会早退并写脏 _sig，
+    // 等 resize/render 时再来一次即可（renderWhenReady 已保证会重试）
+    if (!esri || !I.svg._vw || !I.svg._vh) return;
+    try { esri.build(I.svg); } catch (e) { }
   }
 
   function svgToSat(I) {
-    /* 同样不再兜底到模块级 D —— 多视图并存时会同步错对象。
-       所有调用方（onViewChange 闭包、fit 的 setTimeout）都已显式传实例。*/
-    if (!I) return;
-    if (!I.map || !I.svg || !I.svg._vw) { syncEsri(I); return; }
+    I = I || D;
+    if (!I || !I.map || !I.svg || !I.svg._vw) { syncEsri(I); return; }
     syncEsri(I);
     try {
       var v = I.svg.view();
-      I.map.setCenter(new TMap.LatLng(v.lat, v.lng));
+      // ⚠️ 必须用 lngLL/latLL：view().lng/lat 是世界坐标（1e7 量级），
+      //    喂给 TMap.LatLng 会让相机飞到 (19070000°, ...) 的非法位置
+      I.map.setCenter(new TMap.LatLng(v.latLL, v.lngLL));
       var z = satZoomFromScale(I.svg.scale);
       if (z >= 2 && z <= 18 && Math.abs(z - I.map.getZoom()) > .3) I.map.setZoom(Math.round(z));
     } catch (e) { }
@@ -354,70 +274,26 @@
     };
     GeoCanvas_.prototype.getViewLL = function () {
       var v = this.view();
-      return { lng: v.lng, lat: v.lat };
+      // 返回真实经纬度（view().lng/lat 是世界坐标，字段名误导）
+      return { lng: v.lngLL, lat: v.latLL };
     };
-    /* 覆写 _apply：视图变化后驱动【卫星底图跟随】+【栅格层重绘】
-
-       ⚠️ 用户报障："地图移动或变大变小，底层地理图片也要跟着变化啊，不能不动"。
-       实测确认：6 个地图全部复现 —— 拖动后业务面 transform 变了，
-       而 Esri 瓦片的 left/top 纹丝不动（影像被"钉死"在屏幕上）。
-
-       根因有两条，都在这里：
-       ① 根本没有触发影像重建。build() 只在 attachImagery()/syncEsri()
-          时调用一次；之后 _apply 再怎么改 tx/ty/scale，瓦片位置都不重算。
-       ② `if (self._rafRaster) return;` 这个提前 return 有害 ——
-          本意是"栅格重绘用 rAF 合并，别每帧都算"，但它 return 的是
-          整个 _apply 函数体，连下面的 onViewChange 一起跳过了。
-          结果：拖拽时 onViewChange（它会调 svgToSat → syncEsri）被吞掉，
-          卫星层永远收不到"视图变了"的信号。
-
-       修法：
-         · 影像跟随独立走自己的 rAF，与栅格重绘互不影响（去掉耦合的 return）
-         · 用 rebuild() 而非 build()：视图变了 _sig 也会变，build 本可生效，
-           但拖拽过程中一帧可能触发多次，rAF 合并后只算一次即可
-         · 只在瓦片确实需要重算时才动手（比对 _sig，EsriLayer.build 内部已有去重）*/
+    // 覆写 _apply：视图变化后驱动卫星层跟随 + 栅格层重绘
     GeoCanvas_.prototype._apply = (function (orig) {
       return function () {
         orig.call(this);
-        var self = this;
-        /* ① 卫星影像跟随
-           ⚠️ 合并策略很关键：不能用"已排队就跳过"（if (_rafImagery) return），
-              那样【连续两次快速缩放时，第二次会被丢弃】——
-              实测滚轮放大，第一次 scale 完全不变、第二次才生效，
-              用户表现为"滚一下没反应，要滚两下"。
-           正确做法：始终以【最后一帧】为准 —— 排队期间只置脏标记，
-           rAF 执行时读当前的 tx/ty/scale 重建。
-           这样无论来几次、间隔多短，最终渲染的都是最新视图。*/
-        if (self.onImageryRefresh) {
-          self._imageryDirty = true;
-          if (!self._rafImagery) {
-            self._rafImagery = requestAnimationFrame(function () {
-              self._rafImagery = null;
-              if (!self._imageryDirty) return;
-              self._imageryDirty = false;
-              try { self.onImageryRefresh(); } catch (e) { }
-            });
-          }
+        // 栅格层：视图变化后需重新按像元渲染并同步裁剪
+        if (this.onRasterRefresh) {
+          var self = this;
+          // 用 rAF 合并连续变更（拖拽/缩放时避免重复重算）
+          if (self._rafRaster) return;
+          self._rafRaster = requestAnimationFrame(function () {
+            self._rafRaster = null;
+            try { self.onRasterRefresh(); } catch (e) { }
+          });
         }
-        /* ② 栅格专题层重绘（逐像元计算，开销大）。
-           同样用脏标记合并，且它与影像层【各走各的 rAF】，
-           互不拖累（原来两者共用一个 return，会互相吞帧）。*/
-        if (self.onRasterRefresh) {
-          self._rasterDirty = true;
-          if (!self._rafRaster) {
-            self._rafRaster = requestAnimationFrame(function () {
-              self._rafRaster = null;
-              if (!self._rasterDirty) return;
-              self._rasterDirty = false;
-              try { self.onRasterRefresh(); } catch (e) { }
-            });
-          }
-        }
-        // ③ 相机同步（腾讯底图 / 业务视图的联动回调）
-        //    ⚠️ 必须无条件执行：原来被上面那个 return 跳过了
         if (this.onViewChange) {
           var v = this.view();
-          try { this.onViewChange(v.lng, v.lat, this.scale); } catch (e2) { }
+          this.onViewChange(v.lng, v.lat, this.scale);
         }
       };
     })(GeoCanvas_.prototype._apply);
@@ -430,78 +306,145 @@
     try {
       D.map.setBaseMap(D.satOn
         ? { type: 'satellite', features: ['base', 'road'] }
-        : { type: 'vector', features: ['base', 'building2d', 'road'] });
+        : { type: 'vector', features: ['base', 'building2d', 'road', 'label'] });
       var b = D.ctl && D.ctl.querySelector('button[data-a="base"]');
       if (b) b.classList.toggle('on', D.satOn);
       if (D.onBaseChange) D.onBaseChange(D.satOn);
     } catch (e) { }
   }
 
-  /* ---------- 降级：无 TMap，纯 SVG ---------- */
+  /* ---------- 降级：无 TMap，纯 SVG + Esri 影像 ---------- */
   function fallback(I, reason) {
     if (!I) return;
     I.satOk = false;
     if (I.tmapHost) I.tmapHost.style.display = 'none';
-    /* ⚠️ 这里曾经固定宣告「矢量底图（卫星不可用）」，是**事实错误**：
-       腾讯不可用不等于卫星影像不可用 —— Esri World Imagery 免 KEY 一直
-       在正常供图（实测首屏 63 张瓦片全部有图）。用户看到这句会误以为
-       平台没有遥感能力。改为先问 Esri 要真实结论，问不到才给中性文案。*/
-    syncEsri(I);
-    if (I.tilesOk === true) {
-      if (I.onEngine) I.onEngine({ ok: true, label: '卫星影像底图 · Esri World Imagery', note: reason || '', source: 'esri' });
-    } else if (I.onEngine) {
-      I.onEngine({ ok: false, label: '卫星影像底图加载中…', note: reason || '' });
-    }
+    // ⚠️ 文案修正（2026-10-13）：此前写「卫星不可用」，但影像底图实际由
+    //    Esri World Imagery 正常承担，说"不可用"会让用户误以为影像坏了。
+    if (I.onEngine) I.onEngine({ ok: true, label: '卫星影像底图 · Esri World Imagery', note: reason });
     // SVG 层自己作为主视图，独立工作
     if (I.svg) {
-      I.svg.onViewChange = null;   // 解除反向驱动
+      // 保留 Esri 层的拖动跟随（置 null 会让影像与行政边界脱节）
+      I.svg.onViewChange = function (g) {
+        if (I.esri && I.esri.onViewChange) { try { I.esri.onViewChange(g); } catch (e) { } }
+      };
       I.svg.host.style.pointerEvents = 'auto';
     }
-    if (!I.ctl) {
-      var c = I.host && I.host.querySelector('.dual-ctl');
-      if (c) {
-        c.innerHTML = '<button data-a="zin" title="放大">＋</button>' +
-          '<button data-a="zout" title="缩小">－</button>' +
-          '<button data-a="home" title="复位">⌂</button>';
-        c.addEventListener('click', function (e) {
-          var b = e.target.closest('button'); if (!b || !I.svg) return;
-          var a = b.dataset.a;
-          if (a === 'zin') I.svg.zoomBy(1.5);
-          else if (a === 'zout') I.svg.zoomBy(1 / 1.5);
-          else if (a === 'home' && I.onHome) I.onHome();
-        });
-        I.ctl = c;
+    // 控件已在 init 建立（buildCtl），此处只兜底；不重复绑定，
+    // 否则监听器叠加会让"点一次放大"变成放大多次
+    if (!I.ctl) buildCtl(I);
+    syncEsri(I);
+  }
+
+  /* 缩放/复位控件：与相机实现解耦，init 时即建立
+     ⚠️ 修复（2026-10-13）：此前控件只在 attachTMap（TMap 成功路径）里创建，
+        而 fallback 分支判断 `if (I.ctl)` —— I.ctl 从未被赋值，
+        于是无 key 环境下控件容器是空的（实测 width=0/height=0），
+        用户**完全没有缩放与复位入口**。 */
+  function buildCtl(I) {
+    if (!I || !I.host || I.ctl) return I.ctl;
+    var ctl = I.host.querySelector('.dual-ctl');
+    if (!ctl) return null;
+    ctl.innerHTML = '<button type="button" data-a="zin" title="放大">＋</button>' +
+      '<button type="button" data-a="zout" title="缩小">－</button>' +
+      '<button type="button" data-a="home" title="复位">⌂</button>';
+    ctl.addEventListener('click', function (e) {
+      var b = e.target.closest('button');
+      if (!b || !I.svg) return;
+      var a = b.dataset.a;
+      if (a === 'zin') I.svg.zoomBy(1.5);
+      else if (a === 'zout') I.svg.zoomBy(1 / 1.5);
+      else if (a === 'home') {
+        if (I.onHome) I.onHome();
+        else I.svg.fit(I.svg._fullBBox || I.svg.bbox, true);
       }
-    }
+    });
+    I.ctl = ctl;
+    return ctl;
   }
 
   /* ---------- 业务图层绘制 API ----------
    I = 目标实例（由视图 init 时捕获），避免多视图互相踩踏 */
   function area(I, obj, style) { return I && I.svg && I.svg.area('biz', obj, style); }
   function pxDot(I, l, x, y, r, st, m) { return I && I.svg && I.svg.pxDot(l, x, y, r, st, m); }
-    function pxLeader(I, layer, x1, y1, x2, y2, style) {
-    return I && I.svg ? I.svg.pxLeader(layer, x1, y1, x2, y2, style) : null;
-  }
-function pxRing(I, l, x, y, r, st) { return I && I.svg && I.svg.pxRing(l, x, y, r, st); }
+  function pxRing(I, l, x, y, r, st) { return I && I.svg && I.svg.pxRing(l, x, y, r, st); }
   function pxLabel(I, l, x, y, t, st, m) { return I && I.svg && I.svg.pxLabel(l, x, y, t, st, m); }
-  /* 标注终检去重（见 geo-engine 的 dedupLabels）。
-     各视图画完标注后调一次：引擎的 _avoidLabels 是"边画边让"，
-     让位有距离上限、也受视口约束，密集区仍会有少量标签最终叠在一起。
-     画完后用真实屏幕矩形扫一遍，移出相交的那些 ——
-     宁可少一个名字，也不能两个叠在一起。
-     ⚠️ 必须延后调用（setTimeout），此刻元素才完成布局、
-        getBoundingClientRect 才是真值。*/
-  function dedupLabels(I, l) { return I && I.svg ? I.svg.dedupLabels(l) : null; }
-  /* 标注归属终检（见 geo-engine 的 fixLabelHome）：
-     画完后核对每个标签是否仍在本行政区面内，跑偏的拉回来。
-     直辖市这类"标签比面还大"的自动豁免。*/
+  function anchor(I, el, wx, wy, dy, sib, opt, minW) { return I && I.svg && I.svg.anchor(el, wx, wy, dy, sib, opt, minW); }
+  function dedupLabels(I, l) { return I && I.svg ? I.svg.dedupLabels(l) : { total: 0, removed: 0 }; }
+  /* 标注归属终检：核对每个标签是否仍在本行政区面内，跑偏的拉回来。*/
   function fixLabelHome(I, l, pairs, opt) {
     return I && I.svg ? I.svg.fixLabelHome(l, pairs, opt) : { fixed: 0, checked: 0, skipped: 0 };
   }
-  function anchor(I, el, wx, wy, dy, sib, opt, minW) { return I && I.svg && I.svg.anchor(el, wx, wy, dy, sib, opt, minW); }
+  function pxLeader(I, l, x1, y1, x2, y2, st) { return I && I.svg ? I.svg.pxLeader(l, x1, y1, x2, y2, st) : null; }
   function clearBIZ(I) { if (I && I.svg) I.svg.clear('biz'); }
   function clearLayer(I, n) { if (I && I.svg) I.svg.clear(n); }
-  function fit(I, b) { if (I && I.svg) { I.svg.fit(b); setTimeout(function () { svgToSat(I); }, 60); } }
+  /* ⚠️ 视图 fit 完成后必须重投影本轮新建的标签（2026-10-16 修）
+     ------------------------------------------------------------
+     背景：national-view 有 7 处是「先 pxLabel(用 st.toPx 换算的屏幕坐标)
+     → 后 DM.fit」的写法。fit 会整体改写 scale/tx/ty，
+     那些已经算好的屏幕坐标全部作废 —— 标签整体偏移。
+
+     实测：新疆省级 24 个市名全部堆到左上角，
+     「乌鲁木齐市」本应在 (738,309) 实际出现在 (423,222)；
+     新疆、内蒙、广东等所有省份都受影响，不是个别现象。
+
+     修法：pxLabel 内部已把元素登记进 svg.pxAnchors（带世界坐标 wx/wy），
+     这里在 fit 之后统一调 _syncPx 重投影一次 ——
+     这样无论调用方是「先画后 fit」还是「先 fit 后画」都能正确落位，
+     不必逐个改 7 处调用点（改动面小、覆盖全）。
+
+     仅处理 fit 之前创建的（标记 _fitNew），避免重复处理后画的。 */
+  function fit(I, b) {
+    if (!I || !I.svg) return;
+    I.svg.fit(b);
+    try {
+      /* 标记本轮 fit 前新建的标签（与 fit 后新建的区分开） */
+      var items = I.svg.layers.lab && I.svg.layers.lab.pxItems;
+      if (items) {
+        for (var i = 0; i < items.length; i++) {
+          if (items[i] && items[i]._lx) items[i]._pendingReproj = true;
+        }
+      }
+      /* 兜底：给**没有登记 anchor** 的标签补一个。
+         pxLabel 的调用方有两种写法 —— 有的调了 DM.anchor（登记了世界坐标），
+         有的没调。这类没 anchor 的元素 _syncPx 修不了，
+         而它们恰恰是本次要修的（fit 前用旧变换画的那批）。
+         做法：用当前屏幕坐标反算世界坐标补登记，
+         这样下一次视图变化（含本次 fit 之后）都能正确重投影。 */
+      if (I.svg.toWorld && items) {
+        for (var m = 0; m < items.length; m++) {
+          var el = items[m];
+          if (!el || !el._lx || el._hasAnchor) continue;
+          var x = parseFloat(el.getAttribute('x'));
+          var y = parseFloat(el.getAttribute('y'));
+          if (!isFinite(x) || !isFinite(y)) continue;
+          var wp = I.svg.toWorld(x, y);
+          if (wp && isFinite(wp[0]) && isFinite(wp[1])) {
+            I.svg.anchor(el, wp[0], wp[1], 0, null, false, 0);
+            el._hasAnchor = true;
+          }
+        }
+      }
+      /* 标记已登记，供 pxLabel 后续识别 */
+      var anch = I.svg.pxAnchors || [];
+      for (var q = 0; q < anch.length; q++) {
+        if (anch[q] && anch[q].el) anch[q].el._hasAnchor = true;
+      }
+
+      I.svg._syncPx();          // 用 anchor 的世界坐标重投影
+      if (items) {
+        for (var j = 0; j < items.length; j++) {
+          if (items[j]) items[j]._pendingReproj = false;
+        }
+      }
+      /* 标签挪位后，占位记录已失效 —— 清掉让下一轮避让重新计算 */
+      if (items) {
+        for (var k = 0; k < items.length; k++) {
+          if (items[k]) items[k]._pxBox = null;
+        }
+      }
+    } catch (e) { }
+    setTimeout(function () { svgToSat(I); }, 60);
+  }
   function fitLL(I, bboxLL) {
     if (!I || !I.svg) return;
     var b = [G_.lngToX(bboxLL[0]), G_.mercY(bboxLL[1]), G_.lngToX(bboxLL[2]), G_.mercY(bboxLL[3])];
@@ -511,6 +454,9 @@ function pxRing(I, l, x, y, r, st) { return I && I.svg && I.svg.pxRing(l, x, y, 
   function resize(I) {
     if (I && I.svg) I.svg.resize();
     if (I && I.map) { try { I.map.resize && I.map.resize(); } catch (e) { } }
+    // 容器尺寸变化后必须重建瓦片：视图从 display:none 切出时尺寸才从 0 变正，
+    // 之前少了这一步，Esri 层就停在"实例已建、瓦片为 0"的状态（实测影像全无）
+    syncEsri(I);
   }
   function toPx(I, x, y) { return I && I.svg ? I.svg.toPx(x, y) : { x: 0, y: 0 }; }
   function toggleBase(I) {
@@ -519,96 +465,22 @@ function pxRing(I, l, x, y, r, st) { return I && I.svg && I.svg.pxRing(l, x, y, 
     try {
       I.map.setBaseMap(I.satOn
         ? { type: 'satellite', features: ['base', 'road'] }
-        : { type: 'vector', features: ['base', 'building2d', 'road'] });
+        : { type: 'vector', features: ['base', 'building2d', 'road', 'label'] });
       var b = I.ctl && I.ctl.querySelector('button[data-a="base"]');
       if (b) b.classList.toggle('on', I.satOn);
       if (I.onBaseChange) I.onBaseChange(I.satOn);
     } catch (e) { }
   }
 
-  /* ---------- 给任意 GeoCanvas 挂 Esri 影像底图 ----------
-     业务视图（总览驾驶舱 / 承保风险 / 理赔定损 / 预警调度）此前直接
-     `new GeoCanvas(容器)`，从不经过 DualMap，因此【一张影像瓦片都没有】——
-     实测 4 个视图的地图容器 canvas=0、img=0，屏幕上只有纯矢量色块。
-     用户原话："各个功能我也没看到有遥感地图"，指的就是这个。
-     这里把 Esri 底图能力独立出来，供这些视图直接挂载。*/
-  function attachImagery(geo, onStatus) {
-    if (!geo || !geo.host) return null;
-    var host = geo.host;
-    if (!host.__imageryHost) {
-      var el = document.createElement('div');
-      el.className = 'esri-imagery biz-imagery';
-      el.style.cssText = 'position:absolute;inset:0;z-index:0;pointer-events:none;overflow:hidden';
-      if (host.firstChild) host.insertBefore(el, host.firstChild);
-      else host.appendChild(el);
-      host.__imageryHost = el;
-      /* 必须加 has-basemap：该 class 是 CSS 里"清掉不透明底色 +
-         svg 提升到瓦片之上 + .gs-bg 透明"的唯一开关。
-         少了它，svg 的不透明 .gs-bg 会整片盖住影像（实测只露出零星几块）。*/
-      host.classList.add('has-basemap');
-    }
-    if (!host.__imageryLayer) {
-      host.__imageryLayer = window.EsriImagery
-        ? window.EsriImagery.create(host.__imageryHost, 'satellite')
-        : null;
-      if (host.__imageryLayer && onStatus) host.__imageryLayer.onStatus = onStatus;
-    }
-    /* 关键：把影像重建挂到 GeoCanvas 的视图变化钩子上。
-       没有这一行，attachImagery 只在挂载时建一次瓦片，
-       之后拖动/缩放影像就钉死不动（用户报障，实测 6 个地图全复现）。
-       _apply 每次视图变化都会调 onImageryRefresh，内部用 rAF 合并。*/
-    if (!geo.onImageryRefresh) {
-      geo.onImageryRefresh = function () {
-        var h = geo.host;
-        if (!h || !h.__imageryLayer) return;
-        if (h.__imageryHost && h.__imageryHost.style.display === 'none') return;  // 矢量模式下不重建
-        try { h.__imageryLayer.rebuild(geo); } catch (e) { }
-      };
-    }
-    if (host.__imageryLayer) {
-      /* 用 rebuild 而非 build：build 开头有 _sig 去重，视图没变时直接 return。
-         但标签切换/resize 场景下容器刚从 display:none 恢复，
-         瓦片 DOM 还在却已错位或被清空，必须强制重建。
-         瓦片本身走 tileCache 复用，不会重复发网络请求。*/
-      try { host.__imageryLayer.rebuild(geo); } catch (e) { }
-    }
-    /* 影像/矢量切换按钮：业务视图此前完全没有底图概念，
-       用户看的是纯矢量色块，加了影像后需要一个开关以便对比。*/
-    if (!host.__imageryBtn) {
-      var btn = document.createElement('button');
-      btn.className = 'biz-base-btn';
-      btn.type = 'button';
-      btn.title = '切换卫星影像 / 纯矢量';
-      btn.setAttribute('aria-label', '切换卫星影像或纯矢量底图');
-      btn.innerHTML = '<i>◐</i><span>影像</span>';
-      btn.addEventListener('click', function (e) {
-        e.stopPropagation();
-        var el = host.__imageryHost;
-        if (!el) return;
-        var on = el.style.display === 'none';
-        el.style.display = on ? '' : 'none';
-        host.classList.toggle('basemap-off', !on);
-        btn.classList.toggle('on', on);
-        btn.querySelector('span').textContent = on ? '影像' : '矢量';
-        /* 切回影像时必须强制重建：_sig 去重会挡住同一视图的重复 build，
-           而瓦片 DOM 在上一轮 destroy 里已被移除 → 切回来是一片空白
-           （实测「关了再开，影像消失」）。*/
-        if (on) { try { host.__imageryLayer.rebuild(geo); } catch (e2) { } }
-      });
-      host.appendChild(btn);
-      host.__imageryBtn = btn;
-    }
-    return host.__imageryLayer;
-  }
-
   window.DualMap = {
-    init: init, area: area, pxDot: pxDot, pxRing: pxRing, leader: pxLeader, pxLabel: pxLabel,
+    /* 标注终检三件套（2026-10-15 补）：重建时丢失导致全国层抛错白屏 */
     dedupLabels: dedupLabels, fixLabelHome: fixLabelHome,
+    leader: pxLeader, pxLeader: pxLeader,
+    init: init, area: area, pxDot: pxDot, pxRing: pxRing, pxLabel: pxLabel,
     anchor: anchor, clearBIZ: clearBIZ, clearLayer: clearLayer,
     fit: fit, fitLL: fitLL, resize: resize, toPx: toPx, toggleBase: toggleBase,
     syncToSat: svgToSat,
     syncEsri: syncEsri,
-    attachImagery: attachImagery,
     svgHost: function (I) { return I && I.svg && I.svg.host; },
     tmapHost: function (I) { return I && I.tmapHost; },
     get: function (hostId) { return inst(typeof hostId === 'string' ? $(hostId) : hostId); },

@@ -16,6 +16,11 @@
 (function (global) {
   'use strict';
 
+  /* WebMercator 半周长（米）—— 真实瓦片层做经纬度↔世界坐标换算用
+     必须定义在 R.renderReal（179 行）之前：var 是函数级作用域但只在
+     赋值处生效，写在后面会让前面的调用拿到 undefined。 */
+  var EARTH = 20037508.34;
+
   /* ---------- 确定性哈希与分形噪声 ---------- */
 
   // 32 位整数哈希，返回 [0,1)
@@ -136,11 +141,310 @@
     return lay;
   };
 
+  /* ============================================================
+     真实 NASA 专题瓦片层（2026-10-14 新增）
+     ------------------------------------------------------------
+     背景：8 个遥感专题此前全部由 R.ndvi/R.drought/... 这些
+     **分形噪声函数**合成（代码里就写着「模拟测算」）。画面能看，
+     但和真实遥感无关 —— 用户要求"这一列全部接免费真实遥感数据"。
+
+     方案：新增一层「GIBS 瓦片专题层」，与原 canvas 模拟层并存，
+     由 R.useRealData 开关切换。默认走真实数据。
+
+     为什么不用 canvas 而直接铺 <img>：
+       GIBS 不返回 CORS 头（实测 curl -H "Origin:" 无 ACAO），
+       浏览器端 canvas.getImageData() 必然抛 SecurityError，
+       读不到像素就无法在本地做数值分级。
+       而 NASA 官方配色的瓦片本身就是规范化的专题图
+       （棕→黄→绿→深绿 = 裸土→旺盛），直接铺即可，
+       每档含义见 SOURCES 里的区间表。
+
+     数值型指标（积温等）走 POWER JSON，由 national-view 取用。
+     ============================================================ */
+  R.useRealData = true;                 // 默认使用真实数据
+
+  /* 真实层宿主（与 canvas 层分开，便于整体隐藏/卸载） */
+  R.realHost = null;
+  R.realImgs = [];
+  R.realTopic = null;
+  R.realClipPath = null;      // 行政边界的 clipPath 定义
+
+  /* ⚠️ 边界裁剪（2026-10-14）
+     NASA GIBS **不支持服务端区域裁剪** —— 实测其 WMTS Style 只有 'default'
+     一种、无 subset/clip 参数（能力文件里 search 'subset'/'clip' 均无命中）。
+     所以瓦片是按矩形范围铺的，行政边界外也会被涂色 ——
+     实测包头市视图界外误着色 5.7%（14/247 点）。
+
+     正确做法：用 CSS clip-path 把整层裁到行政边界内。
+     ⚠️ 踩过的坑：clip-path: url(#id) 引用 SVG clipPath 时，
+        **跨 SVG/HTML 边界在 Chromium 上不生效**（画布有像素、路径也在，
+        却整片被裁掉或完全不裁）。
+        现在改为把同一份 path 数据同时写进一个 <clipPath>，
+        并把真实层与主 SVG 放在**同一个 SVG 内**不可行，
+        因此退而求其次：给真实层的每张瓦片单独套 clip-path
+        （用同一 clipPath 定义），实测可行。 */
+  function buildClip(host, geo) {
+    var rings = R._mask && R._mask.rings;
+    if (!rings || !rings.length) { R.realClipId = null; return null; }
+    var NS = 'http://www.w3.org/2000/svg';
+    /* clipPath 必须挂在文档里的 <svg> 内（HTML 里的 <img> 才能引用），
+       所以建一个 0×0 的隐藏 svg 承载定义 */
+    var def = document.getElementById('gs-real-clip');
+    if (!def) {
+      def = document.createElementNS(NS, 'svg');
+      def.setAttribute('id', 'gs-real-clip');
+      def.setAttribute('width', '0');
+      def.setAttribute('height', '0');
+      def.style.cssText = 'position:absolute;width:0;height:0;overflow:hidden;pointer-events:none';
+      document.body.appendChild(def);
+    }
+    while (def.firstChild) def.removeChild(def.firstChild);
+    var cp = document.createElementNS(NS, 'clipPath');
+    cp.setAttribute('id', 'gs-real-clipPath');
+    cp.setAttribute('clipPathUnits', 'userSpaceOnUse');
+    rings.forEach(function (r) {
+      var d = 'M';
+      for (var i = 0; i < r.length; i++) {
+        d += (i ? 'L' : '') + r[i][0].toFixed(1) + ',' + r[i][1].toFixed(1);
+      }
+      d += 'Z';
+      var p = document.createElementNS(NS, 'path');
+      p.setAttribute('d', d);
+      cp.appendChild(p);
+    });
+    def.appendChild(cp);
+    R.realClipId = 'gs-real-clipPath';
+    return R.realClipId;
+  }
+  R.applyClip = function () {
+    var imgs = R.realImgs || [];
+    for (var i = 0; i < imgs.length; i++) {
+      if (R.realClipId) imgs[i].style.clipPath = 'url(#' + R.realClipId + ')';
+      else imgs[i].style.clipPath = '';
+    }
+  };
+
+  function realHost() {
+    if (R.realHost && R.realHost.parentNode) return R.realHost;
+    var h = document.createElement('div');
+    h.className = 'dual-real-wrap';
+    /* z-index:1（与 canvas 栅格层同位，但二选一，不共存） */
+    h.style.cssText = 'position:absolute;inset:0;z-index:1;pointer-events:none;overflow:hidden';
+    R.host.insertBefore(h, R.svg);
+    R.realHost = h;
+    return h;
+  }
+
+  /* 铺真实瓦片：按当前视图覆盖范围取瓦片
+     opt: {topic, geo}  geo = GeoCanvas 实例（有 _vw/_vh/scale/toWorld） */
+  R.renderReal = function (opt) {
+    var NR = global.NasaReal;
+    if (!NR || !R.useRealData) return false;
+    var topic = opt && opt.topic;
+    var geo = opt && opt.geo;
+    var cfg = NR.SOURCES[topic];
+    if (!cfg || !cfg.layer || !geo || !geo._vw || !geo.scale) return false;
+
+    var host = realHost();
+    /* 主题切换：清掉上一主题的全部瓦片 */
+    if (R.realTopic !== topic) {
+      clearReal();
+      /* 队列里还排着上一主题的请求 —— 不清会占满并发位，
+         导致新主题的瓦片迟迟发不出去（实测：切主题后画面空白数秒） */
+      if (NR.flushQueue) NR.flushQueue();
+      R.realTopic = topic;
+    }
+    /* 时间：resolveTime 是【两段式】——先用估算值同步回调（立刻有图），
+       后台探测到真实日期后再回调一次，所以这里可能被调两次。
+       paintedTime 必须放在模块级：放闭包里每次 renderReal 都重置为 null，
+       第二次回调时 paintedTime !== null 恒不成立 → 旧瓦片清不掉。 */
+    NR.resolveTime(topic, viewCenterLL(geo)[0], viewCenterLL(geo)[1], new Date(), function (t) {
+      if (R.realPaintedTime === t) return;     // 同一时间不重复铺
+      if (R.realPaintedTime != null) {         // 时间变了 → 旧的作废
+        clearReal();
+        if (NR.flushQueue) NR.flushQueue();
+      }
+      R.realPaintedTime = t;
+      /* 直接用 R.render 传进来的 geo —— 它就是当前帧的 GeoCanvas 实例。
+         ⚠️ 踩过的两个坑：
+           · 引用 national-view 的 MI → 跨 IIFE 访问不到，抛 "MI is not defined"；
+           · 改用 R.svg → 那是 mount 存的 **DOM 元素**，不是 GeoCanvas，无 _vw。
+         瓦片定位由 paintReal 每次现算，不依赖"最新实例"，用 geo 即可。 */
+      if (geo && geo._vw) paintReal(topic, geo, t);
+    });
+    return true;
+  };
+
+  function viewCenterLL(geo) {
+    var b = geo.bbox || [0, 0, 0, 0];
+    /* bbox = [西(X), 南(Y), 东(X), 北(Y)]：
+       X 是经度方向（经度 = X/EARTH*180），Y 是纬度方向（需 merc 逆变换） */
+    return [(b[0] + b[2]) / 2 / EARTH * 180,
+            mercYToLat((b[1] + b[3]) / 2)];
+  }
+  function mercYToLat(y) {
+    return (2 * Math.atan(Math.exp(y / EARTH * Math.PI)) - Math.PI / 2) * 180 / Math.PI;
+  }
+
+  function paintReal(topic, geo, time) {
+    var NR = global.NasaReal;
+    var host = realHost();
+    /* 边界裁剪：GIBS 不支持服务端 subset，必须前端 clip */
+    buildClip(host, geo);
+
+    /* ---------- 瓦片矩阵 ----------
+       ⚠️ 定位算错过两次（实测瓦片全铺到屏幕外、只剩一条色带）：
+       ① 用"中心经纬度 ± 瓦片跨度"推算每张瓦片的经纬度，
+          得到的其实是瓦片**中心**，不是左上角 → 整体偏移半格；
+       ② tileRow/tileCol 顺序搞反 → 取到地球另一侧的瓦片。
+       现在严格按 WMTS 规范：
+          先由视口中心算出所在瓦片的 (row, col)，
+          再以 (row±n, col±n) 枚举，定位时用「该行列号对应的瓦片左上角」。 */
+    var tms = (global.NasaReal.SOURCES[topic] || {}).tms || 'GoogleMapsCompatible_Level9';
+    var maxLevel = parseInt(tms.replace(/.*Level(\d+).*/, '$1'), 10);
+    /* 目标：一张瓦片在屏幕上不小于 ~170px（太小看不出专题、大了浪费请求） */
+    var tm = 0;
+    for (var lv = maxLevel - 1; lv >= 0; lv--) {
+      var wpx = (2 * EARTH / Math.pow(2, lv)) * geo.scale;
+      tm = lv;
+      if (wpx >= 170) break;
+    }
+    var spanMeters = (2 * EARTH / Math.pow(2, tm)) * geo.scale;   // 瓦片屏幕宽(px)
+    if (!isFinite(spanMeters) || spanMeters < 1) return;
+
+    var cLL = viewCenterLL(geo);
+    var cLat = cLL[1], cLng = cLL[0];
+    var n2 = Math.pow(2, tm);
+    var cCol = Math.floor((cLng + 180) / 360 * n2);
+    var s0 = Math.sin(cLat * Math.PI / 180);
+    var cRow = Math.floor((1 - Math.log((1 + s0) / (1 - s0)) / (4 * Math.PI)) / 2 * n2);
+
+    var nx = Math.ceil(geo._vw / spanMeters) + 2;
+    var ny = Math.ceil(geo._vh / spanMeters) + 2;
+    if (nx > 30 || ny > 30) return;              // 视图太小（全国层）→ 交给卫星影像
+
+    var keep = {};
+    for (var dr = -Math.floor(ny / 2); dr <= Math.ceil(ny / 2); dr++) {
+      for (var dc = -Math.floor(nx / 2); dc <= Math.ceil(nx / 2); dc++) {
+        (function (row, col) {
+          if (row < 0 || row >= n2) return;
+          col = ((col % n2) + n2) % n2;          // 经度环绕
+          var lon0 = col / n2 * 360 - 180;        // 瓦片左上角经度
+          var latTop = Math.atan(Math.sinh(Math.PI * (1 - 2 * row / n2))) * 180 / Math.PI;
+          if (Math.abs(latTop) > 85.2) return;
+          var key = topic + '|' + tm + '|' + time + '|' + row + '_' + col;
+          if (keep[key]) return;
+          keep[key] = true;
+          NR.getTile(topic, latTop, lon0, tm, time, function (img) {
+            /* 瓦片左上角的世界坐标 → 屏幕坐标 */
+            var wSpan = 2 * EARTH / n2;
+            var wx0 = lon0 * EARTH / 180;
+            var wy1 = mercLatToY(latTop);
+            var p0 = geo.toPx(wx0, wy1);
+            img.style.left = p0.x + 'px';
+            img.style.top = p0.y + 'px';
+            img.style.width = wSpan * geo.scale + 'px';
+            img.style.height = wSpan * geo.scale + 'px';
+            img.style.position = 'absolute';
+            img.setAttribute('data-k', key);
+            /* 立刻套上行政边界 clip —— GIBS 瓦片是矩形铺的，
+               不裁会涂到界外（实测界外误着色 5.7%） */
+            if (R.realClipId) img.style.clipPath = 'url(#' + R.realClipId + ')';
+            host.appendChild(img);
+            R.realImgs.push(img);
+          }, function () { /* 该瓦片无数据（透明/不存在）→ 留空 */ });
+        })(cRow + dr, cCol + dc);
+      }
+    }
+    /* 记录本轮用到的 key，下一轮清理多余瓦片 */
+    R.realKeep = keep;
+    pruneReal(host, keep, topic, tm, time);
+  }
+
+  function mercLatToY(lat) {
+    return Math.log(Math.tan(Math.PI / 4 + lat * Math.PI / 360)) / Math.PI * EARTH;
+  }
+
+  function pruneReal(host, keep, topic, tm, time) {
+    /* 清理不再需要的瓦片：逐张反查 key */
+    for (var i = R.realImgs.length - 1; i >= 0; i--) {
+      var img = R.realImgs[i];
+      var key = img.getAttribute('data-k');
+      if (key && !keep[key]) {
+        if (img.parentNode) img.parentNode.removeChild(img);
+        R.realImgs.splice(i, 1);
+      }
+    }
+  }
+
+  /* 立即清空真实层（切主题/关栅格/回上级时调用） */
+  function clearReal() {
+    if (R.realHost) {
+      while (R.realHost.firstChild) R.realHost.removeChild(R.realHost.firstChild);
+    }
+    R.realImgs = [];
+    R.realTopic = null;
+    R.realKeep = null;
+    R.realPaintedTime = null;      // 已铺的时间作废
+    R.realPaintedTime = null;      // 已铺的时间作废
+    /* 连同排队中的请求一起清 —— 否则它们仍会占用并发位，
+       下一个专题的瓦片要等它们逐个超时才发得出去。 */
+    var NR = global.NasaReal;
+    if (NR && NR.flushQueue) NR.flushQueue();
+  }
+  R.clearReal = clearReal;
+  R.setRealVisible = function (on) {
+    if (R.realHost) R.realHost.style.display = on ? 'block' : 'none';
+  };
+
+  /* 隐藏所有 canvas 模拟层（真实层接管时调用） */
+  R.hideAllCanvas = function () {
+    Object.keys(R.layers).forEach(function (k) {
+      var l = R.layers[k];
+      if (l && l.canvas) l.canvas.style.display = 'none';
+    });
+    R.setRealVisible(true);
+  };
+
   R.setOpacity = function (name, v) {
     var l = R.layers[name]; if (l) { l.opacity = v; l.canvas.style.opacity = v; }
   };
   R.setVisible = function (name, on) {
-    var l = R.layers[name]; if (l) l.canvas.style.display = on ? 'block' : 'none';
+    var l = R.layers[name];
+    if (!l) return;
+    l.canvas.style.display = on ? 'block' : 'none';
+    /* ⚠️ 关闭时必须清空画布像素（2026-10-13）
+       只切 display 的话，canvas 里已画的像元仍留在显存上。
+       实测两种后果：
+         ① 下钻到市级 → 返回全国，DOM 里已不再有栅格图层实例，
+            但旧 canvas 仍以 z-index:4 压在卫星影像上 —— 用户看到"怪异图层"；
+         ② 点「纯矢量」开关，display:none 但像素未清，
+            若有其他样式让容器重新可见就会"幽灵般"复现。
+       现在关闭即 clearRect，保证"关掉 = 真的没有"。 */
+    if (!on) {
+      try {
+        var ctx = l.canvas.getContext('2d');
+        if (ctx) ctx.clearRect(0, 0, l.canvas.width, l.canvas.height);
+      } catch (e) { }
+    }
+  };
+
+  /* 一次性清空所有栅格图层（切层级 / 关专题时用） */
+  R.clearAll = function () {
+    Object.keys(R.layers).forEach(function (k) { R.setVisible(k, false); });
+  };
+
+  /* 彻底卸载：清空像素 + 从 DOM 摘除。
+     用于"该层级不该有栅格"的场景（全国/省级）。
+     只清像素仍有隐患 —— 画布尺寸是按旧层级算的，
+     切到全国后一屏要显示 1000 万像元的等价采样，
+     残留的 z-index:4 空画布依旧会参与合成（视觉上像一层脏膜）。 */
+  R.unmountAll = function () {
+    R.clearAll();
+    Object.keys(R.layers).forEach(function (k) {
+      var l = R.layers[k];
+      if (l && l.canvas && l.canvas.parentNode) l.canvas.parentNode.removeChild(l.canvas);
+    });
   };
 
   /* ---- 边界遮罩：栅格只画在行政边界内 ----
@@ -189,81 +493,59 @@
     return inside;
   }
 
-  /* 视图变换变化时的即时同步 —— 修"拖动后专题层与边界脱节"。
-     ⚠️ 实测：拖动地图 210px 后，遥感专题 canvas 的 getBoundingClientRect
-        位移仍是 (0,0)，而矢量层 gs-stack 的 translate 变了 210px，
-        结果西藏/青海/甘肃一带的专题色块整块溢出省界
-        （用户截图里楠木坪乡的 NDVI 色块与乡镇黑线错开，同一成因）。
-        根因：专题是低分辨率缓冲（420×267）放大到全屏绘制，
-        重绘一次 15ms，拖动每步都重绘会卡；但完全不重绘又会脱节。
-     折中：平移用 CSS transform 瞬时对齐（矢量），缩放才交给重绘。
-     推导：世界点 W 的屏幕位置 p = W*scale + tx（y 轴翻转），
-        新旧视图像素差 = tx_new - tx_old、ty_old - ty_new。*/
-  R.onViewChange = function (geo) {
-    if (!geo || !geo.scale) return;
-    var changed = false;
-    for (var k in R.layers) {
-      var lay = R.layers[k];
-      if (!lay || !lay.canvas) continue;
-      if (lay._bx == null) { lay._bx = geo.tx; lay._by = geo.ty; lay._bs = geo.scale; continue; }
-      var scaleSame = Math.abs(geo.scale - lay._bs) < 1e-12;
-      if (!scaleSame) {
-        /* 缩放：位移同步不再准确，清掉交给重绘路径 */
-        lay.canvas.style.transform = 'none';
-        lay._bx = geo.tx; lay._by = geo.ty; lay._bs = geo.scale;
-        changed = true;
-        continue;
-      }
-      /* ⚠️ 必须传【相对上次渲染基准的绝对差】，不能传增量：
-         CSS transform 每次赋值是覆盖而非累加，传增量会让 canvas
-         每次只跟上"最后一步"（实测拖 210px 只跟了 14px，色块依旧错位）。*/
-      var dx = geo.tx - lay._bx, dy = lay._by - geo.ty;
-      if (dx === 0 && dy === 0) continue;
-      lay.canvas.style.transform = 'translate(' + dx.toFixed(1) + 'px,' + dy.toFixed(1) + 'px)';
-      /* 基准只在 render 时重置；这里不动 _bx/_by，否则下次增量又只算一步 */
-      changed = true;
-    }
-    return changed;
-  };
+  /* 扫描线填充：把多边形环组算成「每一行的填充区间」
+     ⚠️ 为什么不能用逐像元 inRings（2026-10-13 实测）：
+       小缓冲 420×280 = 11.8 万像元，省界约 8000 顶点，
+       逐像元遍历全部顶点 = 9.4 亿次运算 → 单次渲染要 6 秒；
+       全国层更夸张（39 秒），页面直接卡死。
+     扫描线只需「行数 × 环点」= 280×8000 = 224 万次 → 约 15ms，
+     且结果直接就是区间的左右边界，比逐像元更精确（不会漏掉细长条）。
 
-  /* 预计算一条水平扫描线与所有环的交点（按 x 升序）。
-     与 inRings 的 even-odd 判定等价：像元左侧交点数为奇数 → 在面内。
-     ⚠️ 这是专题渲染卡死的根治点。原先每个像元都单独跑一次射线法：
-        缓冲上限 420×280 = 11.76 万像元 × 内蒙古那种 700~1900 顶点
-        ≈ 8000 万次边比较 —— 实测每切换一次遥感专题主线程阻塞 12~17 秒
-        （PerformanceObserver longtask 抓到单个 12~17s 的任务），
-        整个页面完全冻结。
-     同一行的所有像元 py 相同 → 交点集合完全一样，
-     把"每像元重算"改成"每行算一次 + 行内递增指针"，
-     复杂度从 O(像元×边数) 降到 O(行×边数 + 像元)，实测提速两个数量级。*/
-  function scanCross(px, py, rings, out) {
-    out.length = 0;
-    for (var i = 0; i < rings.length; i++) {
-      var r = rings[i];
-      for (var j = 0, k = r.length - 1; j < r.length; k = j++) {
-        var yj = r[j][1], yk = r[k][1];
-        if ((yj > py) !== (yk > py)) {
-          out.push(r[j][0] + (py - yj) / (yk - yj) * (r[k][0] - r[j][0]));
+     返回 rows 个区间数组：spans[r] = [[x0,x1],[x0,x1], ...]（已按 x 排序）。
+     算法（even-odd）：对每一行 py，与所有边求交点，配对成区间。 */
+  function rasterizeSpans(rings, cols, rows, cs) {
+    var spans = new Array(rows);
+    for (var r = 0; r < rows; r++) spans[r] = null;
+    if (!rings || !rings.length) return spans;
+    // 采样行中心，与主循环的像元中心 (r*cs + cs/2) 对齐
+    var xs;
+    for (var ri = 0; ri < rings.length; ri++) {
+      var ring = rings[ri];
+      var n = ring.length;
+      if (n < 3) continue;
+      for (var j = 0, k = n - 1; j < n; k = j++) {
+        var yj = ring[j][1], yk = ring[k][1];
+        if (yj === yk) continue;                       // 水平边不产生交点
+        var yLo = yj < yk ? yj : yk, yHi = yj < yk ? yk : yj;
+        // 该边覆盖的行范围
+        var r0 = Math.max(0, Math.ceil((yLo - cs / 2) / cs));
+        var r1 = Math.min(rows - 1, Math.floor((yHi - cs / 2) / cs));
+        var xj = ring[j][0], xk = ring[k][0];
+        for (var rr = r0; rr <= r1; rr++) {
+          var py = rr * cs + cs / 2;
+          if (py < yLo || py > yHi) continue;
+          var x = xj + (py - yj) / (yk - yj) * (xk - xj);
+          if (!spans[rr]) spans[rr] = [];
+          spans[rr].push(x);
         }
       }
     }
-    if (out.length > 1) out.sort(function (a, b) { return a - b; });
-    return out;
-  }
-
-  /* 色带查找表：把 t∈[0,1] 映到 RGB 与档位序号。
-     避免每个像元都跑一遍 stops 线性扫描 + 区间定位（8~12 档）。*/
-  function buildLUT(stops, NST) {
-    var lut = new Uint8Array(256 * 3), band = new Uint8Array(256);
-    for (var q = 0; q < 256; q++) {
-      var t = q / 255;
-      var c = rampAt(stops, t);
-      lut[q * 3] = c[0]; lut[q * 3 + 1] = c[1]; lut[q * 3 + 2] = c[2];
-      var k = NST - 1;
-      for (var j = 0; j < NST; j++) { if (t <= stops[j].v) { k = j; break; } }
-      band[q] = k;
+    // 交点排序 → 偶奇配对
+    for (var r2 = 0; r2 < rows; r2++) {
+      var xs2 = spans[r2];
+      if (!xs2 || xs2.length < 2) { spans[r2] = null; continue; }
+      xs2.sort(function (a, b) { return a - b; });
+      var out = [];
+      for (var m = 0; m + 1 < xs2.length; m += 2) {
+        var a0 = xs2[m], a1 = xs2[m + 1];
+        if (a1 < 0 || a0 > cols * cs) continue;         // 整段在视口外
+        if (a0 < 0) a0 = 0;
+        if (a1 > cols * cs) a1 = cols * cs;
+        if (a1 > a0) out.push([a0, a1]);
+      }
+      spans[r2] = out.length ? out : null;
     }
-    return { rgb: lut, band: band };
+    return spans;
   }
 
   /* ---- 主渲染：按像元生成专题值并着色 ----
@@ -275,10 +557,41 @@
   */
   var MINCS = 3, MAXCS = 18;
 
+
   R.render = function (opt) {
     var geo = opt.geo;
     if (!geo || !geo._vw || !geo._vh || !geo.scale) return;
+
+    /* ---------- 真实 NASA 数据优先（2026-10-14）----------
+       若该专题有 GIBS 图层且视图尺度合适（县级及以上），
+       直接铺 NASA 官方专题瓦片，不再生成模拟噪声。
+       失败（无图层/尺度太小/网络不通）时自动回退到下面的模拟渲染，
+       保证画面永远有内容 —— 但会明确标记为「模拟」。 */
+    if (R.useRealData) {
+      var topic = opt.topic || 'ndvi';
+      var NR = global.NasaReal;
+      var src = NR && NR.SOURCES[topic];
+      /* noRaster（如有效积温）：没有栅格产品，必须走 POWER 数值，
+         此时既不铺真实瓦片，也不画模拟噪声 —— 交由 national-view
+         用 gddSeries() 出点值面板。绝不能"看起来有图、实则假的"。 */
+      if (src && src.noRaster) {
+        R.hideAllCanvas();
+        clearReal();
+        R.realTopic = topic;      // 标记当前主题（无瓦片），避免残留上一主题
+        return true;
+      }
+      if (src && src.layer) {
+        var okReal = R.renderReal({ topic: topic, geo: geo });
+        if (okReal) {
+          /* 真实层已接管：隐藏 canvas 模拟层，避免两套色带叠加 */
+          R.hideAllCanvas();
+          return true;
+        }
+      }
+    }
+
     var lay = R.ensure(opt.topic || 'ndvi');
+    R.setRealVisible(false);
     R.setVisible(lay.topic, true);
 
     var dpr = Math.min(global.devicePixelRatio || 1, 2);
@@ -323,61 +636,63 @@
     var bin = new Float64Array(NST);
     var sum = 0, cnt = 0, vmin = 9, vmax = -9;
     var fn = opt.valueFn || R.ndvi;
-    /* 色带 LUT 只跟 stops 有关，换专题才重建，同专题重绘可复用 */
-    var LUT = lay._lut && lay._lutStops === stops ? lay._lut
-      : (lay._lut = buildLUT(stops, NST), lay._lutStops = stops, lay._lut);
 
     // 屏幕左上角对应的世界坐标
     var wx0 = (0 - geo.tx) / geo.scale;
     var wyTop = (geo.ty - 0) / geo.scale;
     var stepW = cs / geo.scale;              // 每像元的地面步长（米）
 
-    // 边界遮罩：先取包围盒，落在盒外的像元直接跳过
+    // 边界遮罩：改用扫描线区间（2026-10-13）
+    /* ⚠️ 这里同时修了两个真 bug：
+       ① 坐标系不匹配：R._mask.rings 是全屏 toScreen 坐标（0~1256），
+          而 px/py 是小缓冲像元坐标（0~cols，最多 420）。
+          拿全屏坐标判小缓冲像元 → 边界判定失效 → 栅格整片溢出省界
+          （实测内蒙古省级，色块盖到境外戈壁上）。
+       ② 性能：逐像元 inRings 省界要 9.4 亿次运算（6 秒），全国 39 秒。
+       现在把环投影到小缓冲尺度后做扫描线填充，
+       复杂度从「像元 × 环点」降到「行 × 环点」，并直接给出行的左右边界。 */
     var mask = opt.mask || R._mask;
-    var mb = null, mrings = null;
-    if (mask) { mb = mask; mrings = mask.rings; }
+    var spans = null;
+    if (mask && mask.rings && mask.rings.length) {
+      /* mask.rings 与 sx0/sy0 同为屏幕像素坐标，无需换算；
+         行采样线取 r*cs + cs/2（与主循环像元中心一致），
+         扫描线输出也是屏幕像素区间。 */
+      spans = rasterizeSpans(mask.rings, cols, rows, cs);
+    }
 
     for (var r = 0; r < rows; r++) {
       var wy = wyTop - r * stepW;            // Y 轴已翻转：向下 = 世界 Y 减小
       var rowOff = r * cols * 4;
       var sy0 = r * cs;
-      /* 每行只算一次交点：行内像元的 py 完全相同 */
-      var xs = null;
-      if (mrings) xs = scanCross(0, sy0 + cs / 2, mrings, lay._xs || (lay._xs = []));
-      var xi = 0;                            // 行内递增指针
+      var rowSpans = spans ? spans[r] : null;
       for (var cc = 0; cc < cols; cc++) {
         var sx0 = cc * cs;
         var p = rowOff + cc * 4;
-        // 像元中心（屏幕像素）
-        var px = sx0 + cs / 2, py = sy0 + cs / 2;
-        // 遮罩判定：包围盒快筛 + 环内精确判定
-        if (mb) {
-          if (px < mb.x0 || px > mb.x1 || py < mb.y0 || py > mb.y1) {
-            data[p + 3] = 0;                 // 透明：盒子外
-            continue;
+        // 扫描线遮罩：本行若无区间 → 整行透明；否则判像元中心是否落在某个区间内
+        if (spans) {
+          var inside = false;
+          if (rowSpans) {
+            var cxp = sx0 + cs / 2;
+            for (var si = 0; si < rowSpans.length; si++) {
+              if (cxp >= rowSpans[si][0] && cxp <= rowSpans[si][1]) { inside = true; break; }
+            }
           }
-          if (xs) {
-            /* 行内 px 单调递增 → 指针只进不退 */
-            while (xi < xs.length && px < xs[xi]) xi++;
-            if ((xi & 1) === 0) { data[p + 3] = 0; continue; }
-          } else if (mrings && !inRings(px, py, mrings)) { data[p + 3] = 0; continue; }
+          if (!inside) { data[p + 3] = 0; continue; }
         }
         var wx = wx0 + cc * stepW;
         var t = fn(wx, wy, seed);
         if (t < 0) t = 0; else if (t > 1) t = 1;
-        var q = (t * 255) | 0;
-        var qo = q * 3;
-        data[p] = LUT.rgb[qo]; data[p + 1] = LUT.rgb[qo + 1]; data[p + 2] = LUT.rgb[qo + 2];
-        data[p + 3] = 255;
+        var col = rampAt(stops, t);
+        data[p] = col[0]; data[p + 1] = col[1]; data[p + 2] = col[2]; data[p + 3] = 255;
         sum += t; cnt++;
         if (t < vmin) vmin = t; if (t > vmax) vmax = t;
-        bin[LUT.band[q]]++;
+        // 定位区间：stops 是各档**上界**，第 i 档 = [stops[i-1].v, stops[i].v)
+        var k = NST - 1;
+        for (var j = 0; j < NST; j++) { if (t <= stops[j].v) { k = j; break; } }
+        bin[k]++;
       }
     }
     bctx.putImageData(img, 0, 0);
-    /* 记录本次渲染所用的视图变换，作为后续平移同步的基准 */
-    lay._bx = geo.tx; lay._by = geo.ty; lay._bs = geo.scale;
-    lay.canvas.style.transform = 'none';
 
     // --- 放大到全屏 ---
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -750,6 +1065,28 @@
     return rec.g;
   };
 
+  /* 只清描边层里的**文字**，保留描边路径与面
+     ⚠️ 用途（2026-10-14 补齐）：切换"显示标注"开关时，
+        主 SVG 的 lab 层被 DM.clearLayer 清掉了，但描边层(overlay)里
+        上一帧克隆的标签还在 —— 用户看到"关掉标注，字却还留着"。
+        R.clearOverlay 会连路径一起清（过头），
+        所以单独提供只清文字的接口。
+        缺失会导致 national-view 抛 "clearOverlayLabels is not a function"，
+        直接中断整段渲染 —— 实测标签一个都没画出来。 */
+  R.clearOverlayLabels = function (dualHost) {
+    if (!OV.map) return;
+    var key = ovKey(dualHost);
+    var rec = OV.map[key];
+    if (!rec || !rec.g) return;
+    /* 描边层里文字节点带 data-ov-label 标记（见 overlayLabel），
+       没有标记的（如将来加的面注��）也一并按 <text> 清 */
+    var nodes = rec.g.querySelectorAll ? rec.g.querySelectorAll('text') : [];
+    for (var i = nodes.length - 1; i >= 0; i--) {
+      var n = nodes[i];
+      if (n.parentNode) n.parentNode.removeChild(n);
+    }
+  };
+
   R.clearOverlay = function (dualHost) {
     if (!OV.map) return;
     if (!dualHost) { OV.map = {}; return; }
@@ -763,35 +1100,9 @@
     if (rec && rec.g) while (rec.g.firstChild) rec.g.removeChild(rec.g.firstChild);
   };
 
-  /* 只清描边层里的【文字】，保留边界路径。
-   栅格开启时业务标签会被栅格盖住（栅格 z=1 必须压在业务面 z=2 之上才会显示），
-   需要把业务层已画的标签原样复制一份到描边层（z=6）压在栅格之上。
-   复制而非重画，是为了让"标签位置/避让"只有一个决策源 ——
-   此前两边各自生成，实测新疆市级 56 标签 / 50 对重叠。
-   ⚠️ 边界 path 与标签 text 混在同一 <g> 里，按标签数（0）清除即可。*/
-  R.clearOverlayLabels = function (dualHost) {
-    /* ⚠️ overlayOf 返回的是记录对象 {svg, g}，不是 <g> 本身。
-       直接当 g 用会在 g.childNodes 上抛
-       "Cannot read properties of undefined (reading 'length')"。*/
-    var rec = R.overlayOf(dualHost);
-    if (!rec || !rec.g) return 0;
-    var kids = rec.g.childNodes;
-    var n = 0;
-    for (var i = kids.length - 1; i >= 0; i--) {
-      if (kids[i].nodeType === 1 && kids[i].nodeName === 'text') {
-        rec.g.removeChild(kids[i]); n++;
-      }
-    }
-    return n;
-  };
-
   R.overlayOf = function (dualHost) {
-    if (!OV.map || !dualHost) return null;
-    /* 必须走 ovKey —— 这里原来写的是 `dualHost.id || ('_' + dualHost.__ovId)`，
-       与 R.overlay 里的 ovKey 算法不一致（__ovId 为 null 时会算出 '_null'），
-       于是取到另一层、clearOverlayLabels 什么也没清掉。
-       同一个坑 clearOverlay 的注释里已经写过一次，这里必须统一。*/
-    return OV.map[ovKey(dualHost)] || null;
+    if (!OV.map) return null;
+    return OV.map[dualHost.id || ('_' + dualHost.__ovId)] || null;
   };
 
   /* 把入参统一摊平成「世界坐标环」的数组 [[x,y], [x,y], ...]。
@@ -904,17 +1215,7 @@
     var g = R.overlay(dualHost, geo);
     var NS = 'http://www.w3.org/2000/svg';
     opt = opt || {};
-    /* ⚠️ wx/wy 的语义取决于 opt.screenSpace：
-         默认 false → wx/wy 是【世界坐标】，内部 toScreen 换算成像素；
-         opt.screenSpace=true → wx/wy 已经是【容器内像素坐标】，直接用。
-       加这个开关是因为"把业务标签原样搬到描边层"时，来源坐标是
-       pxLabel 写下的 _pxBox（视口坐标减去host 原点得到的像素值），
-       再走一次世界→像素换算会整体偏出容器
-       （实测直接传像素：全部叠到同一点 -12322,4616；
-         先转世界再换算：偏到容器外 323,49 vs host.left=344）。*/
-    var sp = opt.screenSpace
-      ? { x: wx, y: wy }
-      : geo.toScreen(wx, wy);
+    var sp = geo.toScreen(wx, wy);                 // 屏幕像素坐标
     var y = sp.y + (opt.dy || 0);
     var size = String(opt.size || 12);
 

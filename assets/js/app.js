@@ -6,74 +6,39 @@
   'use strict';
 
   var GEO = window.__GEO__, D = window.DATA;
-  // 安全查询：元素缺失时返回空占位对象，避免单点缺失导致整模块崩溃
-  function Nul() {
+  /* 安全查询：元素缺失时返回空占位对象，避免单点缺失导致整模块崩溃
+     ⚠️ 这个"永不 falsy"的代理有个反直觉副作用：
+        `if (!$('#x')) {...}` 永远为假 —— 缺失元素走不到创建分支，
+        而代理又会把 innerHTML/textContent 赋值全部吞掉，
+        表现为"代码明明写了，元素就是不出现在页面上"。
+        凡需要"元素不存在就动态创建"的场合，必须用原生 document.querySelector。 */
+  var MISSING = [];
+  function Nul(sel) {
+    if (sel && MISSING.indexOf(sel) < 0) {
+      MISSING.push(sel);
+      if (window.console) console.warn('[缺失元素] ' + sel + ' 不存在，相关渲染已被静默吞掉');
+    }
     return new Proxy({}, { get: function () { return function () { return ''; }; }, set: function () { return true; } });
   }
-  var $ = function (s, r) { return (r || document).querySelector(s) || Nul(); };
+  var $ = function (s, r) { return (r || document).querySelector(s) || Nul(s); };
   var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
   var fmt = function (n, d) { return Number(n).toLocaleString('zh-CN', { minimumFractionDigits: d || 0, maximumFractionDigits: d || 0 }); };
   var st = {};   // 全局状态
 
   /* ============ 通用 UI ============ */
-  var detailView = '';   // 详情打开时所在的视图，用于切标签时判断要不要折叠
   function detail(title, sub, html) {
     var d = $('#detail');
     $('#dt-title').textContent = title;
     $('#dt-sub').textContent = sub || '';
     $('#dt-body').innerHTML = html;
     d.classList.add('on');
-    /* 详情弹层（#detail，在页面根部 z-index:30）固定在地图右上角，
-       会把同样位于右上角的「点选」按钮盖住 —— 用户点不到。
-       打开时标记 <body>，CSS 侧据此把按钮下移到弹层下方。
-
-       ⚠️ 这里踩了两个坑，都记下来：
-       1) 原来用 document.querySelector('.mapwrap') 打has-detail，
-          但全站有 7 个 mapwrap，只取到【第一个】（总览驾驶舱的），
-          全国视图的按钮纹丝不动；
-       2) 改成全量标记后仍不生效 —— 因为 #detail 根本不在任何 mapwrap 内，
-          它是 body 的直接子元素（index.html:440），
-          而 CSS 规则写的是 `.mapwrap.has-detail`（后代选择器），
-          两者之间没有祖先-后代关系，自然匹配不上。
-       正解：标记挂在 body 上，与 #detail 同级，作用域关系才成立。 */
-    document.body.classList.add('has-detail');
-    /* 详情弹层固定在地图右上角，必然压住那一带的地图（实测 6 个采样点命中 2 个），
-       用户想点右上角的图斑/县面就被挡住。
-       解决：① 标题栏加「收起」按钮，折叠成窄条让出地图；
-             ② 切换标签时自动收起（换视图了，上个视图的详情已无意义）；
-             ③ 点折叠态的标题可再展开。详见 CSS .detail.mini。*/
-    var fold = document.getElementById('dt-fold');
-    if (fold) {
-      if (!fold.dataset.bound) {
-        fold.dataset.bound = '1';
-        fold.addEventListener('click', function (e) {
-          e.stopPropagation();
-          d.classList.toggle('mini');
-          fold.textContent = d.classList.contains('mini') ? '▸' : '▾';
-        });
-      }
-      fold.textContent = '▾';
-    }
-    var head = $('#detail .dt-h');
-    if (head && !head.dataset.bound) {
-      head.dataset.bound = '1';
-      head.addEventListener('click', function (e) {
-        if (e.target.closest('#dt-close') || e.target.closest('#dt-fold')) return;
-        if (!d.classList.contains('mini')) return;   // 仅折叠态响应展开
-        d.classList.remove('mini');
-        if (fold) fold.textContent = '▾';
-      });
-    }
-    d.classList.remove('mini');
-    /* 记录所属视图：切标签时据此判断"这是上个视图的详情，该折叠让出地图"。*/
-    var cur = document.querySelector('.view.on');
-    if (cur) detailView = cur.id.replace(/^v-/, '');
   }
-  function closeDetail() {
-    $('#detail').classList.remove('on', 'mini');
-    document.body.classList.remove('has-detail');
-  }
+  function closeDetail() { $('#detail').classList.remove('on'); }
   $('#dt-close').addEventListener('click', closeDetail);
+  // Esc 关闭详情：浮层是覆盖在地图之上的常驻面板，必须有键盘退出路径
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') closeDetail();
+  });
 
   function tick() {
     var d = new Date();
@@ -90,12 +55,28 @@
     var v = $('#v-overview');
     var hb = GEO.provinces.filter(function (p) { return p.c === 420000; })[0];
     var cities = GEO.cities;
-    var biz = cities.map(function (c) { return D.CITY_BIZ[c.n] || { area: 0, insure: 0, cor: 80, risk: 3 }; });
+    var T = D.HB_TOTAL;
 
-    var sum = biz.reduce(function (a, b) {
-      a.area += b.area; a.insure += b.insure; a.risk += b.risk; return a;
-    }, { area: 0, insure: 0, risk: 0 });
-    var avgCor = biz.reduce(function (a, b) { return a + b.cor; }, 0) / biz.length;
+    /* ⚠️ 口径修订（2026-10-13）
+       旧版：sum.area 用「千亩」却展示成「万亩」（数值放大 1000 倍），
+             保费加总 853.5 亿与全省真实 43.87 亿差 19.4 倍，
+             综合成本率用简单平均（把神农架与荆州等同看待），
+             在保农户 12.8 万户为硬编码。
+       现改为：耕地取三调口径、保费/农户取省财政厅口径、
+             综合成本率按**保费加权**、各项与 HB_TOTAL 锚点自洽。 */
+    var sum = { farm: 0, prem: 0, hh: 0, risk: 0 };
+    cities.forEach(function (c) {
+      var b = D.CITY_BIZ[c.n];
+      if (!b) return;
+      sum.farm += b.farm || 0; sum.prem += b.prem || 0; sum.hh += b.hh || 0; sum.risk += b.risk || 0;
+    });
+    // 保费加权综合成本率（不能用简单平均：保费体量差异 80 倍）
+    var avgCor = sum.prem > 0
+      ? cities.reduce(function (a, c) {
+          var b = D.CITY_BIZ[c.n];
+          return a + (b ? (b.cor || 80) * (b.prem || 0) : 0);
+        }, 0) / sum.prem
+      : 80;
 
     // 湖北定位
     var hbB = G.ringsBBox(hb.r);
@@ -109,11 +90,14 @@
           var o = cities.filter(function (c) { return String(c.c) === p.id; })[0];
           if (o) cityDetail(o);
         } else if (p.kind === 'county') {
-          var k = GEO.counties.filter(function (c) { return String(c.c) === p.id; })[0];
-          if (k) switchTab('claims');
+          switchTab('claims');
         }
       },
-      onView: function (vv) { $('#ov-coord').textContent = vv.lng.toFixed(2) + '°E  ' + vv.lat.toFixed(2) + '°N'; }
+      onView: function (vv) {
+        // 坐标数据非标准墨卡托时，经纬度无意义（如全国平移坐标）→ 如实显示"—"
+        $('#ov-coord').textContent = vv.inMercator === false ? '—'
+          : vv.lngLL.toFixed(2) + '°E  ' + vv.latLL.toFixed(2) + '°N';
+      }
     });
 
     map.layer('base', 1); map.layer('biz', 2); map.pxLayer('hot', 3); map.pxLayer('lab', 4);
@@ -121,23 +105,18 @@
 
     // 湖北面
     map.area('base', hb, { fill: 'rgba(59,130,246,.09)', stroke: 'rgba(96,165,250,.62)', strokeWidth: 1.6 });
-    /* 邻省淡显。
-       ⚠️ 此前遍历 GEO.provinces（geo.js 里的全国 35 省，449KB），
-         而该文件在 app.js 里只被用到湖北一省 —— 为此首屏多背了 437KB。
-         现改用已在首屏的 __GEO_PROV__（geo-province.js，全国省界），
-         并同样只取湖北的 bbox 邻域，效果一致、首屏省437KB。
-         两套省界精度不同，此处仅作极淡的底图轮廓，无可辨识要求。 */
-    (window.__GEO_PROV__ && window.__GEO_PROV__.provinces || []).forEach(function (p) {
+    // 邻省淡显
+    GEO.provinces.forEach(function (p) {
       if (p.c === 420000) return;
       var d2 = G.ringsBBox(p.r);
-      var near = !(d2[2] < hbB[0] - 200000 || d2[0] > hbB[2] + 200000 ||
-                   d2[3] < hbB[1] - 200000 || d2[1] > hbB[3] + 200000);
+      var near = !(d2[2] < hbB[0] - 200000 || d2[0] > hbB[2] + 200000 || d2[3] < hbB[1] - 200000 || d2[1] > hbB[3] + 200000);
       if (near) map.area('base', p, { fill: 'rgba(120,160,220,.035)', stroke: 'rgba(120,160,220,.13)', strokeWidth: .8 });
     });
 
     // 市界：按综合风险指数着色（带 pick 元数据）
     cities.forEach(function (c) {
-      var b = D.CITY_BIZ[c.n] || { risk: 3, insure: 0, cor: 80 };
+      var b = D.CITY_BIZ[c.n];
+      if (!b) return;
       var t = Math.max(0, Math.min(1, (b.risk - 2) / 2.3));
       var col = riskColor(t);
       map.area('biz', { n: c.n, c: c.c, kind: 'city', r: c.r }, {
@@ -151,8 +130,8 @@
       var p = map.toPx(f.xy[0], f.xy[1]);
       var r1 = map.pxRing('hot', p.x, p.y, 17, { stroke: 'rgba(255,211,90,.9)', sw: 1.6, dash: '4,3' });
       var d1 = map.pxDot('hot', p.x, p.y, 6, { fill: '#ffd35a', stroke: 'rgba(7,13,24,.9)', sw: 1.4, filter: 'url(#gsGlow)' },
-        { kind: 'city', title: f.name + ' · 点击进入理赔定损' });
-      var t1 = map.pxLabel('lab', p.x, p.y - 24, f.name, { fill: '#ffd35a', size: 12, halo: '#1c1408', haloW: 4.2 });
+        { title: f.name + ' · 点击查看定损地图' });
+      var t1 = map.pxLabel('lab', p.x, p.y - 24, f.name, { fill: '#ffd35a', size: 12, halo: 'rgba(4,10,20,.95)', haloW: 4.2 });
       map.anchor(d1, f.xy[0], f.xy[1], 0, [r1]);
       map.anchor(t1, f.xy[0], f.xy[1], -24);
     });
@@ -164,108 +143,75 @@
       if (ct[0] < hbB[0] || ct[0] > hbB[2] || ct[1] < hbB[1] || ct[1] > hbB[3]) return;
       var p = map.toPx(ct[0], ct[1]);
       var lt3 = map.pxLabel('lab', p.x, p.y, c.n.replace(/市|土家族苗族自治州|林区/, ''),
-        { fill: '#ffffff', size: 11.5, halo: '#1c1408', haloW: 4.2, weight: 700 });
+        { fill: '#ffffff', size: 11.5, halo: 'rgba(4,10,20,.95)', haloW: 4.2, weight: 700 });
       map.anchor(lt3, ct[0], ct[1], 0, null, true, 700);
     });
 
-    // 指标卡
+    /* 指标卡：全部锚定省财政厅/三调权威口径 */
     $('#ov-kpi').innerHTML = [
-      card('承保面积', fmt(sum.area, 0), '万亩', '模拟测算 · 湖北17市', '#3b82f6'),
-      card('保费规模', fmt(sum.insure, 1), '亿元', '模拟测算 · 政策性+商业性', '#34d399'),
-      card('平均综合成本率', avgCor.toFixed(1), '%', '行业健康线<85%', avgCor < 85 ? '#34d399' : '#fb923c'),
-      card('在保农户', '12.8', '万户', '模拟测算', '#ffd35a')
+      card('农险保费规模', fmt(sum.prem, 2), '亿元',
+           '2024 政策性 · 全省 ' + T.prem + ' 亿', '#34d399'),
+      card('耕地面积', fmt(sum.farm, 0), '万亩',
+           '三调口径 · 全省 ' + fmt(T.farm, 0) + ' 万亩', '#3b82f6'),
+      card('在保农户', fmt(sum.hh, 0), '万户次',
+           '全省 ' + T.hh + ' 万户次', '#ffd35a'),
+      card('综合成本率', avgCor.toFixed(1), '%',
+           '保费加权 · 健康线 <85%', avgCor < 85 ? '#34d399' : '#fb923c')
     ].join('');
 
-    /* 市州保费排名条 —— 整行可点，弹出该市州风险画像。
-       ⚠️ 此前这里只输出一排纯 div：没有 data-*、没有 click 绑定、没有手型光标，
-         而同一份数据在右侧地图上却是可点的（onPick → cityDetail）。
-         同一个市，地图上点得开、左栏排名条点了没反应 —— 用户视角就是"这块功能坏了"。
-         现把排名条接到与地图完全相同的 cityDetail，两处口径一致。*/
-    var rank = cities.slice().sort(function (a, b) {
-      return (D.CITY_BIZ[b.n] || {}).insure - (D.CITY_BIZ[a.n] || {}).insure;
-    }).slice(0, 9);
-    var maxI = rank[0] ? (D.CITY_BIZ[rank[0].n] || {}).insure : 1;
+    // 市州保费排名条（全部 17 市按保费降序）
+    var rank = cities.filter(function (c) { return D.CITY_BIZ[c.n]; })
+      .sort(function (a, b) { return D.CITY_BIZ[b.n].prem - D.CITY_BIZ[a.n].prem; });
+    var maxI = rank.length ? D.CITY_BIZ[rank[0].n].prem : 1;
     $('#ov-rank').innerHTML = rank.map(function (c) {
-      var b = D.CITY_BIZ[c.n] || {};
-      var w = (b.insure / maxI * 100).toFixed(1);
-      return '<div class="hbar hbar-click" data-city="' + c.c + '" role="button" tabindex="0"' +
-        ' title="点击查看' + c.n + '承保风险画像">' +
-        '<div class="hbar-n">' + c.n + '</div>' +
+      var b = D.CITY_BIZ[c.n];
+      var w = (b.prem / maxI * 100).toFixed(1);
+      var nm = c.n.replace(/土家族苗族自治州$/, '').replace(/[市州]$/, '');
+      return '<div class="hbar" data-c="' + c.c + '" style="cursor:pointer" title="点击查看' + c.n + '详情">' +
+        '<div class="hbar-n">' + nm + '</div>' +
         '<div class="hbar-t"><i style="width:' + w + '%;background:linear-gradient(90deg,#3b82f6,#22d3ee)"></i></div>' +
-        '<div class="hbar-v">' + (b.insure || 0).toFixed(1) + '亿</div></div>';
+        '<div class="hbar-v">' + b.prem.toFixed(2) + '亿</div></div>';
     }).join('');
     $$('#ov-rank .hbar').forEach(function (el) {
-      var open = function () {
-        var c = cities.filter(function (x) { return String(x.c) === String(el.dataset.city); })[0];
-        if (c) cityDetail(c);
-      };
-      el.addEventListener('click', open);
-      el.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+      el.addEventListener('click', function () {
+        var o = cities.filter(function (c) { return String(c.c) === el.dataset.c; })[0];
+        if (o) cityDetail(o);
       });
     });
 
-    /* 灾种风险构成 —— 整行可点，展开该灾种的监测口径与农险端作业动作。
-       与上面排名条同样的问题：此前是纯展示 div，点了没有任何反馈。*/
+    // 灾种分布（权重条按真实占比，v / bar 比例一致）
     $('#ov-hazard').innerHTML = Object.keys(D.HAZARD).map(function (k) {
       var h = D.HAZARD[k];
-      var w = (h.w * 100 / 0.30 * 26).toFixed(0);
-      return '<div class="hbar hbar-click" data-hz="' + k + '" role="button" tabindex="0"' +
-        ' title="点击查看' + k + '监测口径与作业动作">' +
-        '<div class="hbar-n">' + k + '</div>' +
-        '<div class="hbar-t"><i style="width:' + Math.min(100, w) + '%;background:' + h.color + '"></i></div>' +
-        '<div class="hbar-v">' + (h.w * 100).toFixed(0) + '%</div></div>';
+      var pct = h.w * 100;
+      return '<div class="hbar"><div class="hbar-n">' + k + '</div>' +
+        '<div class="hbar-t"><i style="width:' + pct.toFixed(0) + '%;background:' + h.color + '"></i></div>' +
+        '<div class="hbar-v">' + pct.toFixed(0) + '%</div></div>';
     }).join('');
-    $$('#ov-hazard .hbar').forEach(function (el) {
-      var open = function () { hazardDetail(el.dataset.hz); };
-      el.addEventListener('click', open);
-      el.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
-      });
-    });
 
-    $('#ov-total-area').textContent = fmt(sum.area, 0);
-    $('#ov-total-premium').textContent = fmt(sum.insure, 1);
-  }
+    // 全省口径锚点（供控制台与核验脚本读取）
+    st.ovAudit = D.auditTotals();
 
-  /* 灾种口径详情：权重 + 监测指标 + 农险端实际要做什么 */
-  var HAZARD_PLAYBOOK = {
-    暴雨洪涝: { idx: '日降雨量 / 积水深度 / 淹没面积', src: '气象部门暴雨预警信号、应急管理、水利部门水情',
-      act: ['承保端：暴雨橙色及以上区域提前调度查勘力量、预置查勘车',
-            '理赔端：高水位淹没区用雷达+光学双源比对，快速勾定受灾范围',
-            '减损：通知待报险农户提前转移低洼地块财产'] },
-    高温热害: { idx: '最高气温 / 日照时数 / 积温偏差', src: '气象部门高温预警、农业气象旬报',
-      act: ['承保端：高温连续 5 天以上触发积温偏差预警，核对承保作物耐热性',
-            '理赔端：抽穗期高温直接影响结实率，按积温偏差定损',
-            '减损：建议错峰灌溉、喷施抗逆制剂'] },
-    干旱: { idx: '降雨距平 / 土壤墒情 / 相对湿度', src: '水利、气象与农业农村部门墒情监测',
-      act: ['承保端：连续无有效降水启动旱情跟踪，优先锁定在保大户',
-            '理赔端：土壤墒情遥感反演与实测点校准，出险面积按县统一核定',
-            '减损：协调水利部门优先保障承保高价值作物灌溉'] },
-    '冰雹大风': { idx: '雷达回波强度 / 阵风等级 / 作物倒伏面积', src: '气象部门强对流雷达产品',
-      act: ['承保端：强对流橙色预警提前 6 小时通知承保农户做好防风加固',
-            '理赔端：雷达回波走径直接圈定冰雹影响带，逐带核定损失',
-            '减损：提醒大棚加固压膜线、果园立支柱防折断'] },
-    霜冻低温: { idx: '最低气温 / 霜冻日 / 越冬作物物候期', src: '气象部门霜冻蓝色及以上预警',
-      act: ['承保端：霜冻预警期间冻结新增种植险出单节奏',
-            '理赔端：结合物候期判断受灾程度，幼苗期与拔节期损失率差异大',
-            '减损：提前熏烟、灌水防冻，覆盖薄膜育秧与越冬柑橘'] },
-    病虫害: { idx: '虫口密度 / 病斑率 / 气象诱因条件', src: '农业农村部门植保站测报',
-      act: ['承保端：虫口密度超阈值区域暂缓承保，防止带病承保',
-            '理赔端：高分影像识别病斑比例，抽样复核后定损',
-            '减损：统防统治，投保后提供植保技术指引'] }
-  };
-  function hazardDetail(k) {
-    var h = D.HAZARD[k] || {}, pb = HAZARD_PLAYBOOK[k] || { idx: '—', src: '—', act: [] };
-    var html =
-      '<div class="kv"><span>灾种</span><b>' + k + '</b></div>' +
-      '<div class="kv"><span>风险权重</span><b>' + (h.w * 100).toFixed(0) + '%</b></div>' +
-      '<div class="kv"><span>监测指标</span><b>' + pb.idx + '</b></div>' +
-      '<div class="kv"><span>数据来源</span><b>' + pb.src + '</b></div>' +
-      '<div class="dt-sub">农险端作业动作</div>' +
-      pb.act.map(function (a) { return '<div class="note" style="padding:7px 9px;margin-top:6px">' + a + '</div>'; }).join('') +
-      '<div class="note" style="margin-top:11px"><b>数据口径</b>：灾种权重为模拟测算，用于演示五维风险指数构成，不代表真实精算结果。</div>';
-    detail(k, '灾种风险构成 · 监测口径与作业动作 · 模拟测算', html);
+    /* 全省汇总行（对齐权威锚点，避免各视图数字互相打架）
+       ⚠️ 这里必须用原生 querySelector：上面的 $() 找不到时返回 Nul() 代理
+          （永远是 truthy 对象），`if (!note)` 永不成立，
+          而代理会把 innerHTML 赋值吞掉 —— 表现为「说明根本不出现」。 */
+    var note = document.querySelector('#ov-total-note');
+    if (!note) {
+      note = document.createElement('div');
+      note.id = 'ov-total-note';
+      note.className = 'note';
+      note.style.marginTop = '10px';
+      var kp = document.querySelector('#ov-kpi');
+      if (kp && kp.parentNode) kp.parentNode.appendChild(note);
+    }
+    note.innerHTML =
+      '<b>全省口径（2024）</b>：保费 <b>' + T.prem + ' 亿元</b>（同比 +' + T.growth + '%），' +
+      '其中地方优势特色险 <b>' + T.premSpecial + ' 亿元</b>（同比 +41%）；' +
+      '中省两级财政补贴 <b>' + T.subsidy + ' 亿元</b>；' +
+      '耕地 <b>' + fmt(T.farm, 0) + ' 万亩</b>；在保农户 <b>' + T.hh + ' 万户次</b>；' +
+      '风险保障 <b>' + T.sumInsured + ' 亿元</b>。<br>' +
+      '<span style="color:var(--txt-3)">来源：' + T.src + '。分市保费/农户按耕地与保费权重分解，' +
+      '综合成本率与风险指数为演示测算值。</span>';
   }
 
   function card(l, v, u, d, c) {
@@ -290,23 +236,30 @@
   }
 
   function cityDetail(c) {
-    var b = D.CITY_BIZ[c.n] || {};
+    var b = D.CITY_BIZ[c.n] || {}, T = D.HB_TOTAL;
+    var share = b.prem && T.prem ? (b.prem / T.prem * 100).toFixed(1) : '—';
     var html =
       '<div class="kv"><span>行政区域</span><b>' + c.n + '</b></div>' +
       '<div class="kv"><span>行政区划代码</span><b>' + c.c + '</b></div>' +
-      '<div class="kv"><span>耕地面积</span><b>' + fmt(b.area || 0, 0) + ' 千亩</b></div>' +
-      '<div class="kv"><span>保费规模</span><b>' + (b.insure || 0).toFixed(1) + ' 亿元</b></div>' +
+      '<div class="kv"><span>耕地面积</span><b>' + fmt(b.farm || 0, 0) + ' 万亩</b></div>' +
+      '<div class="kv"><span>农险保费</span><b>' + (b.prem || 0).toFixed(2) + ' 亿元</b></div>' +
+      '<div class="kv"><span>占全省保费</span><b>' + share + '%</b></div>' +
+      '<div class="kv"><span>在保农户</span><b>' + fmt(b.hh || 0, 1) + ' 万户次</b></div>' +
       '<div class="kv"><span>综合成本率</span><b style="color:' + ((b.cor || 80) < 85 ? 'var(--green)' : 'var(--red)') + '">' + (b.cor || 0) + '%</b></div>' +
       '<div class="kv"><span>主导作物</span><b>' + (b.main || '—') + '</b></div>' +
       '<div class="dt-sub">综合风险指数（五维加权）</div>' +
       D.RISK_DIMS.map(function (d) {
         var v = (b.risk || 3) / 5 * (0.6 + (d.w * 1.4));
-        return '<div class="hbar hbar-vonly"><div class="hbar-n">' + d.n + '</div>' +
+        return '<div class="hbar"><div class="hbar-n">' + d.n + '</div>' +
           '<div class="hbar-t"><i style="width:' + (v * 100).toFixed(0) + '%;background:linear-gradient(90deg,#fb923c,#f87171)"></i></div>' +
           '<div class="hbar-v">' + (v * 100).toFixed(0) + '</div></div>';
       }).join('') +
-      '<div class="note" style="margin-top:11px"><b>数据口径</b>：本页业务指标为模拟测算演示数据，不代表阳光财险真实经营数据。真实数据以公司业务系统导出为准。</div>';
-    detail(c.n, '承保端 · 市州风险画像 · 模拟测算', html);
+      (b.src ? '<div class="note" style="margin-top:11px"><b>本区数据来源</b>：' + b.src + '</div>' : '') +
+      '<div class="note" style="margin-top:11px"><b>数据口径</b>：耕地面积取第三次全国国土调查（三调）公报值；' +
+      '保费、农户为 2024 年口径，按耕地与保费权重从全省 ' + T.prem + ' 亿元 / ' + T.hh +
+      ' 万户次分解至各市州。综合成本率与风险指数为演示测算值，' +
+      '不代表阳光财险真实经营数据。全省口径来源：' + T.src + '。</div>';
+    detail(c.n, '承保端 · 市州风险画像 · 2024 口径', html);
   }
 
   /* ============================================================
@@ -317,7 +270,10 @@
       onPick: function (p) {
         if (p.kind === 'parcel') parcelDetail(p.id);
       },
-      onView: function (v) { $('#uw-coord').textContent = v.lng.toFixed(2) + '°E  ' + v.lat.toFixed(2) + '°N'; }
+      onView: function (v) {
+        $('#uw-coord').textContent = v.inMercator === false ? '—'
+          : v.lngLL.toFixed(2) + '°E  ' + v.latLL.toFixed(2) + '°N';
+      }
     });
     map.layer('base', 1); map.layer('cover', 2); map.layer('parcel', 3); map.pxLayer('risk', 4); map.pxLayer('lab', 5);
     st.uwMap = map;
@@ -330,7 +286,7 @@
     // 县列表：整行可点，点击即在该县重绘地块并联动右栏
     // （原文案"点击下钻"是静态字样、无指引性，改为明确动作提示）
     $('#uw-counties').innerHTML = GEO.counties.map(function (c) {
-      return '<div class="row row-click" data-cd="' + c.c + '" title="点击查看' + c.n + '地块风险统计">' +
+      return '<div class="row" data-cd="' + c.c + '" title="点击查看' + c.n + '地块风险统计">' +
         '<div class="row-h">' +
         '<div class="row-t">' + c.n + '</div>' +
         '<span class="tag tag-blue">重点县</span></div>' +
@@ -338,13 +294,7 @@
         '<span style="color:var(--brand);font-weight:600">▸ 点击查看地块 ›</span></div></div>';
     }).join('');
     $$('#uw-counties .row').forEach(function (el) {
-      el.addEventListener('click', function () {
-        renderUWParcels(el.dataset.cd); syncUW(el.dataset.cd);
-        /*⚠️ 原来点了只换地图、右侧统计数字跟着变，但没有任何"为什么"
-          的说明 —— 审计里 3 个县行里 2 个被判无反应（数字变化幅度小）。
-          补上该县风险画像与验标动作建议，这才是承保员真正要看的。*/
-        countyRiskDetail(el.dataset.cd);
-      });
+      el.addEventListener('click', function () { renderUWParcels(el.dataset.cd); syncUW(el.dataset.cd); });
     });
 
     // 图例
@@ -401,25 +351,17 @@
       }
     });
     if (towns.length && st.uwParcels.length) {
-      /* 乡镇标注：收集后交给 placeLabels 统一避让。
-         ⚠️ 原来在 fit 之前就按 toPx 画，且无碰撞检测 ——
-         实测 7 个乡镇标签有 1 对实体重叠（目检截图 zoom_uw_map.png）。*/
-      var uwPending = [];
       towns.forEach(function (t, i) {
         var idx = Math.min(st.uwParcels.length - 1,
                            Math.floor((i + .5) / towns.length * st.uwParcels.length));
         var pp = st.uwParcels[idx];
         if (!pp) return;
-        uwPending.push({ cx: pp.xy[0], cy: pp.xy[1], pri: 0, txt: t.n, col: [255, 255, 255] });
+        var sp = map.toPx(pp.xy[0], pp.xy[1]);
+        var lt = map.pxLabel('lab', sp.x, sp.y, t.n, { fill: '#ffffff', size: 11, halo: 'rgba(4,10,20,.95)', haloW: 4, weight: 700 });
+        map.anchor(lt, pp.xy[0], pp.xy[1], 0, null, true, 620);
       });
-      map.fit(cty.b);
-      placeLabels(map, uwPending, {
-        fill: function () { return '#ffffff'; },
-        size: 11, halo: '#1c1408', haloW: 4
-      });
-    } else {
-      map.fit(cty.b);
     }
+    map.fit(cty.b);
     $('#uw-title').textContent = cty.n + ' · 承保地块风险分布';
     var avgR = st.uwParcels.reduce(function (a, p) { return a + p.risk; }, 0) / (st.uwParcels.length || 1);
     var highN = st.uwParcels.filter(function (p) { return p.risk > 0.72; }).length;
@@ -428,50 +370,6 @@
       kv('平均风险指数', (avgR * 100).toFixed(0) + ' / 100') +
       kv('高风险地块', highN + ' 块') +
       kv('可重复投保疑似', Math.max(1, Math.round(highN * 0.12)) + ' 块');
-  }
-
-  /* 重点县风险画像：点县行后弹出。
-     回答承保员真正关心的三件事：这个县风险高在哪、
-     哪些地块要重点验标、按什么口径核验。 */
-  function countyRiskDetail(code) {
-    var cty = GEO.counties.filter(function (c) { return String(c.c) === code; })[0];
-    if (!cty) return;
-    var parcels = st.uwParcels || [];
-    if (!parcels.length) return;
-    var avgR = parcels.reduce(function (a, p) { return a + p.risk; }, 0) / parcels.length;
-    var high = parcels.filter(function (p) { return p.risk > 0.72; });
-    var mid = parcels.filter(function (p) { return p.risk > 0.55 && p.risk <= 0.72; });
-    var totalMu = parcels.reduce(function (a, p) { return a + p.area; }, 0);
-    var highMu = high.reduce(function (a, p) { return a + p.area; }, 0);
-    var col = riskColor(avgR);
-    var loss = D.LOSS_CASES[code];
-    var html =
-      '<div class="kv"><span>县区</span><b>' + cty.n + '</b></div>' +
-      '<div class="kv"><span>行政区划代码</span><b>' + code + '</b></div>' +
-      '<div class="kv"><span>在保地块</span><b>' + parcels.length + ' 块 / ' + fmt(totalMu, 0) + ' 亩</b></div>' +
-      '<div class="kv"><span>平均风险指数</span><b style="color:rgb(' + col[0] + ',' + col[1] + ',' + col[2] + ')">' +
-        (avgR * 100).toFixed(0) + ' / 100</b></div>' +
-      '<div class="kv"><span>高风险地块</span><b>' + high.length + ' 块 / ' + fmt(highMu, 0) + ' 亩</b></div>' +
-      '<div class="kv"><span>中风险地块</span><b>' + mid.length + ' 块</b></div>' +
-      '<div class="dt-sub">风险构成（五维加权）</div>' +
-      D.RISK_DIMS.map(function (d) {
-        return '<div class="hbar hbar-vonly"><div class="hbar-n">' + d.n + '</div>' +
-          '<div class="hbar-t"><i style="width:' + (d.w * 300).toFixed(0) + '%;background:linear-gradient(90deg,#a78bfa,#3b82f6)"></i></div>' +
-          '<div class="hbar-v">' + (d.w * 100).toFixed(0) + '%</div></div>' +
-          '<div class="note" style="margin:-2px 0 6px"><span style="color:var(--txt-3)">' + d.d + '</span></div>';
-      }).join('') +
-      '<div class="dt-sub">承保验标建议</div>' +
-      '<div class="note"><b>① 优先核验</b>：' + (high.length
-        ? high.slice(0, 3).map(function (p) { return p.id; }).join('、') + ' 等 ' + high.length + ' 块高风险地块'
-        : '本县暂无高风险地块') + '<br>' +
-      '<b>② 重复投保核查</b>：将本县保单地块与历史承保台账空间比对，' +
-      '重叠面积超过阈值需人工复核<br>' +
-      '<b>③ 影像核验</b>：结合当期遥感影像确认实际种植情况与承保标的一致性' +
-      (loss ? '<br><b>④ 历史灾害关联</b>：本县在监灾点为「' + loss.disaster + '」，可结合该灾情复核承保合理性' : '') +
-      '</div>' +
-      '<div class="note warn" style="margin-top:8px"><b>合规提示</b>：风险指数为模拟测算演示数据，' +
-      '仅用于说明风控思路，不得作为定价或承保决策的唯一依据。</div>';
-    detail(cty.n + ' · 承保风险画像', '承保端 · 五维风险加权 · 模拟测算', html);
   }
 
   function syncUW(code) {
@@ -512,14 +410,17 @@
       onPick: function (p) {
         if (p.kind === 'plot') plotDetail(p.id);
       },
-      onView: function (v) { $('#cl-coord').textContent = v.lng.toFixed(2) + '°E  ' + v.lat.toFixed(2) + '°N'; }
+      onView: function (v) {
+        $('#cl-coord').textContent = v.inMercator === false ? '—'
+          : v.lngLL.toFixed(2) + '°E  ' + v.latLL.toFixed(2) + '°N';
+      }
     });
     map.layer('base', 1); map.layer('cover', 2); map.layer('loss', 3); map.pxLayer('plot', 4); map.pxLayer('lab', 5);
     st.clMap = map;
 
     $('#cl-counties').innerHTML = Object.keys(D.LOSS_CASES).map(function (code) {
       var c = D.LOSS_CASES[code];
-      return '<div class="row row-click" data-cd="' + code + '"><div class="row-h">' +
+      return '<div class="row" data-cd="' + code + '"><div class="row-h">' +
         '<div class="row-t">' + c.name + '</div>' +
         '<span class="tag ' + (c.level === '重灾' ? 'tag-red' : 'tag-orange') + '">' + c.level + '</span></div>' +
         '<div class="row-m"><span>' + c.crop + '</span><span>' + c.disaster + '</span></div>' +
@@ -527,13 +428,7 @@
         '<div class="bar"><i style="width:' + (c.done * 100).toFixed(0) + '%"></i></div></div>';
     }).join('');
     $$('#cl-counties .row').forEach(function (el) {
-      el.addEventListener('click', function () {
-        renderClaims(el.dataset.cd); syncCL(el.dataset.cd);
-        /* ⚠️ 原来只切换地图、完全不开详情 —— 用户点"秭归县"看到的是
-           地图变了，但不知道这个县的案情全貌（承保/出险/损失率/定损进度）。
-           补上案件详情，并提供"定位到该县"与"转理赔流程"两个后续动作。*/
-        claimCaseDetail(el.dataset.cd);
-      });
+      el.addEventListener('click', function () { renderClaims(el.dataset.cd); syncCL(el.dataset.cd); });
     });
 
     $('#cl-img').innerHTML = D.WARN_TYPES.slice(0, 4).map(function (t) {
@@ -594,31 +489,22 @@
       }
     });
 
-    // 乡镇标注（屏幕像素）——先收集质心，fit 之后再统一避让绘制
-    // ⚠️ 收集阶段不能用 map.toPx：fit 之后视图变换会变，
-    //    提前算的屏幕坐标全部失效。改为只存世界坐标，落位时再取。
-    var pending = [];
+    // 乡镇标注（屏幕像素）——窄屏时跳过，避免标注堆叠重叠
     towns.forEach(function (t) {
       var group = st.clPlots.filter(function (p) { return p.town === t.n; });
       if (!group.length) return;
       var cx = group.reduce(function (a, p) { return a + p.xy[0]; }, 0) / group.length;
       var cy = group.reduce(function (a, p) { return a + p.xy[1]; }, 0) / group.length;
-      pending.push({ cx: cx, cy: cy, col: lossColor(t.loss), pri: t.loss,
-        txt: t.n + ' ' + (t.loss * 100).toFixed(0) + '%' });
+      var col = lossColor(t.loss);
+      var sp = map.toPx(cx, cy);
+      var lt2 = map.pxLabel('lab', sp.x, sp.y - 13, t.n + ' ' + (t.loss * 100).toFixed(0) + '%', {
+        fill: 'rgb(' + col[0] + ',' + col[1] + ',' + col[2] + ')', size: 11.5, halo: 'rgba(4,10,20,.95)', haloW: 4.2
+      });
+      // 标记为可选标注：由引擎按当前容器宽度统一显隐
+      map.anchor(lt2, cx, cy, -13, null, true);
     });
 
     map.fit(cty.b);
-
-    /* 乡镇标注统一做碰撞避让后再画。
-       ⚠️ 原来直接按质心画、毫无避让：7 个乡镇的标注全挤在县中部
-       「黄梅县城区 44%」与「五祖镇 18%」实体重叠 52x15px，
-       放大看就是一团糊字（目检截图 zoom_claims_map.png）。
-       现在：fit 之后按世界坐标取屏幕点 → 逐个量真实矩形 →
-       相撞就上下左右找空位 → 实在放不下就跳过（少一个名字好过两个叠成一团）。*/
-    placeLabels(map, pending, {
-      fill: function (c) { return 'rgb(' + c[0] + ',' + c[1] + ',' + c[2] + ')'; },
-      size: 11.5, halo: '#1c1408', haloW: 4.2
-    });
 
     $('#cl-title').textContent = c.name + ' · ' + c.crop + c.disaster + '定损图斑';
     $('#cl-stats').innerHTML =
@@ -634,7 +520,7 @@
     $('#cl-towns').innerHTML = towns.map(function (t) {
       var cls = t.st === '已定损' ? 'tag-green' : t.st === '核验中' ? 'tag-yellow' : t.st === '待查损' ? 'tag-orange' : 'tag-grey';
       var col = lossColor(t.loss);
-      return '<div class="row row-click" data-town="' + t.n + '" data-cd="' + code + '"><div class="row-h">' +
+      return '<div class="row" data-town="' + t.n + '"><div class="row-h">' +
         '<div class="row-t">' + t.n + '</div><span class="tag ' + cls + '">' + t.st + '</span></div>' +
         '<div class="row-m"><span>承保 <b>' + fmt(t.mu, 0) + ' 亩</b></span><span>出险 <b>' + fmt(t.claim, 0) + ' 亩</b></span>' +
         '<span style="color:rgb(' + col[0] + ',' + col[1] + ',' + col[2] + ')">损失率 <b>' + (t.loss * 100).toFixed(0) + '%</b></span></div>' +
@@ -649,183 +535,12 @@
         var b = [Math.min.apply(null, xs), Math.min.apply(null, ys), Math.max.apply(null, xs), Math.max.apply(null, ys)];
         st.clMap.fit([b[0] - 12000, b[1] - 12000, b[2] + 12000, b[3] + 12000], true);
         $$('#cl-towns .row').forEach(function (r) { r.classList.toggle('on', r === el); });
-        /*⚠️ 原来只切换地图视野，没有任何文字反馈 ——
-          审计实测 7 个乡镇行全部判为"无反应"（图元数没变）。
-          用户点完看不到"我选中了哪个乡镇"，只能靠自己看地图缩放。
-          这里补上该乡镇的定损详情，同时保留地图定位。*/
-        townProgressDetail(el.dataset.cd, tn);
       });
     });
   }
 
-  /* 理赔案件详情：点案件行后弹出，交代该县的灾情全貌与定损进展。
-     这是理赔员点开一个县时最需要的一屏信息 —— 光看地图不知道该干什么。*/
-  function claimCaseDetail(code) {
-    var c = D.LOSS_CASES[code];
-    if (!c) return;
-    var towns = (c.towns || []).slice().sort(function (a, b) { return b.loss - a.loss; });
-    var done = towns.filter(function (t) { return t.st === '已定损'; });
-    var col = lossColor(c.lossRate);
-    var est = c.claimMu * c.avgLoss;
-    /* 定损进展：分段进度条 + 逐乡镇图例，一眼看出还剩多少没干完。
-       （初版误写成 towns.map(function(t){...}).join('')，外层迭代只返回
-        一次结果、纯属多余，且会让人误以为每个乡镇都渲一遍，已去掉。）*/
-    var ST_COLOR = { '已定损': '#34d399', '核验中': '#fbbf24', '待查损': '#fb923c', '待查勘': '#64748b' };
-    var muTotal = towns.reduce(function (s, y) { return s + y.mu; }, 0) || 1;
-    var segBar = '<div style="display:flex;height:9px;border-radius:5px;overflow:hidden;margin:8px 0 8px">' +
-      towns.map(function (x) {
-        var w = x.mu / muTotal * 100;
-        return '<i style="width:' + w.toFixed(2) + '%;background:' + (ST_COLOR[x.st] || '#64748b') +
-          '" title="' + x.n + ' · ' + x.st + '"></i>';
-      }).join('') + '</div>';
-    var segLegend = towns.map(function (x) {
-      return '<div style="display:flex;align-items:center;gap:6px;font-size:11.5px;margin-top:4px">' +
-        '<span style="width:9px;height:9px;border-radius:2px;background:' + (ST_COLOR[x.st] || '#64748b') + '"></span>' +
-        '<span style="color:var(--txt-2)">' + x.n + '</span>' +
-        '<span style="margin-left:auto;color:var(--txt-3)">' + x.st +
-        ' · 损失率 ' + (x.loss * 100).toFixed(0) + '%</span></div>';
-    }).join('');
-    var html =
-      '<div class="kv"><span>县区</span><b>' + c.name + '</b></div>' +
-      '<div class="kv"><span>主要作物</span><b>' + c.crop + '</b></div>' +
-      '<div class="kv"><span>灾害类型</span><b>' + c.disaster + '</b></div>' +
-      '<div class="kv"><span>灾情等级</span><b>' + (c.level || '—') + '</b></div>' +
-      '<div class="kv"><span>承保面积</span><b>' + fmt(c.areaMu, 0) + ' 亩</b></div>' +
-      '<div class="kv"><span>出险面积</span><b>' + fmt(c.claimMu, 0) + ' 亩</b></div>' +
-      '<div class="kv"><span>损失率</span><b style="color:rgb(' + col[0] + ',' + col[1] + ',' + col[2] + ')">' +
-        (c.lossRate * 100).toFixed(0) + '%</b></div>' +
-      '<div class="kv"><span>受灾农户</span><b>' + fmt(c.households, 0) + ' 户</b></div>' +
-      '<div class="kv"><span>亩均损失</span><b>' + fmt(c.avgLoss, 0) + ' 元/亩</b></div>' +
-      '<div class="kv"><span>损失初估</span><b>' + fmt(est / 10000, 0) + ' 万元</b></div>' +
-      '<div class="kv"><span>定损进度</span><b>' + (c.done * 100).toFixed(0) + '%</b></div>' +
-      '<div class="kv"><span>影像来源</span><b>' + c.imagery + '</b></div>' +
-      '<div class="kv"><span>数据更新</span><b>' + c.updated + '</b></div>' +
-      '<div class="dt-sub">乡镇定损进展（进度条按承保面积着色）</div>' +
-      segBar + segLegend +
-      '<div class="note" style="margin-top:9px"><b>已定损 ' + done.length + ' / ' + towns.length +
-      ' 个乡镇</b>；剩余乡镇仍需完成图斑解译与人工抽核。</div>' +
-      '<div class="note warn" style="margin-top:8px"><b>合规提示</b>：损失初估与定损结论均为模拟测算，' +
-      '实际赔付须以查勘证据链与核赔结果为准，不得直接作为赔付依据。</div>';
-    detail(c.name + ' · 定损案件', '理赔定损 · ' + c.disaster + ' · 模拟测算', html);
-  }
-
-  /* 乡镇定损进度详情：点乡镇行后弹出，交代这个乡镇定损到什么程度了 */
-  function townProgressDetail(code, townName) {
-    var c = D.LOSS_CASES[code];
-    if (!c) return;
-    var t = (c.towns || []).filter(function (x) { return x.n === townName; })[0];
-    if (!t) return;
-    var col = lossColor(t.loss);
-    var plots = (st.clPlots || []).filter(function (p) { return p.town === townName; });
-    var est = t.claim * c.avgLoss;
-    var html =
-      '<div class="kv"><span>乡镇</span><b>' + t.n + '</b></div>' +
-      '<div class="kv"><span>所属县区</span><b>' + c.name + '</b></div>' +
-      '<div class="kv"><span>主要作物</span><b>' + c.crop + '</b></div>' +
-      '<div class="kv"><span>灾害类型</span><b>' + c.disaster + '</b></div>' +
-      '<div class="kv"><span>承保面积</span><b>' + fmt(t.mu, 0) + ' 亩</b></div>' +
-      '<div class="kv"><span>出险面积</span><b>' + fmt(t.claim, 0) + ' 亩</b></div>' +
-      '<div class="kv"><span>损失率</span><b style="color:rgb(' + col[0] + ',' + col[1] + ',' + col[2] + ')">' +
-        (t.loss * 100).toFixed(0) + '%</b></div>' +
-      '<div class="kv"><span>损失初估</span><b>' + fmt(est, 0) + ' 元</b></div>' +
-      '<div class="kv"><span>当前状态</span><b>' + t.st + '</b></div>' +
-      '<div class="kv"><span>已解译图斑</span><b>' + plots.length + ' 个</b></div>' +
-      '<div class="note"><b>状态含义</b>：' +
-      ({ '已定损': '图斑已核定，可进入赔付流程',
-         '核验中': '图斑已出，正在人工抽核',
-         '待查损': '已报案，尚未完成图斑解译',
-         '待查勘': '已报案，待查勘员到场核实' }[t.st] || t.st) +
-      '</div>' +
-      '<div class="note warn" style="margin-top:8px"><b>合规提示</b>：地图已自动定位到该乡镇图斑位置；' +
-      '损失初估为模拟测算，不作为赔付依据。</div>';
-    detail(t.n, '乡镇定损进度 · ' + c.name, html);
-  }
-
   function syncCL(code) {
     $$('#cl-counties .row').forEach(function (r) { r.classList.toggle('on', r.dataset.cd === code); });
-  }
-
-  /* ---------- 行业公开精度指标解读 ----------
-     用户看到"勘灾定损精度 >90%"时，真正要判断的是三件事：
-     这个数怎么算的、样本多大、以及能不能拿来对我司定损做承诺。
-     所以每条给出：口径说明 → 数据边界 → 我司可用性判断。 */
-  var PRECISION_DETAIL = {
-    0: { cal: '查勘定损图斑与人工核实结果的吻合率，即 AI 解译范围中被人工确认属实的面积占比。',
-         bound: '样本为该公司自有业务数据，样本量、作物结构、地块类型未公开。',
-         use: '可作为技术可行性参考，不可直接对客承诺。' },
-    1: { cal: '承保阶段 AI 识别地块与实际承保地块的一致性，含错保、漏保、重复保的合并计量。',
-         bound: '该数值含其自有业务风控规则，非通用行业均值。',
-         use: '仅说明重复投保核验具备技术手段，我司需以本地数据重算。' },
-    2: { cal: '作物分类模型在指定区域与时相下的分类准确率（与人工标注比对）。',
-         bound: '单区域、单季节、特定传感器组合下的结果；跨区域与跨季会下降。',
-         use: '可用于选择合作方时的能力评估，不可跨场景直接引用。' },
-    3: { cal: '无人机航测影像对受灾地块的覆盖比例，反映"能否看全"而非"看得准不准"。',
-         bound: '覆盖率不等于精度，覆盖完整但识别错误仍会产生错误定损。',
-         use: '覆盖率可作为作业完整性参考，精度仍需单独评估。' },
-    4: { cal: '勾绘面积与实测面积之差占实测面积的比例，样本 9 户 223 亩。',
-         bound: '样本极小（9 户 223 亩），且为烟草作物，不具行业代表性。',
-         use: '仅说明"可量化误差"这一做法；该数值本身不可外推。' }
-  };
-
-  function precisionDetail(i) {
-    var p = (D.PRECISION.items || [])[i];
-    if (!p) return;
-    var d = PRECISION_DETAIL[i] || { cal: '—', bound: '—', use: '—' };
-    var html =
-      '<div class="kv"><span>指标</span><b>' + p.name + '</b></div>' +
-      '<div class="kv"><span>公开值</span><b>' + p.val + '</b></div>' +
-      '<div class="kv"><span>来源</span><b>' + p.src + '</b></div>' +
-      '<div class="kv"><span>主体</span><b>' + (p.by || '同业公开') + '</b></div>' +
-      '<div class="dt-sub">这个数怎么来的</div>' +
-      '<div class="note">' + d.cal + '</div>' +
-      '<div class="dt-sub">数据边界（不可忽略）</div>' +
-      '<div class="note warn">' + d.bound + '</div>' +
-      '<div class="dt-sub">我司可用性</div>' +
-      '<div class="note"><b>' + d.use + '</b></div>' +
-      '<div class="note warn" style="margin-top:8px"><b>合规红线</b>：' +
-      (D.PRECISION.compliance || []).join('；') + '。</div>';
-    detail(p.name, '行业公开精度 · 口径解读', html);
-  }
-
-  /* 灾情评估表：点某县一行 → 该县灾损全貌 + 一键跳到理赔定损地图。
-     原来这张表是纯展示，点不动，用户只能看到数字、看不到结构。*/
-  function assessCaseDetail(code) {
-    var c = D.LOSS_CASES[code];
-    if (!c) return;
-    var towns = (c.towns || []).slice().sort(function (a, b) { return b.loss - a.loss; });
-    var maxMu = towns.length ? Math.max.apply(null, towns.map(function (t) { return t.mu; })) : 1;
-    var col = lossColor(c.lossRate);
-    var html =
-      '<div class="kv"><span>县区</span><b>' + c.name + '</b></div>' +
-      '<div class="kv"><span>主要作物</span><b>' + c.crop + '</b></div>' +
-      '<div class="kv"><span>灾害类型</span><b>' + c.disaster + '</b></div>' +
-      '<div class="kv"><span>承保面积</span><b>' + fmt(c.areaMu, 0) + ' 亩</b></div>' +
-      '<div class="kv"><span>出险面积</span><b>' + fmt(c.claimMu, 0) + ' 亩</b></div>' +
-      '<div class="kv"><span>损失率</span><b style="color:rgb(' + col[0] + ',' + col[1] + ',' + col[2] + ')">' +
-        (c.lossRate * 100).toFixed(0) + '%</b></div>' +
-      '<div class="kv"><span>亩均损失</span><b>' + fmt(c.avgLoss, 0) + ' 元/亩</b></div>' +
-      '<div class="kv"><span>受灾农户</span><b>' + fmt(c.households, 0) + ' 户</b></div>' +
-      '<div class="kv"><span>定损进度</span><b>' + (c.done * 100).toFixed(0) + '%</b></div>' +
-      '<div class="kv"><span>影像来源</span><b>' + c.imagery + '</b></div>' +
-      '<div class="dt-sub">乡镇损失分布（按损失率排序）</div>' +
-      towns.map(function (t) {
-        var c2 = lossColor(t.loss);
-        return '<div class="hbar hbar-vonly"><div class="hbar-n">' + t.n + '</div>' +
-          '<div class="hbar-t"><i style="width:' + (t.loss * 100).toFixed(0) + '%;background:rgb(' +
-          c2[0] + ',' + c2[1] + ',' + c2[2] + ')"></i></div>' +
-          '<div class="hbar-v">' + (t.loss * 100).toFixed(0) + '% · ' + fmt(t.mu, 0) + '亩</div></div>';
-      }).join('') +
-      '<div class="dt-sub">下一步</div>' +
-      '<button class="uw-btn primary" style="width:100%;margin-top:8px" id="as-go-claims">' +
-      '在理赔定损地图查看 ' + c.name + ' 图斑 ›</button>' +
-      '<div class="note warn" style="margin-top:8px"><b>合规提示</b>：本表为模拟测算演示数据，' +
-      '不代表本司真实经营数据，不作为赔付依据。</div>';
-    detail(c.name + ' · 灾损评估', '灾情损失评估 · 模拟测算', html);
-    var go = document.getElementById('as-go-claims');
-    if (go) go.addEventListener('click', function () {
-      closeDetail(); switchTab('claims');
-      setTimeout(function () { try { renderClaims(code); syncCL(code); } catch (e) { } }, 260);
-    });
   }
 
   function lossColor(t) {
@@ -833,136 +548,6 @@
     var i = Math.min(2, Math.floor(t * 3)), f = Math.max(0, Math.min(1, t * 3 - i));
     var a = stops[i], b = stops[i + 1];
     return [Math.round(a[0] + (b[0] - a[0]) * f), Math.round(a[1] + (b[1] - a[1]) * f), Math.round(a[2] + (b[2] - a[2]) * f)];
-  }
-
-  /* ---------- 各灾种的农险作业口径 ----------
-     用于「预警类型」点击后的详情：气象预警收到之后，农险端该做什么。
-     数据来源：《农业保险气象灾害预警与应急响应》通行做法 + 平台在监任务口径，
-     为演示测算，不代表公司正式内控文件。 */
-  var WARN_LEVEL_RULE = {
-    暴雨: { adv: '短时强降水落区 × 承保地块叠加', act: '排查低洼圩垸、圩田、在建险工，通知协保员前置转移', crop: '水稻、玉米、蔬菜易倒伏与渍害' },
-    洪水: { adv: '河道水位 + 蓄滞洪区 × 承保地块叠加', act: '启动应急预案，优先转移受淹风险区农户，预核定损准备金', crop: '水稻绝收风险最高，沿江渔业损失集中' },
-    高温: { adv: '高温日数与积温偏差 × 作物生育期匹配', act: '墒情补充灌溉指导，评估花期高温导致空壳率上升', crop: '中稻抽穗扬花期、玉米授粉期为关键窗口' },
-    雷电: { adv: '闪电落区密度 × 承保设施清单', act: '排查设施农业与配电设施，核查雷电灾害保险标的', crop: '大棚设施、农机具、仓储设施为主要标的' },
-    大风: { adv: '阵风等级 × 大棚与林果承保面积', act: '通知加固大棚压膜线、排查果树倒伏风险', crop: '设施蔬菜、果树为高敏感作物' },
-    冰雹: { adv: '雷达回波强度与路径 × 承保地块', act: '组织查勘定损，快速出险报案，核验_leaf 破损程度', crop: '棉花、柑橘、玉米叶片破损导致减产' },
-    寒潮: { adv: '降温幅度与日均温 × 越冬作物分布', act: '指导防寒措施落实，评估冻害与果树受冻风险', crop: '柑橘、茶叶越冬期冻害，直接影响翌年产量' },
-    霜冻: { adv: '地面最低温与霜期 × 越冬作物分布', act: '启动防霜预案，重点排查高海拔早发区域', crop: '柑橘、茶叶、蔬菜育苗期为高风险作物' }
-  };
-
-  function warnTypeDetail(code) {
-    var t = (D.WARN_TYPES || []).filter(function (x) { return x.code === code; })[0];
-    if (!t) return;
-    var r = WARN_LEVEL_RULE[code] || { adv: '关注气象部门发布', act: '按预案响应', crop: '—' };
-    /* 当前是否有该类型的在监任务：有则列出，用户可直接跳过去看 */
-    var live = (D.WARN_TASKS || []).filter(function (x) { return x.type === code; });
-    var html =
-      '<div class="kv"><span>预警类型</span><b>' + t.name + '</b></div>' +
-      '<div class="kv"><span>本次等级</span><b>' + t.level + '预警</b></div>' +
-      '<div class="kv"><span>发布口径</span><b>中国气象局预警分类</b></div>' +
-      '<div class="dt-sub">农险端作业口径</div>' +
-      '<div class="note"><b>① 落区匹配</b>：' + r.adv + '<br>' +
-      '<b>② 处置动作</b>：' + r.act + '<br>' +
-      '<b>③ 高敏感作物</b>：' + r.crop + '</div>' +
-      (live.length
-        ? '<div class="dt-sub">当前在监任务（' + live.length + ' 条）</div>' +
-          live.map(function (x) {
-            return '<div class="kv"><span>' + x.city + ' · ' + x.level + '</span><b>' + x.area + '</b></div>';
-          }).join('')
-        : '<div class="note" style="margin-top:8px">当前无该类型在监任务。</div>') +
-      '<div class="note warn" style="margin-top:8px"><b>合规提示</b>：预警落区匹配结果仅作快速排查线索，' +
-      '损失认定须以查勘定损证据链为准，不得直接作为赔付依据。</div>';
-    detail(t.name, '气象预警口径 · 农险响应', html);
-  }
-
-  /* ---------- 地图标注统一避让（三个业务视图共用）----------
-     ⚠️ 此前承保/理赔/预警三个视图的乡镇标注都是"按质心直接画"，
-     毫无碰撞检测：7 个乡镇的标注全挤在县中部，
-     实测「黄梅县城区 44%」与「五祖镇 18%」实体重叠 52x15px，
-     目检就是一团糊字（截图 zoom_claims_map.png）。
-     现在统一走这里：
-       ① 先按"损失率从高到低"排序 —— 重要的地名优先占位；
-       ② 逐个量出标签真实矩形（引擎 pxLabel 会回写 _pxBox）；
-       ③ 与已放置的标签相交时，依次向下 / 向上 / 左右各试 6 个候选位；
-       ④ 都放不下就跳过这一个（少一个名字，好过两个叠成一团）。
-     注意：地图 fit 之后 px 坐标才准确，所以调用方必须在 fit 之后调用；
-     这里传入的 x/y 是 fit 之前的 toPx 结果，因此调用点放在 fit 前后
-     都有偏差 —— 故内部再取一次 map.toPx。 */
-  function placeLabels(map, list, opt) {
-    if (!list || !list.length) return;
-    /* ⚠️ 必须等容器真正可见之后再落笔。
-       视图首次构建时（buildClaims / buildUnderwrite 由 switchTab 触发），
-       此刻 .view 刚从 display:none 切回来，容器还没完成布局；
-       fit() 用的 _vw/_vh 与屏幕实际尺寸可能不同步，
-       导致 toPx 拿到的屏幕点与真实位置差一截 —— 候选位全被判"出界"而跳过。
-       实测：首屏进理赔/承保视图 text 节点为 0（一个地名都不显示），
-             点一次左侧列表行才出现 7 个 —— 用户会以为"标注坏了"。
-       正解：等两帧（第二帧布局才稳定）再画，且画完检查"一个都没画上"时
-             再重试一次，覆盖极端时序。*/
-    var tries = 0;
-    function attempt() {
-      var n = paintLabels(map, list, opt);
-      if (n === 0 && ++tries < 3) { requestAnimationFrame(function () { requestAnimationFrame(attempt); }); }
-    }
-    requestAnimationFrame(function () { requestAnimationFrame(attempt); });
-  }
-
-  function paintLabels(map, list, opt) {
-    var drawn = 0;
-    var ord = list.slice().sort(function (a, b) {
-      return (b.pri == null ? 0 : b.pri) - (a.pri == null ? 0 : a.pri);
-    });
-    var placed = [];                 // 已占用的容器内矩形
-    var host = map.host.getBoundingClientRect();
-    var vw = map._vw || host.width, vh = map._vh || host.height;
-    function hit(b) {
-      for (var i = 0; i < placed.length; i++) {
-        var o = placed[i];
-        if (b.x < o.x + o.w && b.x + b.w > o.x && b.y < o.y + o.h && b.y + b.h > o.y) return true;
-      }
-      return false;
-    }
-    ord.forEach(function (o) {
-      /* 落位时才取屏幕坐标：调用方在 fit 之后调用，视图变换此时才最终确定 */
-      var sp = map.toPx(o.cx, o.cy);
-      var baseX = sp.x, baseY = sp.y - 13;
-      var cands = [[baseX, baseY], [baseX, baseY + 15], [baseX, baseY - 15],
-                   [baseX, baseY + 30], [baseX, baseY - 30],
-                   [baseX + 58, baseY], [baseX - 58, baseY]];
-      var done = false;
-      for (var ci = 0; ci < cands.length && !done; ci++) {
-        var el = map.pxLabel('lab', cands[ci][0], cands[ci][1], o.txt, {
-          fill: opt.fill(o.col), size: opt.size, halo: opt.halo, haloW: opt.haloW
-        });
-        if (!el) continue;
-        /* ⚠️ _pxBox 是【视口坐标】（实测：pxLabel 传 632,481 → _pxBox.left=975，
-           差值 343 恰为 host.getBoundingClientRect().left）。
-           而 toPx 返回的是【容器内】坐标 —— 两者差一个 host 原点，
-           越界判定必须统一到视口，否则会把正常标签误判成"出界"而全部跳过
-           （曾因此理赔/承保两个视图一个地名都不剩）。
-           这里把 toPx 的容器坐标加上 host 原点再与 _pxBox 对齐。*/
-        var bb = el._pxBox;
-        var box = bb
-          ? { x: bb.left - host.left, y: bb.top - host.top,
-              w: bb.right - bb.left, h: bb.bottom - bb.top }
-          : { x: cands[ci][0] - 26, y: cands[ci][1] - 8, w: 52, h: 16 };
-        /* 超出地图边界就放弃这个候选位（宁可少一个，也不放到图外） */
-        if (vw && vh && (box.x < 2 || box.y < 2 ||
-            box.x + box.w > vw - 2 || box.y + box.h > vh - 2)) {
-          try { el.remove(); } catch (e) { }
-          continue;
-        }
-        if (hit(box)) { try { el.remove(); } catch (e2) { } continue; }
-        placed.push(box);
-        /* 锚回世界坐标：横向偏移 0（候选位都在正上方/下方/左右），
-           纵向按实际落位回填，视图缩放时标签跟着乡镇走。*/
-        map.anchor(el, o.cx, o.cy, cands[ci][1] - sp.y, null, true);
-        done = true; drawn++;
-      }
-    });
-    /* 终检去重：引擎的横向让位结果事先不可知，画完再量一次真实矩形 */
-    try { if (map.dedupLabels) map.dedupLabels('lab'); } catch (e) { }
-    return drawn;
   }
 
   function plotDetail(id) {
@@ -999,7 +584,10 @@
       onPick: function (p) {
         if (p.kind === 'task') taskDetail(p.id);
       },
-      onView: function (v) { $('#wn-coord').textContent = v.lng.toFixed(2) + '°E  ' + v.lat.toFixed(2) + '°N'; }
+      onView: function (v) {
+        $('#wn-coord').textContent = v.inMercator === false ? '—'
+          : v.lngLL.toFixed(2) + '°E  ' + v.latLL.toFixed(2) + '°N';
+      }
     });
     map.layer('base', 1); map.layer('cover', 2); map.pxLayer('warn', 3); map.pxLayer('lab', 4);
     st.wnMap = map;
@@ -1015,13 +603,6 @@
     GEO.cities.forEach(function (c) { cityCent[c.n] = G.polyCentroid(c.r); });
 
     st.warnTasks = [];
-    /* 预警标签避让：先按"预警圆心 + 半径 + 标签半宽"算出各自的候选行，
-       逐个检查是否与已放置的标签相交；相交则换个方位角重试。
-       ⚠️ 原来直接画在圆环正上方，5 个预警标签里有 1 对实体重叠
-       （目检截图 zoom_wn_map.png）。这里做两件事：
-         ① 圆环与圆点照旧（它们是视觉主体，位置不能动）；
-         ② 标签单独挑一个不撞人的方位。*/
-    var wLabels = [];
     D.WARN_TASKS.forEach(function (t) {
       var cc = cityCent[t.city]; if (!cc) return;
       var colorMap = { '红色': '#f87171', '橙色': '#fb923c', '黄色': '#facc15', '蓝色': '#60a5fa' };
@@ -1034,72 +615,19 @@
       var a3 = map.pxDot('warn', p.x, p.y, 6.5, { fill: col, stroke: 'rgba(7,13,24,.9)', sw: 1.5 },
         { id: t.id, kind: 'task', title: t.type + t.level + '预警 · ' + t.city });
       var a4 = map.pxRing('warn', p.x, p.y, 13, { stroke: col, sw: 1.2, opacity: .55 });
+      var a5 = map.pxLabel('lab', p.x, p.y - R0 - 9, t.city + ' · ' + t.level, { fill: col, size: 11.5, halo: 'rgba(4,10,20,.95)', haloW: 4.2 });
       map.anchor(a3, cc[0], cc[1], 0, [a1, a2, a4]);
-      /* 标签只登记不落笔，等 fit 之后统一避让（见下方 placeWarnLabels） */
-      wLabels.push({ cx: cc[0], cy: cc[1], r: R0, fill: col,
-        txt: t.city + ' · ' + t.level, pri: t.level === '红色' ? 2 : (t.level === '橙色' ? 1 : 0) });
+      map.anchor(a5, cc[0], cc[1], -(R0 + 9), null, true, 620);
       st.warnTasks.push(t);
     });
 
     map.fit(hbB);
 
-    /* 预警标签落位（fit 之后，屏幕坐标才准确）：
-       按等级排序（红→橙→黄→蓝，重要预警先占位），
-       依次尝试"正上方 / 正下方 / 右上 / 左上 / 右下 / 左下"六个方位，
-       与已放置标签相交就换下一个；六个都撞就跳过这一个。*/
-    var wPlaced = [];
-    /* 同一城市的多条预警：按城市累计圈数，标签依次往外挪整圈 */
-    var wRingN = {};
-    function wHit(b) {
-      for (var i = 0; i < wPlaced.length; i++) {
-        var o = wPlaced[i];
-        if (b.x < o.x + o.w && b.x + b.w > o.x && b.y < o.y + o.h && b.y + b.h > o.y) return true;
-      }
-      return false;
-    }
-    wLabels.sort(function (a, b) { return b.pri - a.pri; }).forEach(function (o) {
-      var sp = map.toPx(o.cx, o.cy);
-      var off = o.r + 9;
-      /* ⚠️ 同一座城市可能同时挂多条预警（实测黄冈市同时有红色洪水与橙色冰雹，
-         两个标签的圆心完全相同，默认方位也相同 → 71x11px 完全重叠，
-         屏幕上就是同一句话出现两次、糊在一起）。
-         对每个标签按"已用过的圈数"递增错开半径，
-         同一座城的第 2、3 条依次往外挪一整圈（r+58 / r+116），
-         这样既保持"标签贴着圆环"的视觉关系，又保证同城多条互不压盖。*/
-      var cityKey = o.txt.split(' · ')[0];
-      var ring = wRingN[cityKey] || 0;
-      wRingN[cityKey] = ring + 1;
-      var off2 = off + ring * 58;
-      var cands = [[sp.x, sp.y - off2, 0, -off2], [sp.x, sp.y + off2, 0, off2],
-                   [sp.x + off2 + 34, sp.y - off2, off2 + 34, -off2],
-                   [sp.x - off2 - 34, sp.y - off2, -(off2 + 34), -off2],
-                   [sp.x + off2 + 34, sp.y + off2, off2 + 34, off2],
-                   [sp.x - off2 - 34, sp.y + off2, -(off2 + 34), off2]];
-      for (var ci = 0; ci < cands.length; ci++) {
-        var c = cands[ci];
-        var el = map.pxLabel('lab', c[0], c[1], o.txt,
-          { fill: o.fill, size: 11.5, halo: '#1c1408', haloW: 4.2 });
-        if (!el) break;
-        /* _pxBox 是视口坐标，toPx 是容器坐标 —— 减掉 host 原点对齐，见 placeLabels 内注 */
-        var bb = el._pxBox;
-        var wr = map.host.getBoundingClientRect();
-        var box = bb
-          ? { x: bb.left - wr.left, y: bb.top - wr.top, w: bb.right - bb.left, h: bb.bottom - bb.top }
-          : { x: c[0] - 34, y: c[1] - 8, w: 68, h: 16 };
-        if (wHit(box)) { try { el.remove(); } catch (e) { } continue; }
-        wPlaced.push(box);
-        map.anchor(el, o.cx, o.cy, c[3], null, true, 620);
-        break;
-      }
-    });
-    /* 终检去重：同城多条预警的标签在引擎让位后仍可能叠在一起 */
-    try { if (map.dedupLabels) map.dedupLabels('lab'); } catch (e) { }
-
     // 预警卡片
     $('#wn-list').innerHTML = D.WARN_TASKS.map(function (t) {
       var cls = { '红色': 'tag-red', '橙色': 'tag-orange', '黄色': 'tag-yellow', '蓝色': 'tag-blue' }[t.level];
       var sCls = t.status === '处置中' ? 'tag-orange' : t.status === '已响应' ? 'tag-blue' : 'tag-green';
-      return '<div class="row row-click" data-wid="' + t.id + '"><div class="row-h">' +
+      return '<div class="row" data-wid="' + t.id + '"><div class="row-h">' +
         '<div class="row-t">' + t.type + '预警 · ' + t.city + '</div>' +
         '<span class="tag ' + cls + '">' + t.level + '</span></div>' +
         '<div class="row-m"><span>' + t.area + '</span></div>' +
@@ -1113,24 +641,12 @@
       });
     });
 
-    /* 预警类型（对接中国气象局预警分类）
-       ⚠️ 原来是 cursor:default 的纯展示行，点了毫无反应 ——
-         审计实测：预警视图 17 个可点项里 12 个是死链，其中 7 个正是这里。
-         用户视角就是"这一列能看不能点，整个功能是死的"。
-         现在改成可点：点开看该类型的等级口径、影响面与处置要求。*/
+    // 预警类型（对接中国气象局预警分类）
     $('#wn-types').innerHTML = D.WARN_TYPES.map(function (t) {
       var cls = { '红色': 'tag-red', '橙色': 'tag-orange', '黄色': 'tag-yellow', '蓝色': 'tag-blue' }[t.level];
-      var wd = WARN_LEVEL_RULE[t.code] || { act: '按预案响应', adv: '关注气象部门发布' };
-      return '<div class="row row-click" data-wtype="' + t.code + '"><div class="row-h">' +
-        '<div class="row-t">' + t.name + '</div><span class="tag ' + cls + '">' + t.level + '</span></div>' +
-        '<div class="row-m"><span>' + wd.adv + '</span></div></div>';
+      return '<div class="row static"><div class="row-h">' +
+        '<div class="row-t">' + t.name + '</div><span class="tag ' + cls + '">' + t.level + '</span></div></div>';
     }).join('');
-    $$('#wn-types .row').forEach(function (el) {
-      el.addEventListener('click', function () {
-        $$('#wn-types .row').forEach(function (r) { r.classList.toggle('on', r === el); });
-        warnTypeDetail(el.dataset.wtype);
-      });
-    });
 
     $('#wn-flow').innerHTML = [
       { n: '01', t: '预警接收', d: '对接气象部门 14 类气象预警 + 台风实时路径' },
@@ -1172,21 +688,12 @@
      视图 4 · 灾情损失评估
      ============================================================ */
   function buildAssess() {
-    /* 行业公开精度参考：原来 5 行全是 cursor:default 的死链（审计 5/5 无反应）。
-       现在可点 —— 展开说明该指标的统计口径、来源与"能否用于我司定损"的判断，
-       这正是使用者看到 ">90%" 时真正需要的信息。*/
-    $('#as-precision').innerHTML = D.PRECISION.items.map(function (p, i) {
-      return '<div class="row row-click" data-pidx="' + i + '"><div class="row-h">' +
+    $('#as-precision').innerHTML = D.PRECISION.items.map(function (p) {
+      return '<div class="row static"><div class="row-h">' +
         '<div class="row-t" style="font-size:12.5px">' + p.name + '</div>' +
         '<span class="tag tag-blue">' + p.val + '</span></div>' +
         '<div class="row-m"><span>' + p.src + '</span></div></div>';
     }).join('');
-    $$('#as-precision .row').forEach(function (el) {
-      el.addEventListener('click', function () {
-        $$('#as-precision .row').forEach(function (r) { r.classList.toggle('on', r === el); });
-        precisionDetail(Number(el.dataset.pidx));
-      });
-    });
 
     $('#as-std').innerHTML = D.PRECISION.standards.map(function (s) {
       return kv(s.name, s.date);
@@ -1202,27 +709,20 @@
       { n: '查勘人力', a: '100%', b: '60%', p: 40 },
       { n: '单亩定损成本', a: '100%', b: '65%', p: 35 }
     ].map(function (r) {
-      return '<div class="hbar hbar-vonly"><div class="hbar-n">' + r.n + '</div>' +
+      return '<div class="hbar"><div class="hbar-n">' + r.n + '</div>' +
         '<div class="hbar-t"><i style="width:' + r.p + '%;background:linear-gradient(90deg,#34d399,#22d3ee)"></i></div>' +
         '<div class="hbar-v">' + r.a + '→' + r.b + '</div></div>';
     }).join('');
 
-    /* 各县损失构成
-       ⚠️ 原来只是一张静态表，点任何一行都没反应（审计：整行 3 个 tbody tr 全是死链）。
-         现在行可点：点开看该县的作物、灾害、出险结构与定损进度，
-         并可一键跳到「理赔定损地图」看该县的定损图斑。*/
+    // 各县损失构成
     var rows = Object.keys(D.LOSS_CASES).map(function (k) {
       var c = D.LOSS_CASES[k];
-      return '<tr class="row-click" data-case="' + k + '" title="点击查看' + c.name + '灾损详情">' +
-        '<td><b>' + c.name + '</b></td><td>' + c.crop + '</td><td>' + c.disaster + '</td>' +
+      return '<tr><td><b>' + c.name + '</b></td><td>' + c.crop + '</td><td>' + c.disaster + '</td>' +
         '<td>' + fmt(c.areaMu, 0) + '</td><td>' + fmt(c.claimMu, 0) + '</td>' +
         '<td style="color:' + (c.lossRate > .4 ? '#f87171' : '#fb923c') + '"><b>' + (c.lossRate * 100).toFixed(0) + '%</b></td>' +
         '<td>' + fmt(c.claimMu * c.avgLoss / 10000, 0) + ' 万</td></tr>';
     }).join('');
     $('#as-table tbody').innerHTML = rows;
-    $$('#as-table tbody tr').forEach(function (tr) {
-      tr.addEventListener('click', function () { assessCaseDetail(tr.dataset.case); });
-    });
 
     // 减损闭环（真实案例锚点）
     $('#as-case').innerHTML =
@@ -1231,7 +731,7 @@
       '<span style="color:var(--txt-3)">（此为阳光财险公开报道口径，用于说明风险减量业务价值）</span></div>';
 
     $('#as-dims').innerHTML = D.RISK_DIMS.map(function (d) {
-      return '<div class="hbar hbar-vonly"><div class="hbar-n">' + d.n + '</div>' +
+      return '<div class="hbar"><div class="hbar-n">' + d.n + '</div>' +
         '<div class="hbar-t"><i style="width:' + (d.w * 300).toFixed(0) + '%;background:linear-gradient(90deg,#a78bfa,#3b82f6)"></i></div>' +
         '<div class="hbar-v">' + (d.w * 100).toFixed(0) + '%</div></div>';
     }).join('') +
@@ -1242,189 +742,58 @@
      路由
      ============================================================ */
   var built = {};
-  /* ---------- 加载反馈 ----------
-     实测：切换「全国遥感地图」耗时 2186ms、「灾情损失评估」2009ms，
-     期间界面完全静止、无任何提示，用户会以为卡死或重复点击。
-     这里加一个顶部细进度条 + 极简文案，>250ms 才显示（避免快速切换闪烁），
-     操作完成或超上限自动消失。用 rAF 驱动、不阻塞交互。 */
-  /* 说明：busyOff 的延后时间必须 > busyOn 的显示阈值（250ms），
-     否则慢视图会「先关后开」，加载条一次都不显示（实测始终 on=false）。 */
-  var busyDepth = 0, busyTimer = null, busyShown = false, busyT0 = 0;
-  function busyEl() {
-    var el = document.getElementById('busybar');
-    if (el) return el;
-    el = document.createElement('div');
-    el.id = 'busybar';
-    // ⚠️ 必须用 createElement 逐个建子节点：innerHTML 字符串里若含 <i>/<span>，
-    //    某些情况下 querySelector 会拿到字符串而非元素，
-    //    随后 set textContent 就报 "Cannot create property on string"。
-    var bar = document.createElement('i');
-    var txt = document.createElement('span');
-    el.appendChild(bar); el.appendChild(txt);
-    document.body.appendChild(el);
-    return el;
-  }
-  function busyOn(label) {
-    busyDepth++;
-    var el = busyEl();
-    var sp = el.children[1];
-    if (sp && sp.textContent !== label) sp.textContent = label || '加载中';
-    if (busyShown) return;
-    clearTimeout(busyTimer);
-    busyTimer = setTimeout(function () {
-      busyShown = true; busyT0 = Date.now();
-      var e = document.getElementById('busybar');
-      if (e) e.classList.add('on');
-    }, 250);
-  }
-  function busyOff() {
-    busyDepth = Math.max(0, busyDepth - 1);
-    if (busyDepth > 0) return;
-    clearTimeout(busyTimer);
-    var e = document.getElementById('busybar');
-    if (!e) { busyShown = false; return; }
-    // 已显示 → 留一点驻留时间让用户看清，再淡出；未显示 → 直接复位
-    if (busyShown) {
-      clearTimeout(busyTimer);
-      busyTimer = setTimeout(function () {
-        e.classList.remove('on'); busyShown = false;
-      }, 320);
-    } else { busyShown = false; }
-  }
-  /* 兜底：任何情况下最多显示 6 秒，绝不留下"永远转圈"的界面 */
-  setInterval(function () {
-    var e = document.getElementById('busybar');
-    if (e && e.classList.contains('on') && busyShown && busyT0 &&
-        Date.now() - busyT0 > 6000) {
-      e.classList.remove('on'); busyShown = false; busyDepth = 0; busyT0 = 0;
-    }
-  }, 1000);
-  window.__BUSY__ = { on: busyOn, off: busyOff };
-
-  var TAB_LABEL = {
-    national: '正在加载全国遥感地图…', qual: '正在加载资质资格分布…',
-    overview: '正在汇总全国农险总览…', underwrite: '正在加载承保风险数据…',
-    uw: '正在准备承保信息上传…', claims: '正在加载理赔定损数据…',
-    warn: '正在加载预警调度…', assess: '正在加载灾情评估…'
-  };
-  var TAB_TITLE = {
-    national: '全国遥感地图', qual: '资质资格地图', overview: '总览驾驶舱',
-    underwrite: '承保风险地图', uw: '承保信息上传', claims: '理赔定损地图',
-    warn: '预警与调度', assess: '灾情损失评估'
-  };
-
+  var tabsEl = document.querySelector('.tabs');   // switchTab 内要用，须先于首次调用声明
   function switchTab(key) {
     $$('.tab').forEach(function (t) {
       var on = t.dataset.tab === key;
       t.classList.toggle('on', on);
-      // ARIA 状态同步，供读屏软件正确播报"当前选中第几个标签"
-      t.setAttribute('aria-selected', on ? 'true' : 'false');
-      t.setAttribute('tabindex', on ? '0' : '-1');
+      // 标签被滚动裁掉时，激活它并滚入视野（否则用户看不到自己切到了哪）
+      if (on && tabsEl) {
+        var tr = tabsEl.getBoundingClientRect(), br = t.getBoundingClientRect();
+        if (br.right > tr.right || br.left < tr.left) {
+          tabsEl.scrollLeft += (br.left - tr.left) - (tr.width - br.width) / 2;
+        }
+      }
     });
     $$('.view').forEach(function (v) { v.classList.toggle('on', v.id === 'v-' + key); });
-    /* 换视图时把详情收起（折叠态），而不是直接关掉：
-       用户常在两个视图间对照数据，直接关掉会丢上下文；
-       但完全展开又会挡住新视图右上角的地图（实测 6 个采样点命中 2 个）。
-       折叠成窄条 = 既保留标题信息，又几乎完全让出地图。*/
-    if (key !== detailView) {
-      var dd = document.getElementById('detail');
-      if (dd && dd.classList.contains('on')) {
-        dd.classList.add('mini');
-        var f = document.getElementById('dt-fold');
-        if (f) f.textContent = '▸';
-      }
-      detailView = key;
-    }
-    /* 标签切换时更新浏览器标题；地图视图随后会再由 paintCrumb 细化为具体层级 */
-    try { document.title = (TAB_TITLE[key] || '') + ' · 阳光3S遥感平台（测试版）'; } catch (e) { }
-    busyOn(TAB_LABEL[key] || '加载中');
-    var done = function () { setTimeout(busyOff, 120); };
     if (!built[key]) {
       built[key] = true;
       var FNS = { overview: buildOverview, underwrite: buildUnderwrite, claims: buildClaims,
                   warn: buildWarn, assess: buildAssess, national: function () { window.__NAT_VIEW__.init(); },
-                  qual: function () { window.__QUAL_VIEW__.init(); },
-                  uw: function () { window.__UW_VIEW__.init(); } };
+                  qual: function () { window.__QUAL_VIEW__.init(); } };
       (FNS[key] || function () { })();
     }
     // 视图已 display:block，容器此时才有真实尺寸 —— 重新测量并重绘
     var MAPS = { overview: 'ovMap', underwrite: 'uwMap', claims: 'clMap', warn: 'wnMap' };
-    if (key === 'national' && window.__NAT_VIEW__) { window.__NAT_VIEW__.render(); setTimeout(done, 700); return; }
-    if (key === 'qual' && window.__QUAL_VIEW__) { window.__QUAL_VIEW__.render(); setTimeout(done, 500); return; }
-    if (key === 'uw' && window.__UW_VIEW__) {
-      /* 承保视图已构建过也要重绘：容器从 display:none 恢复后尺寸才真实。
-         同理补挂影像底图，否则该视图也没有遥感影像（用户报障之一）。*/
-      setTimeout(function () {
-        window.__UW_VIEW__.init();
-        try {
-          var um = window.__UW_MAP__;
-          if (um && window.DualMap && window.DualMap.attachImagery) window.DualMap.attachImagery(um);
-        } catch (e3) { }
-        done();
-      }, 40);
-      return;
-    }
+    if (key === 'national' && window.__NAT_VIEW__) { window.__NAT_VIEW__.render(); return; }
+    if (key === 'qual' && window.__QUAL_VIEW__) { window.__QUAL_VIEW__.render(); return; }
     var slot = MAPS[key];
     setTimeout(function () {
       var m = slot && st[slot];
-      if (m && m.resize) {
-        m.resize();
-        if (m._fullBBox) m.fit(m._fullBBox);
-      }
-      /* 给业务视图补上真实卫星影像底图。
-         ⚠️ 这四个视图（总览驾驶舱 / 承保风险 / 理赔定损 / 预警调度）此前
-           直接 new GeoCanvas(容器)，从不经过 DualMap，因此容器内
-           canvas=0、img=0 —— 屏幕上只有纯矢量色块，一眼看去「没有遥感地图」。
-           用户原话："各个功能我也没看到有遥感地图"，说的就是这件事。
-           必须在视图切为 display:block 之后调用：容器隐藏时 clientWidth=0，
-           瓦片网格算不出位置（EsriLayer.build 里 `if (!w || !h) return`）。*/
-      if (m && window.DualMap && window.EsriImagery && window.DualMap.attachImagery) {
-        try { window.DualMap.attachImagery(m); } catch (e2) { }
-      }
-      done();
+      if (!m || !m.resize) return;
+      m.resize();
+      if (m._fullBBox) m.fit(m._fullBBox);
     }, 40);
     try { location.hash = key; } catch (e) { }
   }
-  /* 标签页键盘可达：标签已改为 <button role="tab">，此处补
-     ① 点击（含回车/空格，button 原生支持）
-     ② 左右方向键在标签间移动焦点并即时切换（WAI-ARIA Tabs 模式）
-     ③ Home/End 跳到首/末 —— 此前实测「回车激活切换 national→national ❌」，
-        因为标签原是 <div>，天然不可键盘激活。 */
-  var tabEls = $$('.tab');
-  function focusTab(i) {
-    var n = tabEls.length;
-    if (!n) return;
-    var k = (i + n) % n;
-    tabEls[k].focus();
-    switchTab(tabEls[k].dataset.tab);
-  }
-  tabEls.forEach(function (t, i) {
-    t.addEventListener('click', function () { switchTab(t.dataset.tab); });
-    t.addEventListener('keydown', function (e) {
-      var k = e.key;
-      if (k === 'ArrowRight') { e.preventDefault(); focusTab(i + 1); }
-      else if (k === 'ArrowLeft') { e.preventDefault(); focusTab(i - 1); }
-      else if (k === 'Home') { e.preventDefault(); focusTab(0); }
-      else if (k === 'End') { e.preventDefault(); focusTab(tabEls.length - 1); }
-      else if (k === 'Enter' || k === ' ') { e.preventDefault(); switchTab(t.dataset.tab); }
-    });
-  });
+  $$('.tab').forEach(function (t) { t.addEventListener('click', function () { switchTab(t.dataset.tab); }); });
   $$('[data-goto]').forEach(function (b) { b.addEventListener('click', function () { switchTab(b.dataset.goto); }); });
+
+  /* 标签栏溢出同步（2026-10-13）
+     ① 无溢出时摘掉右侧渐隐遮罩，避免无意义的"还有内容"暗示；
+     ② 点中当前不可见的标签时，把它滚动到可视区中 —— 键盘 Tab 键
+        切到被裁掉的标签时同样会走这里。 */
+  function syncTabOverflow() {
+    if (!tabsEl) return;
+    tabsEl.classList.toggle('noscroll', tabsEl.scrollWidth <= tabsEl.clientWidth + 1);
+  }
+  if (tabsEl) {
+    syncTabOverflow();
+    window.addEventListener('resize', syncTabOverflow);
+  }
 
   window.addEventListener('resize', function () {
     Object.keys(st).forEach(function (k) { if (st[k] && st[k].resize) st[k].resize(); });
-    /* 窗口尺寸变了，影像瓦片的屏幕投影宽度也变了，必须按新尺寸重建，
-       否则会留下错位的瓦片或黑边（此前只重建了 SVG 面，没管底图）。*/
-    var MAPS2 = { overview: 'ovMap', underwrite: 'uwMap', claims: 'clMap', warn: 'wnMap' };
-    Object.keys(MAPS2).forEach(function (k) {
-      var m = st[MAPS2[k]];
-      if (m && window.DualMap && window.DualMap.attachImagery) {
-        try { window.DualMap.attachImagery(m); } catch (e) { }
-      }
-    });
-    if (window.__UW_MAP__ && window.DualMap && window.DualMap.attachImagery) {
-      try { window.DualMap.attachImagery(window.__UW_MAP__); } catch (e) { }
-    }
     if (window.__NAT_VIEW__) window.__NAT_VIEW__.render();
     if (window.__QUAL_VIEW__) window.__QUAL_VIEW__.render();
   });
@@ -1438,7 +807,7 @@
   ].join('　|　') + '</div>';
 
   var initial = (location.hash || '').replace('#', '');
-  var KEYS = ['national', 'qual', 'overview', 'underwrite', 'uw', 'claims', 'warn', 'assess'];
+  var KEYS = ['national', 'qual', 'overview', 'underwrite', 'claims', 'warn', 'assess'];
   switchTab(KEYS.indexOf(initial) >= 0 ? initial : 'national');
 
   // 暴露给测试

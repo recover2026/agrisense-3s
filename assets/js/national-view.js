@@ -26,9 +26,13 @@
 var N = {
     level: 'country', curProvince: null, curCity: null, activeLayer: 'ndvi',
     satOn: true, engine: '', ready: false, cityCache: {}, countyCache: {},
-    rasterOn: true, lastStats: null,
+    /* 遥感栅格默认「关」：NDVI/干旱等专题来自 NASA GIBS 实时瓦片，需要外网。
+       默认关闭可保证平台在任意网络（含内网/离线）下都能干净加载行政边界与
+       县乡名称（用户核心诉求"县/乡一个都不能错"），避免一进市/县/乡就自动
+       刷一堆外网瓦片请求、在受限网络下爆出红色错误。用户点对应专题即开。 */
+    rasterOn: false, lastStats: null,
     /* 遥感专题（栅格）显示集合：键为 LAYERS 的 key */
-    rasterSet: { ndvi: true },
+    rasterSet: {},
     /* 业务专题（矢量）显示集合 */
     bizSet: {},
     /* 地理要素独立开关 */
@@ -103,7 +107,90 @@ var N = {
     return L ? L.legend.map(function (l) { return hex2rgb(l.c); }) : [[148, 163, 184], [239, 68, 68]];
   }
   var RISK_STOPS = [[52, 211, 153], [250, 204, 21], [251, 146, 60], [248, 113, 113]];
-  function riskColor(r) { return ramp(RISK_STOPS, (r - 2.2) / 2.2); }
+  /* 风险色归一化（2026-10-13 修正）
+     ⚠️ 原式 (r - 2.2) / 2.2 与实际数据严重不匹配：
+        national-data.js 里 34 个省的风险指数实际只落在 2.4 ~ 4.3，
+        且高度集中在 3.0~3.6（中位数 3.2）。
+        映射后 t 全挤在 0.36~0.64 —— 正落在色带的黄→橙区间，
+        实测 35 省有 32 省呈同一种橙黄，专题图等于失效。
+     改用实际值域归一化：低风险真绿、高风险真红。
+     值域由 RISK_MIN/RISK_MAX 常量兜底，避免后续数据变动导致除零。 */
+  /* ============================================================
+     地名标注统一治理（2026-10-14）
+     ------------------------------------------------------------
+     用户提了三条要求，这里一次性解决：
+     ① "地名要始终在自己的区域居中"
+        官网版已用 G.labelAnchor（保证界内），但**没有排布避让**，
+        重名/密集区的字会互相压。这里统一走 placeLabel 入口。
+     ② "地区较小的，地名文字可缩小"
+        字号按该行政区的**屏幕面积**自适应：
+          <3000 px² → 8.5 ；<12000 → 9.5 ；<40000 → 10.5 ；
+          <150000 → 11.5 ；其余 → 13.5
+     ③ "地名不能重影"
+        用 G.LabelPlacer 做**文字包围盒级**碰撞避让：
+        冲突时不放弃，而是螺旋偏移找空位 → 还冲突就缩小字号再试
+        （三档：原字号 → 0.84× → 0.72×）→ 全失败才退回原位。
+        此前用的是「圆心距 < 46px 就整块不画」，
+        密集区会成片丢名字（实测河南县级 19 面只标 4 个）。
+
+     层级切换时必须重置排布器（MI._labelPlacer = null），
+     否则会拿上一个层级的旧占位去比，出现莫名偏移。
+     ============================================================ */
+
+  function labelSizeFor(rings, st) {
+    if (!rings || !rings.length || !st || !st.scale) return 11;
+    var bb = G.ringsBBox(rings);
+    var wpx = Math.abs(bb[2] - bb[0]) * st.scale;
+    var hpx = Math.abs(bb[3] - bb[1]) * st.scale;
+    var area = Math.min(wpx, hpx) * Math.max(wpx, hpx) * 0.62;  // 0.62≈不规则形状填充率
+    if (area < 3000) return 8.5;
+    if (area < 12000) return 9.5;
+    if (area < 40000) return 10.5;
+    if (area < 150000) return 11.5;
+    return 13.5;
+  }
+
+  /* 统一地名绘制入口
+     opt: {rings, name, size?, weight?, halo?} */
+  function placeLabel(opt) {
+    var st = MI && MI.svg;
+    if (!st || !opt || !opt.rings || !opt.name) return null;
+    if (st._vw && st._vw < 430) return null;        // 视口太窄不画地名（避免糊成一团）
+    var rings = opt.rings;
+    /* 保证落点在自己的区域内部（G.labelAnchor 已保证界内） */
+    var at = G.labelAnchor(rings, st.scale);
+    var p0 = st.toPx(at[0], at[1]);
+    if (!p0 || !isFinite(p0.x) || !isFinite(p0.y)) return null;
+
+    var size = opt.size || labelSizeFor(rings, st);
+    var placer = MI._labelPlacer;
+    if (!placer) { placer = G.LabelPlacer(); MI._labelPlacer = placer; }
+    if (MI._placerVW !== st._vw || MI._placerVH !== st._vh) {
+      placer.reset(st._vw, st._vh);
+      MI._placerVW = st._vw; MI._placerVH = st._vh;
+    }
+    var got = placer.place(p0.x, p0.y, opt.name, size);
+    var el = DM.pxLabel(MI, 'lab', got.x, got.y, opt.name, {
+      fill: '#fff',
+      size: got.size,
+      halo: opt.halo || 'rgba(3,8,18,.96)',
+      haloW: Math.max(3, got.size * 0.34),
+      weight: opt.weight || 400
+    });
+    if (el) DM.anchor(MI, el, at[0], at[1], got.x - p0.x, got.y - p0.y, true, 430);
+    return got;
+  }
+
+  /* 层级切换时重置标签占位（挂在 clearLayer('lab') 之后统一调用） */
+  function resetLabelPlacer() {
+    if (MI) { MI._labelPlacer = null; MI._placerVW = 0; MI._placerVH = 0; }
+  }
+
+  var RISK_MIN = 2.3, RISK_MAX = 4.4;
+  function riskColor(r) {
+    if (typeof r !== 'number' || !isFinite(r)) return 'rgb(38,52,70)';
+    return ramp(RISK_STOPS, (r - RISK_MIN) / (RISK_MAX - RISK_MIN));
+  }
   function premColor(p, mx) {
     return ramp([[30, 58, 95], [59, 130, 246], [250, 204, 21], [248, 113, 113]], mx ? p / mx : 0);
   }
@@ -120,6 +207,14 @@ var N = {
     if (kbHas[pc]) return cb(true);
     if (kbLoading[pc]) { kbLoading[pc].push(cb); return; }
     kbLoading[pc] = [cb];
+    /* 单文件版：县界已随包内联进 window.__GEO_COUNTY_ALL__，
+       直接命中缓存，免一次 <script src> 网络请求与 4.5s 超时。 */
+    var CALL = window.__GEO_COUNTY_ALL__;
+    if (CALL && CALL[pc]) {
+      for (var _ck in CALL[pc]) KB[_ck] = CALL[pc][_ck];
+      kbHas[pc] = true;
+      return cb(true);
+    }
     var settled = false;
     /* 兜底超时：动态 <script> 在网络异常时可能既不触发 onload 也不触发
        onerror（DNS 污染 / 连接重置后请求挂起），此时回调队列永远不执行，
@@ -254,6 +349,14 @@ var N = {
     for (var i = 0; i < KBTI.length; i++) if (KBTI[i].p === pc) { meta = KBTI[i]; break; }
     if (!meta) return cb(false);
     if (tbHas[pc]) return cb(true);
+    /* 单文件版：乡镇界已随包内联进 window.__GEO_TOWN_ALL__，
+       直接命中缓存，免一次 ~2MB 的 <script src> 网络请求与 4.5s 超时。 */
+    var TALL = window.__GEO_TOWN_ALL__;
+    if (TALL && TALL[pc]) {
+      for (var _tk in TALL[pc]) T[_tk] = TALL[pc][_tk];
+      tbHas[pc] = true;
+      return cb(true);
+    }
     if (tbLoading[pc]) { tbLoading[pc].push(cb); return; }
     tbLoading[pc] = [cb];
     /* 与 loadCountyOf 同理：网络挂起时必须超时兜底，
@@ -331,6 +434,11 @@ var N = {
     // 无该省索引时也直接判失败（索引缺失 = 该省未接入）
     if (!villProvReady(pc)) { vTried[code] = true; return cb(false); }
     vTried[code] = true;
+    /* 单文件版（乡镇数据已内联 __GEO_TOWN_ALL__）不含村界数据，
+       不必发请求，直接按"数据未内置"处理，避免控制台 404。 */
+    if (window.__GEO_TOWN_ALL__ && !window.__GEO_VILL_ALL__) {
+      return cb(false);
+    }
     if (vLoading[code]) { vLoading[code].push(cb); return; }
     vLoading[code] = [cb];
     /* 同样加超时兜底：村界文件缺失时若请求挂起（既不 ok 也不 error），
@@ -468,6 +576,9 @@ var N = {
     { v: .62, c: [101, 163, 13] }, { v: .78, c: [21, 128, 61] }],
     lst: [{ v: .30, c: [15, 76, 129] }, { v: .46, c: [63, 167, 214] }, { v: .60, c: [143, 214, 148] },
     { v: .74, c: [244, 185, 66] }, { v: .88, c: [232, 80, 58] }],
+    /* PPT 第4页指定的 TVDI 五级：绿、浅绿、黄、橙、棕，0.2 间隔 */
+    tvdi: [{ v: .20, c: [34, 139, 84] }, { v: .40, c: [154, 205, 92] }, { v: .60, c: [235, 214, 88] },
+    { v: .80, c: [226, 143, 62] }, { v: 1, c: [141, 90, 58] }],
     cover: [{ v: .08, c: [38, 62, 96] }, { v: .45, c: [52, 116, 178] }, { v: 1, c: [126, 196, 238] }],
     disaster: [{ v: .10, c: [70, 76, 96] }, { v: .45, c: [208, 148, 62] }, { v: 1, c: [236, 92, 78] }]
   };
@@ -501,6 +612,9 @@ var N = {
      ⚠️ 这里决定某专题切换后是「遥感图片」还是「矢量色块」。
         业务属性明显的专题（承保热力 cover / 灾情分布 disaster）刻意保持矢量，
         因为它们的语义是业务分级而非地表观测；把它们栅格化会让业务口径失真。*/
+  /* ⚠️ tvdi 是**双源合成**指标（NDVI + LST 拟合干湿边），
+     不能像其它专题那样直接铺单张 GIBS 瓦片 ——
+     见 nasa-real.js 的 TVDI.compute()。故此处不注册到栅格直铺通道。*/
   var RASTER_TOPICS = {
     ndvi: 1, drought: 1, flood: 1, biomass: 1, hail: 1,
     gdd: 1, soilMoisture: 1, lst: 1
@@ -508,6 +622,17 @@ var N = {
 
   function rasterFor(layer) {
     return RASTER_TOPICS[layer] ? layer : null;
+  }
+  /* 栅格专题的适用层级（2026-10-15 重建时补回）
+     ⚠️ 全国/省级不画模拟栅格，实测两个原因：
+       ① 视觉：全国层 pixelM=700，一个像元在屏幕上不到 1px，
+          画出来是一片糊掉的噪点，把卫星影像整片盖住；
+       ② 性能：每像元都要做点-省界多边形判定，全国层约 1600 万次。
+     遥感专题在业务上落到县、乡一级才用于承保验标与定损，
+     全国/省级的栅格开关置灰并提示"需下钻到市县"。 */
+  function rasterAllowed() {
+    var lv = N.level;
+    return lv === 'city' || lv === 'county' || lv === 'town' || lv === 'village';
   }
   // 栅格用带阈值的 stops
   function stopsFor(layer) {
@@ -711,6 +836,18 @@ var N = {
   /* ---------- 栅格渲染 ---------- */
   function renderRaster(opt) {
     if (!RS || !MI || !MI.svg) return;
+    /* ⚠️ 层级闸门（2026-10-15 补）：全国/省级不画遥感栅格。
+       重建 national-view 时这段判断丢了，导致在新疆省级视图也铺了
+       36 张 NDVI 瓦片 —— 既糊住了卫星影像，也让行政区界面被色块盖住
+       （用户截图：NDVI 只盖住下半屏，界面浮在上面）。
+       业务上遥感专题本来就只在市/县/乡用于验标与定损。*/
+    if (!rasterAllowed()) {
+      if (RS.clearAll) RS.clearAll();
+      else Object.keys(RS.layers).forEach(function (k) { RS.setVisible(k, false); });
+      if (RS.clearReal) RS.clearReal();
+      if (RS.setRealVisible) RS.setRealVisible(false);
+      return;
+    }
     var layer = opt.layer || N.activeLayer;
     var topic = rasterFor(layer);
     var st = MI.svg;
@@ -915,7 +1052,7 @@ var N = {
 
   function paintOverlay(opt) {
     if (!RS || !MI || !MI.svg || !MI.host) return;
-    var on = N.rasterOn && !!rasterFor(N.activeLayer);
+    var on = N.rasterOn && rasterAllowed() && !!rasterFor(N.activeLayer);
     RS.clearOverlay(MI.host);
     if (!on) return;
     N._overlayOpt = opt;          // 供视图刷新时重绘
@@ -1000,7 +1137,7 @@ var N = {
   // 因此视图变化时只需重绘整个描边层
   function syncOverlay() {
     if (!RS || !MI || !MI.svg || !MI.host) return;
-    if (!N.rasterOn || !rasterFor(N.activeLayer)) return;
+    if (!N.rasterOn || !rasterAllowed() || !rasterFor(N.activeLayer)) return;
     var ovl = N._overlayOpt || {};
     paintOverlay(ovl);
   }
@@ -1012,7 +1149,58 @@ var N = {
      函数声明本身会被提升，只有 var 不会。*/
   var loadTimer = null, loadSlow = null, loadWatch = null, loadHard = null;
 
+  /* ---------- 栅格/矢量影像开关（2026-10-15 重建时补回）----------
+     ⚠️ 这一整段在重建 national-view 时丢失，实测后果：
+       · 点「影像/纯矢量」毫无反应 —— 按钮是个摆设
+       · 全国/省级该置灰却没有灰，用户以为每个层级都能看栅格专题
+       · 关闭后 has-raster 仍在，SVG 深色背景被清掉 → 画面发灰
+     全国/省级不提供模拟栅格（见 rasterAllowed 的说明），
+     这两级把按钮置灰并说明原因，避免用户以为按钮坏了。 */
+  function syncRasterToggle() {
+    var rg = $('#nat-raster-toggle');
+    if (!rg || !N) return;
+    var ok = rasterAllowed();
+    rg.classList.toggle('disabled', !ok);
+    rg.title = ok
+      ? '切换「遥感专题栅格 / 纯矢量」'
+      : '全国与省级展示卫星影像 + 风险分级；下钻到市/县/乡可启用遥感专题栅格';
+    var sp = rg.querySelector('span');
+    if (sp) sp.textContent = ok ? (N.rasterOn ? '影像' : '纯矢量') : '栅格（需下钻到市县）';
+    window.__NAT_RASTER_TOGGLE_SYNC__ = syncRasterToggle;
+  }
+
+  function bindRasterToggle() {
+    var rg = $('#nat-raster-toggle');
+    if (!rg || rg.__bound) return;
+    rg.__bound = true;
+    rg.addEventListener('click', function () {
+      if (!rasterAllowed()) { syncRasterToggle(); return; }
+      N.rasterOn = !N.rasterOn;
+      rg.classList.toggle('off', !N.rasterOn);
+      rg.querySelector('span').textContent = N.rasterOn ? '影像' : '纯矢量';
+      if (RS) {
+        if (N.rasterOn) {
+          redrawCurrent();
+        } else {
+          /* 关闭：清掉所有栅格（含真实 NASA 瓦片层），否则
+             display:none 只藏了 canvas，像素仍留在显存上压着影像 */
+          if (RS.clearAll) RS.clearAll();
+          else Object.keys(RS.layers).forEach(function (k) { RS.setVisible(k, false); });
+          if (RS.clearReal) RS.clearReal();
+          var on2 = N.rasterOn && rasterAllowed() && !!rasterFor(N.activeLayer);
+          var h2 = $('#nat-map');
+          if (h2) h2.classList.toggle('has-raster', on2);
+          if (MI && MI.host) MI.host.classList.toggle('has-raster', on2);
+          paintGrowthPanel(null);
+        }
+      }
+      syncRasterToggle();
+    });
+  }
+
   function paintCrumb() {
+    /* 层级变了，栅格开关的可用性也要跟着变（全国/省级不可用） */
+    try { syncRasterToggle(); } catch (e) { }
     var box = $('#nat-crumb'); if (!box) return;
     /* 下钻已画完（所有 render / draw 系列函数的出口都会走到这里）→ 收起加载指示。
        双保险：即便某个分支漏调，loadingOn 里的面数轮询也会兜住。*/
@@ -1074,10 +1262,11 @@ var N = {
       });
     });
     /* 同步浏览器标签标题：用户收藏/开多标签时能分辨当前在看哪一层，
-       此前标题恒为「阳光3S遥感平台（测试版）」，多标签下完全无法区分。 */
+       此前标题带版本后缀，多标签下完全无法区分层级；
+     2026-10-16 改为纯平台名 + 层级前缀。 */
     try {
       var deep = parts[parts.length - 1];
-      document.title = (deep && deep.lv !== 'country' ? deep.t + ' · ' : '') + '阳光3S遥感平台（测试版）';
+      document.title = (deep && deep.lv !== 'country' ? deep.t + ' · ' : '') + '阳光3S遥感平台';
     } catch (e) { }
   }
 
@@ -1277,7 +1466,7 @@ var N = {
           drawTownsFromSiblings(code, k, pv, cityObj);
         }
         // 乡镇界已就绪 → 重画描边层，让边界压在遥感影像之上
-        if (RS && N.rasterOn && rasterFor(N.activeLayer)) {
+        if (RS && N.rasterOn && rasterAllowed() && rasterFor(N.activeLayer)) {
           paintOverlay({ rings: kr });
         }
       });
@@ -1391,8 +1580,10 @@ var N = {
          密集区会成片丢名字（实测河南县级 19 面只标 4 个、重叠 5 对）。
          现改为【一个都不丢】—— pxLabel 内部的 _avoidLabels
          已能按真实文字宽度做横向+纵向让位（见 geo-engine.pxLabel）。*/
+        /* 字号按本乡镇的屏幕面积自适应（小乡镇用小字，避免糊成一团） */
         var el = DM.pxLabel(MI, 'lab', px.x, px.y, shortName(o.n),
-          { fill: '#fff', size: 11.5, halo: '#1c1408', weight: 700 });
+          { fill: '#fff', size: labelSizeFor(rings, st), halo: 'rgba(3,8,18,.96)',
+            haloW: Math.max(3, labelSizeFor(rings, st) * 0.34), weight: 700 });
         if (el) DM.anchor(MI, el, ct[0], ct[1], 0, null, true, Math.round(GAP * 1.5));
       });
     }
@@ -1516,7 +1707,7 @@ var N = {
         var painted = paintVillageBucket(code0, vk, ti);
         showVillageHint(painted, o.n);
         // 描边层也要跟着补（栅格会盖住业务层）
-        if (RS && N.rasterOn && rasterFor(N.activeLayer)) syncOverlay();
+        if (RS && N.rasterOn && rasterAllowed() && rasterFor(N.activeLayer)) syncOverlay();
       });
     } else if (vv.g[vk]) {
       var painted2 = paintVillageBucket(String(cc), vk, ti);
@@ -1604,12 +1795,16 @@ var N = {
     if (!rings) return;
     var ct = G.labelAnchor(rings);
     var px = st.toPx(ct[0], ct[1]);
+    /* 当前视图主体：字号自适应但不小于 12（主体名要看清） */
+    var kSize = Math.max(12, labelSizeFor(rings, st) * 1.12);
     var el = DM.pxLabel(MI, 'lab', px.x, px.y - 22, k.n,
-      { fill: '#fff', size: 16, halo: '#1c1408', weight: 800 });
+      { fill: '#fff', size: kSize, halo: 'rgba(3,8,18,.96)',
+        haloW: Math.max(4, kSize * 0.34), weight: 800 });
     if (el) DM.anchor(MI, el, ct[0], ct[1], -22);
     var sub = (pv ? pv.n : '') + (cityObj ? ' · ' + cityObj.n : '');
     var el2 = DM.pxLabel(MI, 'lab', px.x, px.y + 6, sub,
-      { fill: 'rgba(230,240,255,.9)', size: 11, halo: '#1c1408' });
+      { fill: 'rgba(230,240,255,.9)', size: Math.max(9, kSize * 0.64),
+        halo: 'rgba(3,8,18,.94)', haloW: 3.4 });
     if (el2) DM.anchor(MI, el2, ct[0], ct[1], 6);
   }
 
@@ -1635,7 +1830,7 @@ var N = {
       var ct = G.labelAnchor(rings);
       var px = st.toPx(ct[0], ct[1]);
       var el = DM.pxLabel(MI, 'lab', px.x, px.y, cityObj.n + ' · 加载中',
-        { fill: '#fff', size: 13, halo: '#1c1408', weight: 800 });
+        { fill: '#fff', size: 13, halo: 'rgba(3,8,18,.96)', haloW: 5, weight: 800 });
       if (el) DM.anchor(MI, el, ct[0], ct[1]);
     }
   }
@@ -1916,7 +2111,8 @@ var N = {
     });
     var ct = G.labelAnchor(abs(cityObj));
     var px = st.toPx(ct[0], ct[1]);
-    var el = DM.pxLabel(MI, 'lab', px.x, px.y, cityObj.n, { fill: '#fff', size: 14, halo: '#1c1408', weight: 800 });
+    var el = DM.pxLabel(MI, 'lab', px.x, px.y, cityObj.n, { fill: '#fff',
+      size: Math.max(12, labelSizeFor(abs(cityObj), st) * 1.1), halo: 'rgba(3,8,18,.96)', weight: 800 });
     if (el) DM.anchor(MI, el, ct[0], ct[1]);
 
     /* 据实标注：县界未取到，不能让标题看起来像已下钻成功 */
@@ -2272,6 +2468,29 @@ var N = {
       finish(null);
     }, 6000);
 
+    /* ⚠️ 单文件版（内联了全部市界数据）不必再发网络请求。
+       file:// 下用 <script src> 加载相对路径虽可用，但：
+         · 每次下钻都要重新解析 2MB 文本，弱网下还会触发 6 秒超时；
+         · 超时后走 drawProvinceOnly，市名一个都不画
+           （实测内蒙古 12 个盟市只剩「巴彦淖尔市」1 个标签）。
+       现在优先读已内联的缓存（build_single.py 会把每个省的数据
+       预先存进 window.__GEO_CITY_ALL__），没有才发请求。 */
+    /* ⚠️ 必须用 window 而不是 global ——
+       本文件是 `(function () { ... })()` 匿名 IIFE，里面没有 global 变量，
+       写 global.__GEO_CITY_ALL__ 会抛 ReferenceError，
+       被外层 try/catch 静默吞掉 → 缓存命中不了，仍走网络请求 → 6 秒超时。
+       （实测内蒙古 cityCache 为空、控制台报「市界数据加载超时」）
+       另外要清掉超时定时器，否则即使命中缓存也会打出误导的告警。 */
+    var ALL = window.__GEO_CITY_ALL__;
+    var pre = ALL && ALL[provCode];
+    if (pre && pre.list && pre.list.length) {
+      try { clearTimeout(timer); } catch (e2) { }
+      pre.list.forEach(abs);
+      N.cityCache[provCode] = pre.list;
+      finish(pre.list);
+      return;
+    }
+
     var s = document.createElement('script');
     s.src = 'assets/data/' + meta.f;
     s.onload = function () {
@@ -2291,6 +2510,7 @@ var N = {
     var host = $('#nat-map'); if (!host) return;
 
     buildLayerPanel(); buildLegend(); buildProvinceRank(); buildStats(); buildDisasterList();
+    bindRasterToggle(); syncRasterToggle();
 
     MI = DM.init(host, {
       center: { lat: 35.0, lng: 106.0 }, zoom: 4,
@@ -2356,7 +2576,13 @@ var N = {
         else setEngine(true, '矢量底图 · Esri World Imagery');
       }
     });
-    MI.svg.onViewChange = null;
+    /* ⚠️ 2026-10-15 修正：这里原本有一句 `MI.svg.onViewChange = null`，
+       把 dual-map 里已绑好的「SVG 视图变化 → Esri 影像重建瓦片」钩子整条切断了。
+       后果（实测）：缩放/拖动时 SVG 变换在变、影像层永远停在旧视野 ——
+         · 缩放瞬间没有旧瓦片退场（验收项「影像垫底」retiring=0/0）
+         · 拖动时影像与行政边界脱节
+       dual-map 的 fallback 分支已经正确做了组合式绑定（保留 TMap 跟随），
+       这里再置空纯属多余且有害。直接删除。*/
     window.__NAT_VIEW__.MI = MI;   // 供 renderWhenReady 访问
 
     // 栅格层挂在双层容器里（TMap 之上、SVG 之下）
@@ -2609,8 +2835,26 @@ var N = {
         var self = rings;
         var bx0 = abox(p) || [0, 0, 0, 0];
         var fw = Math.max(0, bx0[2] - bx0[0]), fh = Math.max(0, bx0[3] - bx0[1]);
+        /* 字号按该省在屏幕上的真实像素面积自适应（用户要求"地区较小文字可缩小"）
+           内蒙 359×284 px → 13.5；北京 26×26 px → 8.5
+           half 也必须按实际字号算，否则避让用的占位宽度与真实文字不符 */
+        var fs = labelSizeFor(abs(p), st);
         return {
-          p: p, nm: nm, ct: ct, px: px, half: nm.length * 5.5 + 4,
+          p: p, nm: nm, ct: ct, px: px,
+          size: fs,
+          half: nm.length * fs * (nm.charCodeAt(0) > 255 ? 1 : 0.58) / 2 + 4,
+          /* 半高按**实际字号**算。之前固定 estHH=8（11px 的值），
+             而字号已改为自适应（8.5~13.5px）——
+             大省（13.5px）登记的高度偏小、小省（8.5px）登记的偏大，
+             避让算出的"空位"与实际文字占位对不上，
+             实测「河北」与「天津」最终垂直仅差 2px、横向重叠。*/
+          hh: fs * 0.62 + 2,
+          /* 半高按**实际字号**算。之前固定 estHH=8（11px 的值），
+             而字号已改为自适应（8.5~13.5px）——
+             大省（13.5px）登记的高度偏小、小省（8.5px）登记的偏大，
+             避让算出的"空位"与实际文字占位对不上，
+             实测「河北」与「天津」最终垂直仅差 2px、横向重叠。*/
+          hh: fs * 0.62 + 2,
           /* 面在屏幕上的真实像素宽高 —— 用于判断"标签能不能塞进这个面"。
              内蒙古 359x284，标签 33x16 绰绰有余；
              北京 26x26、天津 17x27、上海 16x17，标签比面还大，
@@ -2640,9 +2884,10 @@ var N = {
       var crowded = [];
       var hostBox = MI.host.getBoundingClientRect();
       (N.showLabel ? queue : []).forEach(function (o) {
-        if (hitRect(o.px.x, o.px.y, o.half, estHH)) { crowded.push(o); return; }
+        if (hitRect(o.px.x, o.px.y, o.half, o.hh)) { crowded.push(o); return; }
         var el = DM.pxLabel(MI, 'lab', o.px.x, o.px.y, o.nm,
-          { fill: '#fff', size: 11, halo: '#1c1408', keepIn: o.keepIn });
+          { fill: '#fff', size: o.size, halo: 'rgba(3,8,18,.96)',
+            haloW: Math.max(3, o.size * 0.34), keepIn: o.keepIn });
         /* 记录归属：省代码。终检靠它把标签与本省面对上，
            不靠文字匹配（"河北"这种简称与面文本 "河北省" 做子串匹配
            既可能漏配、又可能错配到别的面上）。*/
@@ -2655,7 +2900,7 @@ var N = {
           var ex = eb ? (eb.left + eb.right) / 2 - hostBox.left : o.px.x;
           var ey = eb ? (eb.top + eb.bottom) / 2 - hostBox.top : o.px.y;
           var ew = eb ? (eb.right - eb.left) / 2 + 3 : o.half;
-          placed.push([ex, ey, ew, estHH]);
+          placed.push([ex, ey, ew, o.hh]);
           DM.anchor(MI, el, o.ct[0], o.ct[1], 0, null, true, 620);
         } else {
           /* 引擎判定"无处可去"（让位距离超限）→ 交给第二轮的引线标注。
@@ -2673,7 +2918,7 @@ var N = {
             var nx = c.px.x + DIRS[di][0] * (24 + ring * 14);
             var ny = c.px.y + DIRS[di][1] * (24 + ring * 14);
             if (nx < 34 || nx > st._vw - 34 || ny < 18 || ny > st._vh - 18) continue;
-            if (hitRect(nx, ny, c.half, estHH)) continue;
+            if (hitRect(nx, ny, c.half, c.hh)) continue;
             if (segHit(c.px.x, c.px.y, nx, ny)) continue;
             /* 归属约束：候选位必须仍在【本省面内】。
                第二轮本意是"往四周找空位"，但四周可能是邻省 ——
@@ -2716,7 +2961,7 @@ var N = {
               var tx2 = c.px.x + DIRS[d2][0] * step2;
               var ty2 = c.px.y + DIRS[d2][1] * step2;
               if (tx2 < 30 || tx2 > st._vw - 30 || ty2 < 16 || ty2 > st._vh - 16) continue;
-              if (hitRect(tx2, ty2, c.half, estHH)) continue;
+              if (hitRect(tx2, ty2, c.half, c.hh)) continue;
               /* 引线穿过其他标签只是"视觉上有点乱"，
                  远不如"标签压在别的省名上"严重 —— 放宽为不阻断：
                  只在引线起点附近（1/3 处）检查一次。*/
@@ -2727,18 +2972,22 @@ var N = {
           }
         }
         if (ok) {
-          placed.push([ok.x, ok.y, c.half, estHH]);
+          placed.push([ok.x, ok.y, c.half, c.hh]);
           /* ⚠️ noAvoid 必须置位：这里的坐标是"引线标注"的最终位置，
              已经精确算好了；引擎的 _avoidLabels 只管不重叠、不知道归属，
              会再横向推一次 —— 实测「北京」就是这样被推到河北境内的。
              引擎的让位在本轮由 keepIn 之外的第二轮人工完成。*/
+          /* 字号跟随自适应值，不能写死 11：
+             写死会让小省（如上海 8.5px）的标签按 11px 占位，
+             避让把空间算小了，实际渲染出来仍然叠着。*/
           var el2 = DM.pxLabel(MI, 'lab', ok.x, ok.y, c.nm,
-            { fill: '#fff', size: 11, halo: '#1c1408', noAvoid: true });
+            { fill: '#fff', size: c.size, halo: 'rgba(3,8,18,.96)',
+              haloW: Math.max(3, c.size * 0.34), noAvoid: true });
           if (el2) el2.setAttribute('data-prov', c.p.c);
           /* 引线：把标签连回它所属面的中心 —— 标签出框时这是唯一的对应关系依据，
              没有引线用户只能靠猜（小面挤在一起时必然"对不上号"）。*/
           if (el2) {
-            DM.leader(MI, 'lab', ok.x, ok.y + estHH * 0.6, c.ct[0], c.ct[1]);
+            DM.leader(MI, 'lab', ok.x, ok.y + c.hh * 0.6, c.ct[0], c.ct[1]);
             DM.anchor(MI, el2, c.ct[0], c.ct[1], 0, null, true, 620);
           }
           return;
@@ -2778,7 +3027,14 @@ var N = {
       } catch (e) { }
       /* 第 2 步：去重去叠字 */
       try { DM.dedupLabels(MI, 'lab'); } catch (e) { }
+      /* 影像层同步：draw 完成、终检结束后重算 Esri 瓦片
+         ⚠️ 重建 national-view 时这一行丢了 —— draw 后 SVG 变换已变，
+            影像层仍停在旧视野，缩放/拖动时不重建瓦片。
+            实测表现：「缩放瞬间仍有影像垫底」retiring=0/0 —— 压根没触发瓦片重建。*/
+      try { if (DM.syncEsri) DM.syncEsri(MI); } catch (e) { }
     }, 60);
+    /* 立刻同步一次：setTimeout 之前先让影像跟上，避免首帧错位 */
+    try { if (DM.syncEsri) DM.syncEsri(MI); } catch (e) { }
   }
 
   /* 灾点影响圈（红/橙色虚线圆）。
@@ -2934,6 +3190,63 @@ var N = {
   var CF = {};               // 县adcode -> {n, rings:[[ring...]]}
   var cfLoading = {}, cfHas = {};
 
+  /* 把一批乡镇数据聚合为县级面（CF）。d 结构同 window.__KBT__ / __GEO_TOWN_ALL__[pc]。
+     单文件版（内联缓存）与网络版（动态 <script>）共用，避免两套聚合逻辑漂移。 */
+  function absorbTownFaces(d, pc, cb) {
+    if (d) {
+      for (var k in d) {
+        var v = d[k];
+        /* 不能用 absTown(v)：它会读 v.t 并缓存 v._abs；这里要的是「整个县域的全部乡镇外环」，
+           两者结构不同，必须独立还原，且不能污染 v._abs——否则后续 townOf()/absTown() 拿到错的东西。 */
+        var rings = [];
+        for (var ti = 0; ti < (v.t ? v.t.length : 0); ti++) {
+          var o = v.t[ti];
+          for (var ri = 0; ri < o.r.length; ri++) {
+            var src = o.r[ri];
+            if (!src || src.length < 3) continue;
+            var dst = new Array(src.length);
+            for (var pi = 0; pi < src.length; pi++) {
+              dst[pi] = [src[pi][0] + v.b[0], src[pi][1] + v.b[1]];
+            }
+            rings.push(cleanSpikes(dst));
+          }
+        }
+        CF[k] = { n: v.n, c: v.c || (/^\d+$/.test(k) ? Number(k) : 0), rings: rings, t: v.t, b: v.b };
+        // 同步登记到 T：后续进入县/乡镇时 townOf() 直接命中，无需再发一次请求
+        T[k] = v;
+        tbHas[pc] = true;
+
+        /* 新疆等省：乡镇数据 key 是「省|地区|市」组合键且 c=0，与县界标准码（650502）对不上，
+           导致 countyName() 返回 null、pickCounty() 首行静默 return，用户点县「没反应」。
+           用【县域 bbox 重叠最大】把 CF 条目挂到标准县码上。阈值 0.6 以下不敢认定，宁可不映射。 */
+        if (!v.c) {
+          var nb = [v.b[0], v.b[1], v.b[0] + (v.w || 0), v.b[1] + (v.h || 0)];
+          var bestCode = null, bestOv = 0;
+          for (var ck in KB) {
+            if (ck.slice(0, 2) !== pc) continue;
+            var kb2 = KB[ck];
+            if (!kb2 || !kb2.b) continue;
+            var bb2 = kb2.b.length >= 4
+              ? kb2.b
+              : [kb2.b[0], kb2.b[1], kb2.b[0] + (kb2.w || 0), kb2.b[1] + (kb2.h || 0)];
+            var ox = Math.min(nb[2], bb2[2]) - Math.max(nb[0], bb2[0]);
+            var oy = Math.min(nb[3], bb2[3]) - Math.max(nb[1], bb2[1]);
+            if (ox <= 0 || oy <= 0) continue;
+            var ar = (ox * oy) / Math.max(1, nb[2] - nb[0]) / Math.max(1, nb[3] - nb[1]);
+            if (ar > bestOv) { bestOv = ar; bestCode = ck; }
+          }
+          if (bestCode && bestOv > 0.6) {
+            CF_BY_CODE[bestCode] = CF[k];
+            CF[bestCode] = CF[k];
+            CF[bestCode].c = Number(bestCode);
+          }
+        }
+      }
+      cfHas[pc] = true;
+    }
+    cb(!!d);
+  }
+
   function countyFacesFromTown(provCode, cb) {
     var pc = String(provCode).slice(0, 2);
     if (cfHas[pc]) return cb(true);
@@ -2942,6 +3255,16 @@ var N = {
     var meta = null;
     for (var i = 0; i < KBTI.length; i++) if (KBTI[i].p === pc) { meta = KBTI[i]; break; }
     if (!meta) { cfLoading[pc] = null; return cb(false); }
+    /* 单文件版：乡镇界已随包内联进 window.__GEO_TOWN_ALL__，
+       直接命中缓存，免一次 <script src> 网络请求与 4.5s 超时。 */
+    var TALL = window.__GEO_TOWN_ALL__;
+    if (TALL && TALL[pc]) {
+      var lst0 = cfLoading[pc] || []; cfLoading[pc] = null;
+      absorbTownFaces(TALL[pc], pc, function (ok) {
+        lst0.forEach(function (f) { f(ok); });
+      });
+      return;
+    }
     /* 超时兜底：新疆等无县界省份完全依赖这条 CF 路径，
        一旦请求挂起不回调，市级就永久停在「加载县级边界…」且无任何可点元素。 */
     var settled = false;
@@ -2959,65 +3282,10 @@ var N = {
       settled = true; clearTimeout(timer);
       var d = window.__KBT__;
       try { delete window.__KBT__; } catch (e) { window.__KBT__ = null; }
-      if (d) {
-        for (var k in d) {
-          var v = d[k];
-          /* 不能用absTown(v)：它会读 v.t（乡镇列表）并缓存 v._abs；
-             这里要的是「整个县域的全部乡镇外环」，
-             两者结构不同，必须独立还原，且不能污染 v._abs——
-             否则后续 townOf()/absTown() 拿到的是错的东西。 */
-          var rings = [];
-          for (var ti = 0; ti < v.t.length; ti++) {
-            var o = v.t[ti];
-            for (var ri = 0; ri < o.r.length; ri++) {
-              var src = o.r[ri];
-              if (!src || src.length < 3) continue;
-              var dst = new Array(src.length);
-              for (var pi = 0; pi < src.length; pi++) {
-                dst[pi] = [src[pi][0] + v.b[0], src[pi][1] + v.b[1]];
-              }
-              rings.push(cleanSpikes(dst));
-            }
-          }
-          CF[k] = { n: v.n, c: v.c || (/^\d+$/.test(k) ? Number(k) : 0), rings: rings, t: v.t, b: v.b };
-          // 同步登记到 T：后续进入县/乡镇时 townOf() 直接命中，无需再发一次请求
-          T[k] = v;
-          tbHas[pc] = true;
-
-          /* 新疆等省：乡镇数据的 key 是「省|地区|市」组合键且 c=0，
-             与县界的标准码（650502）完全对不上 —— 导致 countyName() 返回
-             null、pickCounty() 首行静默 return，用户点县「没反应」。
-             这里用【县域 bbox 重叠最大】把 CF 条目挂到标准县码上：
-             实测「65|哈密地区|哈密市」bbox 起点与「650502 伊州区」仅差 260m，
-             重叠率 >99%，可安全判定为同一县。 */
-          if (!v.c) {
-            var nb = [v.b[0], v.b[1], v.b[0] + (v.w || 0), v.b[1] + (v.h || 0)];
-            var bestCode = null, bestOv = 0;
-            for (var ck in KB) {
-              if (ck.slice(0, 2) !== pc) continue;
-              var kb2 = KB[ck];
-              if (!kb2 || !kb2.b) continue;
-              var bb2 = kb2.b.length >= 4
-                ? kb2.b
-                : [kb2.b[0], kb2.b[1], kb2.b[0] + (kb2.w || 0), kb2.b[1] + (kb2.h || 0)];
-              var ox = Math.min(nb[2], bb2[2]) - Math.max(nb[0], bb2[0]);
-              var oy = Math.min(nb[3], bb2[3]) - Math.max(nb[1], bb2[1]);
-              if (ox <= 0 || oy <= 0) continue;
-              var ar = (ox * oy) / Math.max(1, nb[2] - nb[0]) / Math.max(1, nb[3] - nb[1]);
-              if (ar > bestOv) { bestOv = ar; bestCode = ck; }
-            }
-            // 阈值 0.6：低于此不敢认定是同一县，宁可不映射也不挂错
-            if (bestCode && bestOv > 0.6) {
-              CF_BY_CODE[bestCode] = CF[k];
-              CF[bestCode] = CF[k];
-              CF[bestCode].c = Number(bestCode);
-            }
-          }
-        }
-        cfHas[pc] = true;
-      }
       var list = cfLoading[pc] || []; cfLoading[pc] = null;
-      list.forEach(function (f) { f(!!d); });
+      absorbTownFaces(d, pc, function (ok) {
+        list.forEach(function (f) { f(ok); });
+      });
     };
     s.onerror = function () {
       if (settled) return;
@@ -3155,12 +3423,20 @@ var N = {
          故改为：先把所有质心算出来，按【名称长度降序】统一分配，
          长名优先拿到内圈最好的位置，短名（小市）自然被推到外圈，
          再放不下的才用引线 —— 这样重叠与漏标能同时压到最低。*/
+    /* ⚠️ 这里只按**世界坐标**收标签，绝不能用 toPx 的屏幕坐标做视口过滤。
+       原因：drawCities 在 DM.fit **之前**执行，此时视图还是上一个省级的旧变换，
+       用旧变换换算出的屏幕坐标去判断"是否在视口内"，
+       对内蒙古这类横跨大半版面的省会成片误判 ——
+       实测 12 个盟市只剩「巴彦淖尔市」1 个标签可见，其余 11 个全被丢掉。
+       视口过滤已挪到 fit 之后的绘制循环里（用当时的新变换判断）。 */
     var labQueue = (st && st._vw > 620) ? list.map(function (c) {
-      var ct = G.labelAnchor(abs(c));
-      return { name: c.n, ct: ct, cpx: st.toPx(ct[0], ct[1]) };
+      var cr = abs(c);
+      var ct = G.labelAnchor(cr, st.scale);
+      /* 字号按该市在屏幕上的真实像素面积自适应 */
+      var fs = labelSizeFor(cr, st);
+      return { name: c.n, ct: ct, size: fs };
     }).filter(function (o) {
-      return o.cpx.x > -60 && o.cpx.x < st._vw + 60 &&
-             o.cpx.y > -60 && o.cpx.y < st._vh + 60;
+      return isFinite(o.ct[0]) && isFinite(o.ct[1]);
     }) : [];
     labQueue.sort(function (a, b) { return b.name.length - a.name.length; });
 
@@ -3181,23 +3457,14 @@ var N = {
           严重低估 → 避让失效。已在 geo-engine.pxLabel 改为传真实
           measureText 宽度，并补上【横向让位】（原来只调 Y，
           同高相邻的标签怎么纵向让都躲不开）。*/
-    var labQueue = (st && st._vw > 620) ? list.map(function (c) {
-      var ct = G.labelAnchor(abs(c));
-      return { name: c.n, ct: ct, px: st.toPx(ct[0], ct[1]) };
-    }).filter(function (o) {
-      return o.px.x > -60 && o.px.x < st._vw + 60 &&
-             o.px.y > -60 && o.px.y < st._vh + 60;
-    }) : [];
-    // 长名优先：短名（小市）随后由引擎让位，避免被长名挤到无处可去
-    labQueue.sort(function (a, b) { return b.name.length - a.name.length; });
     /* showLabel=false 时不画任何地名（用户在图层面板里关掉了"地名标注"）。
        此时仍要走 renderRaster的 syncLabels，否则上一次的标签会留在描边层里。*/
-    if (N.showLabel) {
-      labQueue.forEach(function (o) {
-        DM.pxLabel(MI, 'lab', o.px.x, o.px.y, o.name,
-          { fill: '#fff', size: 10.5, halo: '#1c1408' });
-      });
-    }
+    /* ⚠️ 标签绘制已整体后移到 DM.fit 之后（2026-10-16 修）。
+       原因：labQueue 里的 px 是用 st.toPx() 换算的**屏幕坐标**，
+       若在 fit 之前画，用的还是上一个省级的旧变换 —— fit 改完变换后，
+       这批标签整体偏移（实测新疆 24 个市名全部堆到左上角，
+       乌鲁木齐本应在 (738,309) 却出现在 (423,222)）。
+       世界坐标 ct 本身是对的，所以只要在 fit 之后再换算屏幕坐标即可。*/
 
     list.forEach(function (c) {
       var v = NAT.topicValue(N.activeLayer, c.c);
@@ -3230,9 +3497,26 @@ var N = {
       bbox = bbox ? [Math.min(bbox[0], b[0]), Math.min(bbox[1], b[1]), Math.max(bbox[2], b[2]), Math.max(bbox[3], b[3])] : b.slice();
     });
 
-    // 灾点圈已挪到 DM.fit 之后绘制（toPx 需要新变换）
+    /* 视图 fit 必须先做完，再做任何"按屏幕坐标定位"的绘制。
+       （市名标签、灾点圈都依赖 toPx，fit 之前算出来的都是旧变换的错值）*/
     DM.fit(MI, bbox);
-    drawDisasterCircles();   // 必须在 fit 之后：否则 toPx 用的还是上一级变换
+
+    /* ---- 市名标签：fit 之后再换算屏幕坐标并绘制（2026-10-16）---- */
+    if (N.showLabel) {
+      labQueue.forEach(function (o) {
+        /* 重新用当前变换换算屏幕坐标（labQueue 里的 px 是 fit 前的旧值） */
+        var q = st.toPx(o.ct[0], o.ct[1]);
+        if (!isFinite(q.x) || !isFinite(q.y)) return;
+        if (q.x < -60 || q.x > st._vw + 60 || q.y < -60 || q.y > st._vh + 60) return;
+        var el = DM.pxLabel(MI, 'lab', q.x, q.y, o.name,
+          { fill: '#fff', size: o.size, halo: 'rgba(3,8,18,.96)',
+            haloW: Math.max(3, o.size * 0.34) });
+        /* anchor 记世界坐标，后续缩放/拖动时由 _syncPx 正确重投影 */
+        if (el) DM.anchor(MI, el, o.ct[0], o.ct[1], 0, null, true, 620);
+      });
+    }
+
+    drawDisasterCircles();   // 灾点圈同理：必须在 fit 之后
     /*⚠️ 不要再往描边层塞市名标签（labels）—— 业务标签层已用引线标注画全了，
       两套标签同时显示会让每个地名出现两次并像素级重合（黑色重影）。*/
     renderRaster({
@@ -3691,14 +3975,28 @@ var N = {
          行政边界 省市区县乡界线
          地名标注  各行政区名称
        主专题（activeLayer）= 勾选中的第一个遥感专题，供图例与详情用。*/
+    /* 遥感专题条目：**左侧专题配色块 + 名称 + 下方小字说明**
+       （2026-10-15 按用户要求改版）
+       ⚠️ 原来只有一个文字标签（推荐/遥感），
+          八个专题看上去一模一样，用户完全分不出差别。
+       现在每项左侧加一条该专题的**真实色带**（取 legend 中段色），
+       与图上的专题颜色一一对应 —— 认色即可选，不用读文字。
+       小字说明也从 desc（整段技术描述）压缩为一句业务用途。*/
     var rsItems = keys.map(function (k) {
       var L = NAT.LAYERS[k];
       var on = !!N.rasterSet[k];
+      /* 该专题的代表色：取色带中段（视觉上最有代表性的一档） */
+      var swatch = '';
+      if (L.legend && L.legend.length) {
+        var mid = L.legend[Math.floor(L.legend.length / 2)];
+        var c1 = mid.c, c2 = (L.legend[Math.min(L.legend.length - 1,
+                         Math.floor(L.legend.length / 2) + 1)] || mid).c;
+        swatch = '<i class="laychip" style="background:linear-gradient(135deg,' + c1 + ' 0%,' + c1 + ' 50%,' + c2 + ' 100%)"></i>';
+      }
       return '<div class="layrow' + (on ? ' on' : '') + '" data-lay="' + k + '" data-kind="raster" role="checkbox" aria-checked="' + on + '" tabindex="0">' +
-        '<i class="laybox"></i>' +
+        '<i class="laybox"></i>' + swatch +
         '<div class="laytx"><div class="laynm">' + L.name + '</div>' +
-        '<div class="layds ell">' + L.desc + '</div></div>' +
-        '<span class="tag ' + (TAG[k] || 'tag-grey') + '">' + (k === 'ndvi' ? '推荐' : '遥感') + '</span>' +
+        '<div class="layds ell">' + shortDesc(L) + '</div></div>' +
         '</div>';
     }).join('');
     var bizItems =
@@ -3735,6 +4033,17 @@ var N = {
     updateLayerCount();
   }
 
+  /* 专题一句话说明（用于图层列表的小字）
+     取 desc 第一句、去掉公式符号，压到 30 字以内 —— 
+     侧栏空间有限，写全了会挤成两三行，反而更难读。 */
+  function shortDesc(L) {
+    if (!L) return '';
+    if (L.brief) return L.brief;
+    var d = (L.desc || '').split(/[。；;]/)[0] || L.desc || '';
+    d = d.replace(/\([^)]*[ρ=+\-][^)]*\)/g, '').replace(/\s+/g, ' ').trim();
+    return d.length > 28 ? d.slice(0, 28) + '…' : d;
+  }
+
   /* 勾选数量提示：让用户随时知道"现在叠了几层" */
   function updateLayerCount() {
     var el = $('#lay-cnt'); if (!el) return;
@@ -3761,6 +4070,41 @@ var N = {
     });
   }
 
+  /* 轻量 toast 提示（不依赖任何 UI 框架） */
+  var _toastTimer = null;
+  function natToast(msg, ms) {
+    ms = ms || 3200;
+    var box = document.getElementById('nat-toast');
+    if (!box) {
+      box = document.createElement('div');
+      box.id = 'nat-toast';
+      box.style.cssText = 'position:fixed;left:50%;bottom:42px;transform:translateX(-50%);' +
+        'max-width:78%;z-index:99999;background:rgba(17,24,39,.92);color:#fff;' +
+        'padding:11px 18px;border-radius:10px;font-size:13.5px;line-height:1.5;' +
+        'box-shadow:0 6px 24px rgba(0,0,0,.28);opacity:0;transition:opacity .25s,transform .25s;' +
+        'pointer-events:none;text-align:center;font-family:inherit;';
+      document.body.appendChild(box);
+    }
+    box.textContent = msg;
+    requestAnimationFrame(function () {
+      box.style.opacity = '1';
+      box.style.transform = 'translateX(-50%) translateY(0)';
+    });
+    if (_toastTimer) clearTimeout(_toastTimer);
+    _toastTimer = setTimeout(function () {
+      box.style.opacity = '0';
+      box.style.transform = 'translateX(-50%) translateY(8px)';
+    }, ms);
+  }
+
+  /* 主开关 rasterOn 必须与 rasterSet 集合保持一致：集合非空即开，全空即关。
+     ⚠️ 之前漏了这一步 —— toggleLayer 只改集合、不动 rasterOn，
+     在 rasterOn 默认 false 时点了专题行也只是"勾上"却不渲染（按钮像失效）。
+     统一用本函数同步，避免散落各处手动维护。 */
+  function syncRasterOn() {
+    N.rasterOn = Object.keys(N.rasterSet).some(function (k) { return N.rasterSet[k]; });
+  }
+
   /* 切换某个专题的显示，并把主专题指向"勾选中的第一个" */
   function toggleLayer(el) {
     var kind = el.dataset.kind, lay = el.dataset.lay;
@@ -3769,6 +4113,12 @@ var N = {
     set[lay] = next;
     el.classList.toggle('on', next);
     el.setAttribute('aria-checked', String(next));
+    if (kind !== 'biz') syncRasterOn();
+    // 在省级/全国层级勾选遥感专题：此时不渲染栅格，给出明确引导，避免"按钮失效"错觉
+    if (kind !== 'biz' && next && !rasterAllowed()) {
+      natToast('「' + ((NAT.LAYERS[lay] || {}).name || '遥感专题') +
+        '」需在 市 / 县 / 乡 层级查看 —— 请下钻到具体行政区后再叠加专题影像');
+    }
     // 遥感专题：主专题跟随「第一个勾选项」，保证图例/详情与画面一致
     if (kind !== 'biz') {
       var first = Object.keys(NAT.LAYERS).filter(function (k) { return N.rasterSet[k]; })[0];
@@ -3832,6 +4182,7 @@ var N = {
           var on = el_currentLayerKey();
           if (on) { N.rasterSet = {}; N.bizSet = {}; N.rasterSet[on] = true; N.activeLayer = on; }
         }
+        syncRasterOn();
         syncLayerPanelUI();
         updateLayerCount();
         buildLegend();
@@ -3881,13 +4232,23 @@ var N = {
        若仍按它判断，容器会保持 has-raster（SVG 背景被清成透明），
        画面变成"没有底图也没有专题"的空白。*/
     var any = Object.keys(N.rasterSet).some(function (k) { return N.rasterSet[k]; });
-    var on = N.rasterOn && any;
+    /* ⚠️ 必须同时满足三个条件（2026-10-15 修正）：
+       ① 开关打开  ② 至少勾了一个专题  ③ 当前层级允许栅格
+       此前漏了 ③ —— 全国/省级也挂上了 has-raster，
+       而 has-raster 会清掉 SVG 层与 #nat-map 的不透明底色，
+       结果全国视图没有专题色块、底图也一起没了（画面发灰/空白）。 */
+    var on = N.rasterOn && any && rasterAllowed();
     host.classList.toggle('has-raster', on);
     if (MI && MI.host) MI.host.classList.toggle('has-raster', on);
   }
 
   // 按当前层级重绘
   function redrawCurrent() {
+    /* 图例必须随专题/层级一起重画（PPT 第2/4/5页）。
+       ⚠️ 此前只在 paintCrumb() 里调，但 redrawCurrent 的多数分支
+       （如 renderCountry）并不经过 paintCrumb ——
+       实测切到 TVDI 后图例仍显示 NDVI 的内容（items=9 而非 5）。*/
+    try { buildLegend(); } catch (e) { }
     var pv0 = GP.provinces.filter(function (x) { return String(x.c) === String(N.curProvince); })[0];
     var list0 = N.cityCache[N.curProvince] || [];
     if ((N.level === 'town' || N.level === 'village') && N.curCounty != null && N.curTown != null) {
@@ -3923,38 +4284,114 @@ var N = {
 
   function buildLegend() {
     var k = N.activeLayer;
-    if (k === 'cover') {
-      // 只统计有真实值的省，避免把"未核实"当成 0 拉低/拉高色阶
-      var ps = Object.keys(NAT.PROV)
-        .map(function (c) { return NAT.PROV[c].prem; })
-        .filter(function (v) { return typeof v === 'number' && v > 0; });
-      if (!ps.length) {
-        $('#nat-legend').innerHTML = '<div class="note">暂无可溯源的保费规模数据</div>';
-        return;
-      }
-      var lo = Math.min.apply(null, ps), hi = Math.max.apply(null, ps);
-      $('#nat-legend').innerHTML =
-        '<div class="lg-row" style="cursor:default"><span class="lg-sw" style="background:linear-gradient(90deg,#1e3a5f,#f87171)"></span><span>保费规模</span></div>' +
-        '<div class="row-m" style="padding:4px 7px"><span>低 <b>' + lo.toFixed(1) + '亿</b></span>' +
-        '<span style="margin-left:auto">高 <b>' + hi.toFixed(1) + '亿</b></span></div>' +
-        '<div class="note" style="margin-top:8px;font-size:10.5px">按<b>已核实公开数据</b>分级渲染（2024年省级农险保费收入，共 ' +
-        ps.length + ' 省），仅用于识别业务集中区；未核实省份不着色。</div>';
-      return;
-    }
+    var box = $('#nat-legend');
+    if (!box) return;
+
+    /* ════════════════════════════════════════════════════════════
+       图例面板增强（2026-10-15，按《3S平台完善》PPT 第2/4/5/6/7页落地）
+       ------------------------------------------------------------
+       PPT 原文要求：
+         ·「增加黄绿渐变色带和数值图例」
+         ·「每个专题明确"颜色代表什么"，跨日期比较时保持相同色标范围」
+         ·「标注具体数值区间」
+         ·「水体、不透水面等单独标识（这些位置通常无 NDVI 数据）」
+         ·「标注单位、有效范围和计算口径」
+         ·「采用与指标含义对应的专题表达」
+       原实现只输出纯色块列表：看不到色带连续性、没有单位、
+       没写数值区间含义、没有无数据符号，也没有色标锁定说明。
+       ════════════════════════════════════════════════════════════ */
+
+    /* ---- ① 灾种模式：保持原有圆点图例 ---- */
     if (k === 'disaster') {
-      $('#nat-legend').innerHTML = NAT.DISASTERS.map(function (d) {
+      box.innerHTML = NAT.DISASTERS.map(function (d) {
         var cls = { '红色': 'tag-red', '橙色': 'tag-orange', '黄色': 'tag-yellow', '蓝色': 'tag-blue' }[d.level];
-        return '<div class="lg-row" style="cursor:default"><span class="lg-sw" style="background:rgba(248,113,113,.5);border-radius:50%"></span>' +
-          '<span>' + d.name + '</span><span class="' + cls + '" style="margin-left:auto;font-size:10px">' + d.level + '</span></div>';
+        return '<div class="lg-item"><i class="lg-sw" style="background:rgba(248,113,113,.5);border-radius:50%"></i>' +
+          '<b class="lg-v">' + d.name + '</b>' +
+          '<em class="lg-d"><span class="' + cls + '">' + d.level + '</span></em></div>';
       }).join('');
       return;
     }
-    var L = NAT.LAYERS[k]; if (!L) return;
-    $('#nat-legend').innerHTML = L.legend.map(function (l) {
-      return '<div class="lg-row" style="cursor:default"><span class="lg-sw" style="background:' + l.c + '"></span>' +
-        '<span>' + (l.d || l.t) + '</span><span class="lg-n">' + l.t + '</span></div>';
-    }).join('') +
-      '<div class="note" style="margin-top:9px;font-size:10.5px"><b>' + L.name + '</b>：' + L.desc + '<br>数据来源：' + L.source + '</div>';
+
+    /* ---- ② 业务分级模式（cover）：保费规模 ---- */
+    if (k === 'cover') {
+      var ps = Object.keys(NAT.PROV)
+        .map(function (c) { return NAT.PROV[c].prem; })
+        .filter(function (v) { return typeof v === 'number' && v > 0; });
+      if (!ps.length) { box.innerHTML = '<div class="lg-empty">暂无可溯源的保费规模数据</div>'; return; }
+      var lo = Math.min.apply(null, ps), hi = Math.max.apply(null, ps);
+      box.innerHTML =
+        '<div class="lg-head"><b>保费规模</b><span class="lg-unit">单位：亿元</span></div>' +
+        '<div class="lg-ramp"><div class="lg-bar" style="background:linear-gradient(90deg,#1e3a5f,#3b82f6,#fbbf24,#f87171)"></div>' +
+        '<div class="lg-ax"><span>低 ' + lo.toFixed(1) + ' 亿</span><span>高 ' + hi.toFixed(1) + ' 亿</span></div></div>' +
+        '<div class="lg-note"><b>口径</b>：2024 年省级农险保费收入，共 ' + ps.length +
+        ' 个已核实省份；仅用于识别业务集中区，未核实省份不着色。</div>';
+      return;
+    }
+
+    /* ---- ③ 遥感专题：PPT 要求的完整图例 ---- */
+    var L = NAT.LAYERS[k];
+    if (!L) { box.innerHTML = '<div class="lg-empty">当前为矢量分级模式，暂无专题图例</div>'; return; }
+    var NR = window.NasaReal;
+    var S = NR && NR.SOURCES[k];
+    var html = '';
+
+    /* 专题名 + 单位（PPT：标注单位） */
+    html += '<div class="lg-head"><b>' + L.name + '</b>' +
+            '<span class="lg-unit">' + (L.unit ? '单位：' + L.unit : '无量纲') + '</span></div>';
+
+    /* 色带条（PPT 第2页：黄绿渐变，而非离散色块列表） */
+    var lg = L.legend || [];
+    if (lg.length > 1) {
+      var parts = lg.map(function (g, i) {
+        return g.c + ' ' + (i / (lg.length - 1) * 100).toFixed(0) + '%';
+      });
+      var ends = (k === 'tvdi') ? ['0（湿）', '1（干）'] : [lg[0].t, lg[lg.length - 1].t];
+      html += '<div class="lg-ramp"><div class="lg-bar" style="background:linear-gradient(90deg,' +
+              parts.join(',') + ')"></div>' +
+              '<div class="lg-ax"><span>' + ends[0] + '</span><span>' + ends[1] + '</span></div></div>';
+    }
+
+    /* 逐档：数值区间 + 业务含义（PPT 第4页：标注具体数值区间） */
+    html += '<div class="lg-items">';
+    lg.forEach(function (g) {
+      html += '<div class="lg-item"><i class="lg-sw" style="background:' + g.c + '"></i>' +
+              '<b class="lg-v">' + g.t + '</b>' +
+              (g.d ? '<em class="lg-d">' + g.d + '</em>' : '') + '</div>';
+    });
+    html += '</div>';
+
+    /* 无数据 / 水体 / 云 单独标识（PPT 第2页明确要求） */
+    if (L.legendExtra && L.legendExtra.length) {
+      html += '<div class="lg-sec">无数据区</div><div class="lg-items">';
+      L.legendExtra.forEach(function (g) {
+        html += '<div class="lg-item"><i class="lg-sw" style="background:' + g.c + '"></i>' +
+                '<b class="lg-v">' + g.t + '</b><em class="lg-d">' + g.d + '</em></div>';
+      });
+      html += '</div>';
+    }
+
+    /* 计算口径（PPT 第6页附录要求：公式与口径要写清） */
+    if (L.desc) html += '<div class="lg-note"><b>计算口径</b>：' + L.desc + '</div>';
+
+    /* 数据来源 + 分辨率（PPT 第7页） */
+    if (S) {
+      html += '<div class="lg-note"><b>数据来源</b>：' + S.provider +
+              '<br><b>分辨率</b>：' + S.resolution + '　<b>更新</b>：' + S.cadence + '</div>';
+    } else if (L.source) {
+      html += '<div class="lg-note"><b>数据来源</b>：' + L.source + '</div>';
+    }
+
+    /* 使用提示（低值含义、需本地验证等） */
+    if (L.note) html += '<div class="lg-note warn"><b>使用提示</b>：' + L.note + '</div>';
+    if (S && S.level) html += '<div class="lg-note warn"><b>使用边界</b>：' + S.level + '</div>';
+
+    /* 色标锁定（PPT 第4/5页核心：跨日期比较时保持相同色标范围） */
+    if (L.range) {
+      html += '<div class="lg-note lock"><b>色标已锁定</b>：固定 ' +
+              (L.unit ? L.unit + ' ' : '') + L.range[0] + ' ~ ' + L.range[1] +
+              '；切换日期时色标不变，数值才可直接跨期对比</div>';
+    }
+    box.innerHTML = html;
   }
 
   function buildProvinceRank() {
