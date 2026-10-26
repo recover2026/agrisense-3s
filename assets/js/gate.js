@@ -21,7 +21,7 @@
   'use strict';
 
   // SHA-256( '访问密码' )——明文不写入本文件
-  var HASH = 'f4f712d5be91721a35df604c380a06e99666727fcc2aadfe15d2475c86a16363';
+  var HASH = '2c13ed08244da02d611cc5296c9fd8bb9c076a946c2a6002242d7a30d8981c14';
   var SESSION_KEY = 'sf3s_gate_ok_v1';
 
   // 已登录过则直接放行（同一浏览器会话内不重复询问）

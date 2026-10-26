@@ -5,4 +5,6 @@
 # 测试生成的承保台账（由 tools/make_test_uw_xlsx.py 生成，不入库）
 承保台账_测试.xlsx
 docs/stress/
+# 村级数据（3030 个文件 / ~321MB，平台按需懒加载，不入库）
+assets/data/geo-vill-*.js
 # 压力测试/目检截图（本地生成，不入库）
