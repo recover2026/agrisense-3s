@@ -179,6 +179,15 @@ body{
 .gs-dot{cursor:pointer;transition:r .16s}
 .gs-dot:hover{filter:brightness(1.3)}
 .gs-label{pointer-events:none;user-select:none}
+
+/* 悬停地名提示浮层（2026-10：默认不显示地名，鼠标移到地区上才显示其名称） */
+.gs-tip{
+  position:fixed;z-index:99990;pointer-events:none;display:none;
+  padding:5px 11px;border-radius:8px;font-size:12.5px;font-weight:700;
+  color:#fff;background:rgba(11,20,36,.95);border:1px solid rgba(255,211,90,.5);
+  box-shadow:0 6px 18px rgba(0,0,0,.5);white-space:nowrap;transform:translateZ(0);
+  backdrop-filter:blur(6px);font-family:inherit;letter-spacing:.3px;
+}
 .gs-line{pointer-events:none}
 .anim{transition:transform .4s cubic-bezier(.4,0,.2,1)}
 

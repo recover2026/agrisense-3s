@@ -124,7 +124,7 @@
     }, { passive: false });
 
     h.addEventListener('pointerdown', function (e) {
-      h.setPointerCapture(e.pointerId);
+      try { h.setPointerCapture(e.pointerId); } catch (_) { }
       pointers[e.pointerId] = { x: e.clientX, y: e.clientY };
       // ⚠️ 关键坑（实测）：setPointerCapture 之后，pointerup 的 e.target 会变成
       // host容器 DIV，而不是按下时的 SVG path → closest('[data-pick]') 为 null
@@ -147,7 +147,8 @@
         if (d > 0) { self.zoomAt(self.host.clientWidth / 2, self.host.clientHeight / 2, d / pinchD); pinchD = d; }
         return;
       }
-      if (!dragging) return;
+      // 悬停地名提示：未按下拖拽时，命中可拾取要素则显示其名称（2026-10：默认不显示地名，悬停才显示）
+      if (!dragging) { self._hoverTip(e); return; }
       var dx = e.clientX - lx, dy = e.clientY - ly;
       if (Math.abs(dx) + Math.abs(dy) > 3) moved = true;
       // Y 轴翻转后，向下拖动屏幕 → 世界 Y 增大 → ty 减小
@@ -157,6 +158,7 @@
 
     function up(e) {
       delete pointers[e.pointerId];
+      if (self._getTip) self._getTip().style.display = 'none';
       if (Object.keys(pointers).length < 2) pinchD = 0;
       if (dragging && !moved) {
         //用 down 时的命中元素（pointerup 的 target 已被指针捕获改写）
@@ -184,7 +186,7 @@
     h.addEventListener('pointerup', up);
     h.addEventListener('pointercancel', function (e) { delete pointers[e.pointerId]; dragging = false; pinchD = 0; });
 
-    h.addEventListener('pointerleave', function (e) { delete pointers[e.pointerId]; });
+    h.addEventListener('pointerleave', function (e) { delete pointers[e.pointerId]; if (self._getTip) self._getTip().style.display = 'none'; });
 
     // 键盘
     h.tabIndex = 0;
@@ -203,6 +205,48 @@
 
   GeoCanvas.prototype._pinchDist = function (a, b) {
     return Math.hypot(a.x - b.x, a.y - b.y);
+  };
+
+  /* ---------- 悬停地名提示（2026-10：默认不显示地名，鼠标移到要素上才显示） ----------
+     实现为跟随光标的浮层（position:fixed），命中 [data-pick] 且带名称的要素即显示，
+     移出或命中无名称要素即隐藏。所有地图视图共用同一个 #gsHoverTip 节点。 */
+  GeoCanvas.prototype._getTip = function () {
+    var t = document.getElementById('gsHoverTip');
+    if (!t) {
+      t = document.createElement('div');
+      t.id = 'gsHoverTip';
+      t.className = 'gs-tip';
+      t.style.display = 'none';
+      var root = document.body || document.documentElement;
+      if (root) root.appendChild(t);
+    }
+    return t;
+  };
+  GeoCanvas.prototype._hoverTip = function (e) {
+    var tip = this._getTip();
+    if (!tip) return;
+    var el0 = (e.target && e.target.closest) ? e.target.closest('[data-pick]') : null;
+    var nm = '';
+    if (el0) {
+      nm = el0.getAttribute('data-nm');
+      if (!nm && el0.querySelector) {
+        var tt = el0.querySelector('title');
+        if (tt) nm = tt.textContent;
+      }
+    }
+    if (nm) {
+      tip.textContent = nm;
+      tip.style.display = 'block';
+      // 先显示再测量，避免超出视口右/下边界
+      var r = tip.getBoundingClientRect();
+      var x = e.clientX + 14, y = e.clientY + 16;
+      if (x + r.width > window.innerWidth - 8) x = e.clientX - r.width - 14;
+      if (y + r.height > window.innerHeight - 8) y = e.clientY - r.height - 16;
+      tip.style.left = x + 'px';
+      tip.style.top = y + 'px';
+    } else {
+      tip.style.display = 'none';
+    }
   };
 
   /* ---------- 视图变换 ---------- */
@@ -739,6 +783,7 @@
     });
     if (obj.n != null) {
       p.setAttribute('data-pick', '1');
+      p.setAttribute('data-nm', obj.n);   // 悬停提示用：要素名称
       if (obj.c != null) p.setAttribute('data-id', obj.c);
       if (obj.kind) p.setAttribute('data-kind', obj.kind);
       // 乡镇等子级要素需要带索引，才能定位到具体那一个
@@ -763,6 +808,7 @@
       attrs['data-pick'] = '1';
       if (meta.id) attrs['data-id'] = meta.id;
       if (meta.kind) attrs['data-kind'] = meta.kind;
+      if (meta.title) attrs['data-nm'] = meta.title;
     }
     var c = el('circle', attrs);
     if (meta && meta.title) { var t = el('title'); t.textContent = meta.title; c.appendChild(t); }
@@ -780,7 +826,7 @@
       'stroke-opacity': style.opacity == null ? 1 : style.opacity,
       'stroke-linecap': 'round', 'stroke-linejoin': 'round'
     });
-    if (meta) { p.setAttribute('data-pick', '1'); if (meta.id) p.setAttribute('data-id', meta.id); if (meta.kind) p.setAttribute('data-kind', meta.kind); }
+    if (meta) { p.setAttribute('data-pick', '1'); if (meta.id) p.setAttribute('data-id', meta.id); if (meta.kind) p.setAttribute('data-kind', meta.kind); if (meta.name || meta.title) p.setAttribute('data-nm', meta.name || meta.title); }
     L.g.appendChild(p);
     return p;
   };

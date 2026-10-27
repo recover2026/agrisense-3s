@@ -37,7 +37,7 @@ var N = {
     bizSet: {},
     /* 地理要素独立开关 */
     showEdge: true,      // 行政边界
-    showLabel: true,     // 地名标注
+    showLabel: false,    // 地名标注（2026-10：默认不显示地名，鼠标悬停到地区上才显示其名称）
     showBase: true       // 卫星影像底图
   };
   window.__NAT__ = N;
