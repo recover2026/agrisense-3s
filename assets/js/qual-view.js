@@ -12,7 +12,7 @@
    后果：影像瓦片按它换算出的经纬度落在地球另一头，
    屏幕只剩一块纯色（用户反馈的"影像不出来/地图空白"）。
    geo.js 是标准 WebMercator（量级 1.3e7），省份一一对应，直接改用它。 */
-  var Q = window.__QUAL__ || null;
+  var Q = null;       // 改为懒加载：qual 视图首次打开时由 ensureData() 注入 sunshine-qualification.js 后再赋值
   var GP = window.__GEO__ || window.__GEO_PROV__;
   var DM = window.DualMap;
   var $ = function (s, r) { return (r || document).querySelector(s); };
@@ -36,14 +36,17 @@
   };
   window.__QUAL_VIEW__ = {
     init: init,
-    render: function () { DM.resize(MI); },
+    ensureData: ensureData,
+    render: function () { if (MI) DM.resize(MI); },
     renderCountry: renderCountry,
     renderProvince: renderProvince,
     state: N
   };
 
   /* ---------- 索引 ---------- */
-  var IDX = (function () {
+  var IDX = null;   // 懒构建：ensureData() 注入台账后由 rebuildIdx() 生成
+  function rebuildIdx() {
+    if (IDX) return;
     var qualByCode = {}, polByCode = {}, provQual = {}, provPol = {};
     var qAll = (Q && Q.qual) || [], pAll = (Q && Q.pol) || [];
     function pk(s) { return String(s||'').replace(/维吾尔|壮族|回族|自治区|特别行政区|省|市/g, ''); }
@@ -65,7 +68,7 @@
       var k = pk(r.p);
       provPol[k] = (provPol[k] || 0) + 1;
     });
-    return {
+    IDX = {
       qual: qAll, pol: pAll,          // 全量（与台账一致，用于总数展示）
       qualMappable: qMappable, polMappable: pMappable,   // 有 adcode 的（用于着色/搜索）
       qualByCode: qualByCode, polByCode: polByCode,
@@ -74,7 +77,25 @@
       polCodes: Object.keys(polByCode),
       allCodes: Object.keys(qualByCode).concat(Object.keys(polByCode).filter(function (c) { return !qualByCode[c]; }))
     };
-  })();
+  }
+
+  /* 资质数据懒加载：仅在「资质资格地图」首次打开时拉取 246KB 的台账脚本，
+     避免拖慢首屏；注入后刷新 Q 与索引，再回调渲染。 */
+  function ensureData(cb) {
+    if (window.__QUAL__) { Q = window.__QUAL__; rebuildIdx(); cb(); return; }
+    if (window.__QUAL_LOADING__) {
+      var t = setInterval(function () {
+        if (window.__QUAL__) { clearInterval(t); Q = window.__QUAL__; rebuildIdx(); cb(); }
+      }, 30);
+      return;
+    }
+    window.__QUAL_LOADING__ = true;
+    var s = document.createElement('script');
+    s.src = 'assets/data/sunshine-qualification.js';
+    s.onload = function () { Q = window.__QUAL__ || Q; rebuildIdx(); cb(); };
+    s.onerror = function () { window.__QUAL_LOAD_ERR__ = true; cb(); };
+    (document.head || document.documentElement).appendChild(s);
+  }
 
   function hasQual(c) { return !!IDX.qualByCode[c]; }
   function hasPol(c) { return !!IDX.polByCode[c]; }
@@ -129,6 +150,10 @@
   function init() {
     var host = $('#qual-map');
     if (!host) return;
+
+    // 数据可能由 ensureData() 异步注入于此之后，保险起见再刷新一次
+    Q = window.__QUAL__ || Q || null;
+    if (!IDX) rebuildIdx();
 
     /* 台账缺失：不静默空白，明确告知原因与修复动作 */
     if (qualDataMissing()) {

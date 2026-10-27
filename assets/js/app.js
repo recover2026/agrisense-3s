@@ -760,7 +760,7 @@
       built[key] = true;
       var FNS = { overview: buildOverview, underwrite: buildUnderwrite, claims: buildClaims,
                   warn: buildWarn, assess: buildAssess, national: function () { window.__NAT_VIEW__.init(); },
-                  qual: function () { window.__QUAL_VIEW__.init(); } };
+                  qual: function () { window.__QUAL_VIEW__.ensureData(function () { window.__QUAL_VIEW__.init(); }); } };
       (FNS[key] || function () { })();
     }
     // 视图已 display:block，容器此时才有真实尺寸 —— 重新测量并重绘

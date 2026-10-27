@@ -7,6 +7,13 @@
   <meta name="description" content="阳光3S遥感平台：承保风险地图、理赔定损地图、灾害预警调度、灾情损失评估">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%2334a853'/%3E%3Ctext x='16' y='22' font-size='17' text-anchor='middle' fill='white' font-family='sans-serif' font-weight='700'%3E阳%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="assets/css/app.css">
+<!-- 性能优化：提前与地图瓦片/SDK 域名建连，缩短首屏卫星影像与腾讯底图的首字节时间 -->
+<link rel="preconnect" href="https://server.arcgisonline.com" crossorigin>
+<link rel="preconnect" href="https://map.qq.com" crossorigin>
+<link rel="dns-prefetch" href="https://lbs.qq.com">
+<link rel="dns-prefetch" href="https://server.arcgisonline.com">
+<!-- 资质台账（246KB）已从首屏移除、改为懒加载；空闲时低优先级预取，让首次打开「资质资格地图」也秒开 -->
+<link rel="prefetch" href="assets/data/sunshine-qualification.js" as="script" crossorigin>
 <!-- 访问门禁：内网口令。必须最先加载，才能在其他资源加载前挡住页面 -->
 <script>
 /* 全局错误浮层：任何脚本异常都会被捕获并显示在页面底部，
@@ -425,12 +432,9 @@ window.__checkMapKey = function () {
 <script src="assets/data/geo.js" defer></script>
 <script src="assets/data/geo-province.js" defer></script>
 <script src="assets/data/geo-city-index.js" defer></script>
-<!-- 资质资格数据（246KB）· 仅「资质资格地图」视图使用
-     ⚠️ 必须在 qual-view.js 之前加载：qual-view.js 在 IIFE 顶层就读取 window.__QUAL__
-        并据此建立索引，缺这个文件会直接抛 "reading 'qual'"，整个视图白屏。 -->
-<script src="assets/data/sunshine-qualification.js" defer
-        onerror="window.__QUAL_LOAD_ERR__=true"></script>
-<!-- 资质资格数据（246KB）仅「资质资格地图」视图需要，改由 qual-view 懒加载 -->
+<!-- 资质资格数据（246KB）仅「资质资格地图」视图需要，已改为懒加载：
+     qual-view.js 的 ensureData() 在用户首次打开该标签页时才动态注入
+     assets/data/sunshine-qualification.js，避免拖慢首屏（约 246KB）。 -->
 <script src="assets/data/geo-county-index.js" defer></script>
 <script src="assets/data/geo-town-index.js" defer></script>
 <!-- 村界可用性索引：省码 -> 已有村界的县数（用于进乡镇时判断能否下钻到村） -->
@@ -450,5 +454,15 @@ window.__checkMapKey = function () {
 <script src="assets/js/national-view.js" defer></script>
 <script src="assets/js/qual-view.js" defer></script>
 <script src="assets/js/app.js" defer></script>
+<!-- 渐进增强：Service Worker 仅用于让重复访问秒开 / 弱网可用；失败完全不影响功能。
+     注册失败（如 file:// 双击打开、隐私模式）会被静默忽略。 -->
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function () {
+    try { navigator.serviceWorker.register('sw.js').catch(function () {}); }
+    catch (e) {}
+  });
+}
+</script>
 </body>
 </html>
